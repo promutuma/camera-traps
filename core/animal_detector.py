@@ -1,17 +1,25 @@
 """
 Enhanced Animal Detection Module
-Integrates MegaDetector V6 with MobileNetV2 for improved wildlife detection.
+Integrates MegaDetector V6 with MobileNetV2 (via PyTorch) for improved wildlife detection.
 Supports ensemble voting for higher accuracy.
 """
 
 import numpy as np
 import cv2
-from tensorflow.keras.applications import MobileNetV2
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input, decode_predictions
-from tensorflow.keras.preprocessing import image as keras_image
-from typing import Tuple, Optional, Dict, List
+import torch
+import torchvision.models as models
+import torchvision.transforms as transforms
 from PIL import Image
+from typing import Tuple, Optional, Dict, List
 
+# Try to import MegaDetector. 
+# Depending on the installed version, paths might vary.
+try:
+    from megadetector.detection.run_detector import load_detector
+    MD_AVAILABLE = True
+except ImportError:
+    MD_AVAILABLE = False
+    print("MegaDetector module not found in python path.")
 
 class MegaDetectorWrapper:
     """Wrapper for MegaDetector V6 model."""
@@ -30,15 +38,18 @@ class MegaDetectorWrapper:
     
     def _load_model(self):
         """Load MegaDetector V6 model."""
+        if not MD_AVAILABLE:
+            self.load_error = "megadetector package not installed"
+            return
+
         try:
-            from megadetector.detection.run_detector import load_detector
+            # Try loading MDV6b first
             self.model = load_detector('MDV6b')
             print("MegaDetector V6b loaded successfully")
         except Exception as e:
             print(f"Error loading MDV6b: {str(e)}")
             try:
                 print("Attempting to load MDV5a as fallback...")
-                from megadetector.detection.run_detector import load_detector
                 self.model = load_detector('MDV5a')
                 print("MegaDetector V5a loaded successfully")
             except Exception as e2:
@@ -56,14 +67,7 @@ class MegaDetectorWrapper:
     def detect(self, image_path: str) -> Dict:
         """
         Detect animals in image using MegaDetector.
-        
-        Args:
-            image_path: Path to the image file
-            
-        Returns:
-            Dictionary with detection results including bounding boxes
         """
-
         if self.model is None:
             return {
                 'category': 'empty',
@@ -74,6 +78,8 @@ class MegaDetectorWrapper:
         try:
             # Run detection directly
             img = Image.open(image_path)
+            # generate_detections_one_image API depends on MD version
+            # Assuming standard MD API
             result = self.model.generate_detections_one_image(img, image_path, detection_threshold=0.0)
             detections = result.get('detections', [])
             
@@ -85,9 +91,9 @@ class MegaDetectorWrapper:
                 }
             
             # Debug: Print all detections
-            print(f"MegaDetector raw detections for {image_path}:")
-            for d in detections:
-                print(f"  - Cat: {d.get('category')}, Conf: {d.get('conf')}, Box: {d.get('bbox')}")
+            # print(f"MegaDetector raw detections for {image_path}:")
+            # for d in detections:
+            #     print(f"  - Cat: {d.get('category')}, Conf: {d.get('conf')}, Box: {d.get('bbox')}")
             
             # Get highest confidence detection
             best_detection = max(detections, key=lambda x: x.get('conf', 0))
@@ -114,7 +120,6 @@ class MegaDetectorWrapper:
                 'raw_category': raw_category
             }
             
-            
         except Exception as e:
             print(f"Error in MegaDetector detection: {str(e)}")
             return {
@@ -136,7 +141,7 @@ class MegaDetectorWrapper:
 
 
 class AnimalDetector:
-    """Handles animal detection using pre-trained models."""
+    """Handles animal detection using PyTorch MobileNetV2."""
     
     # Wildlife-related ImageNet classes (expanded for East Africa)
     WILDLIFE_CLASSES = {
@@ -153,66 +158,31 @@ class AnimalDetector:
     def __init__(self, confidence_threshold: float = 0.3):
         """
         Initialize the animal detector.
-        
-        Args:
-            confidence_threshold: Minimum confidence score to accept predictions (0-1)
         """
-
         self.confidence_threshold = confidence_threshold
-        # Load pre-trained MobileNetV2 model
-        try:
-            self.model = MobileNetV2(weights='imagenet')
-        except Exception as e:
-            print(f"Error loading MobileNetV2: {e}")
-            self.model = None
-
-    def get_raw_classifications(self, image_path: str, top_k: int = 5) -> List[Tuple[str, float]]:
-        """Get top K raw classifications from MobileNetV2."""
-        if self.model is None:
-            return []
-            
-        try:
-            # Load and preprocess image
-            img = keras_image.load_img(image_path, target_size=(224, 224))
-            x = keras_image.img_to_array(img)
-            x = np.expand_dims(x, axis=0)
-            x = preprocess_input(x)
-
-            # Predict
-            preds = self.model.predict(x)
-            decoded = decode_predictions(preds, top=top_k)[0]
-            
-            return [(label, float(score)) for (_, label, score) in decoded]
-        except Exception as e:
-            print(f"Error in raw classification: {e}")
-            return []
         self.model = None
+        self.categories = []
         self._load_model()
-    
-    def _load_model(self):
-        """Load the pre-trained MobileNetV2 model."""
-        try:
-            self.model = MobileNetV2(weights='imagenet', include_top=True)
-            print("MobileNetV2 model loaded successfully")
-        except Exception as e:
-            print(f"Error loading model: {str(e)}")
-            self.model = None
-    
-    def preprocess_image(self, image_input, target_size: Tuple[int, int] = (224, 224)) -> np.ndarray:
-        """
-        Preprocess image for model inference.
-        """
-        if isinstance(image_input, str):
-            img = keras_image.load_img(image_input, target_size=target_size)
-        else:
-            # Convert numpy array to PIL Image and resize
-            img = Image.fromarray(image_input)
-            img = img.resize(target_size)
         
-        img_array = keras_image.img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0)
-        img_array = preprocess_input(img_array)
-        return img_array
+        # Define transforms
+        self.preprocess = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+
+    def _load_model(self):
+        """Load the pre-trained MobileNetV2 model using Torchvision."""
+        try:
+            weights = models.MobileNet_V2_Weights.IMAGENET1K_V1
+            self.model = models.mobilenet_v2(weights=weights)
+            self.model.eval()
+            self.categories = weights.meta["categories"]
+            print("MobileNetV2 (PyTorch) model loaded successfully")
+        except Exception as e:
+            print(f"Error loading MobileNetV2: {str(e)}")
+            self.model = None
     
     def is_wildlife(self, class_name: str) -> bool:
         """Check if the predicted class is wildlife-related."""
@@ -228,60 +198,69 @@ class AnimalDetector:
             return ("Unidentified", 0.0)
         
         try:
-            # If bbox provided and image_input is a path, crop the image
-            if bbox is not None and isinstance(image_input, str):
-                img = cv2.imread(image_input)
-                h, w = img.shape[:2]
-                
-                # Convert normalized bbox to pixel coordinates
+            # Prepare PIL Image
+            if isinstance(image_input, str):
+                img = Image.open(image_input).convert('RGB')
+            elif isinstance(image_input, np.ndarray):
+                img = Image.fromarray(image_input).convert('RGB')
+            else:
+                img = image_input
+
+            # Crop if bbox provided
+            if bbox is not None:
+                w, h = img.size
                 x, y, box_w, box_h = bbox
                 x1 = int(x * w)
                 y1 = int(y * h)
                 x2 = int((x + box_w) * w)
                 y2 = int((y + box_h) * h)
                 
-                # Crop image
                 if x2 > x1 and y2 > y1:
-                    cropped = img[y1:y2, x1:x2]
-                    if cropped.size > 0:
-                        # Convert BGR to RGB
-                        cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2RGB)
-                        processed_image = self.preprocess_image(cropped)
-                    else:
-                        processed_image = self.preprocess_image(image_input)
-                else:
-                    processed_image = self.preprocess_image(image_input)
-            else:
-                # Process full image
-                processed_image = self.preprocess_image(image_input)
+                    img = img.crop((x1, y1, x2, y2))
             
-            # Make prediction
-            predictions = self.model.predict(processed_image, verbose=0)
+            # Preprocess
+            input_tensor = self.preprocess(img)
+            input_batch = input_tensor.unsqueeze(0) # create a mini-batch as expected by the model
             
-            # Decode predictions (top 5)
-            decoded_predictions = decode_predictions(predictions, top=5)[0]
+            # Inference
+            with torch.no_grad():
+                output = self.model(input_batch)
             
-            # Get top prediction
-            top_class_id, top_class_name, top_confidence = decoded_predictions[0]
+            # Probabilities
+            probabilities = torch.nn.functional.softmax(output[0], dim=0)
             
-            # Check if it's wildlife and confidence is above threshold
-            if self.is_wildlife(top_class_name) and top_confidence >= self.confidence_threshold:
-                clean_name = top_class_name.replace('_', ' ').title()
-                return (clean_name, float(top_confidence))
-            else:
-                # Check if any of the top 5 predictions are wildlife
-                for class_id, class_name, confidence in decoded_predictions:
-                    if self.is_wildlife(class_name) and confidence >= self.confidence_threshold:
-                        clean_name = class_name.replace('_', ' ').title()
-                        return (clean_name, float(confidence))
+            # Top 5
+            top5_prob, top5_catid = torch.topk(probabilities, 5)
+            
+            # Check for wildlife
+            for i in range(5):
+                score = top5_prob[i].item()
+                cat_id = top5_catid[i].item()
+                class_name = self.categories[cat_id]
                 
-                # No wildlife detected with sufficient confidence
-                return ("Unidentified", float(top_confidence))
+                if self.is_wildlife(class_name) and score >= self.confidence_threshold:
+                    clean_name = class_name.replace('_', ' ').title()
+                    return (clean_name, score)
+            
+            # If no wildlife found, return top deduction if high enough? 
+            # Or just Unidentified. 
+            # Original code said: if no wildlife, return Unidentified but showing score of top prediction.
+            top_score = top5_prob[0].item()
+            top_name = self.categories[top5_catid[0].item()]
+            
+            # If it's something like "cliff dwelling" or "jeep" we probably want to return it if detection mode is mobilenet only
+            # The original logic was complex. Let's simplify:
+            # Return "Unidentified" unless we are confident it's an animal.
+            # But the caller might handle "Unidentified" by falling back.
+            
+            return ("Unidentified", top_score)
                 
         except Exception as e:
-            print(f"Error detecting animal: {str(e)}")
+            print(f"Error detecting animal (PyTorch): {str(e)}")
+            import traceback
+            traceback.print_exc()
             return ("Unidentified", 0.0)
-    
+            
     def swap_model(self, new_model):
         self.model = new_model
         print("Model swapped successfully")
@@ -370,13 +349,10 @@ class EnsembleDetector:
                 
                 else:
                     # MegaDetector found nothing (or confidence too low)
-                    # Use Fallback: Check MobileNetV2 on full image
-                    # Only accept if HIGH confidence (> 0.4) to avoid noise
-                    print(f"MegaDetector found nothing. Attempting fallback on {image_path}")
+                    # Fallback logic
+                    # print(f"MegaDetector found nothing. Attempting fallback.")
                     animal_name, mn_confidence = self.mobilenet.detect(image_path)
                     
-                    # Higher threshold for fallback to reduce false positives
-                    # Lowered to 0.2 to catch difficult cases (like the baboon sample)
                     fallback_threshold = max(0.2, self.confidence_threshold)
                     
                     if animal_name != 'Unidentified' and mn_confidence >= fallback_threshold:
@@ -384,7 +360,7 @@ class EnsembleDetector:
                         result['detection_confidence'] = mn_confidence
                         result['mobilenet_result'] = (animal_name, mn_confidence)
                         result['method'] = 'MobileNetV2 Fallback'
-                        print(f"Fallback successful: {animal_name}")
+                        # print(f"Fallback successful: {animal_name}")
         
         except Exception as e:
             print(f"Error in ensemble detection: {str(e)}")
@@ -397,14 +373,6 @@ class EnsembleDetector:
 def detect_animal(image_path: str, confidence_threshold: float = 0.3, mode: str = 'ensemble') -> Tuple[str, float, Optional[List[float]]]:
     """
     Convenience function to detect animal in an image.
-    
-    Args:
-        image_path: Path to the image file
-        confidence_threshold: Minimum confidence score to accept predictions
-        mode: Detection mode - 'ensemble', 'megadetector', or 'mobilenet'
-        
-    Returns:
-        Tuple of (animal_name, confidence_score, bbox)
     """
     detector = EnsembleDetector(confidence_threshold=confidence_threshold, mode=mode)
     result = detector.detect(image_path)
