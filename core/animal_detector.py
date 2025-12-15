@@ -25,6 +25,7 @@ class MegaDetectorWrapper:
         """
         self.confidence_threshold = confidence_threshold
         self.model = None
+        self.load_error = None
         self._load_model()
     
     def _load_model(self):
@@ -42,7 +43,15 @@ class MegaDetectorWrapper:
                 print("MegaDetector V5a loaded successfully")
             except Exception as e2:
                 print(f"Error loading MDV5a: {str(e2)}")
+                self.load_error = f"MDV6b failed ({str(e)}), MDV5a failed ({str(e2)})"
                 self.model = None
+
+    def get_status(self) -> Dict:
+        """Get model loading status."""
+        return {
+            'loaded': self.model is not None,
+            'error': self.load_error
+        }
 
     def detect(self, image_path: str) -> Dict:
         """

@@ -121,8 +121,10 @@ class ImageProcessor:
         
         # Detector Debug
         md_debug = []
+        md_status = None
         if hasattr(self.animal_detector, 'megadetector') and self.animal_detector.megadetector:
             md_debug = self.animal_detector.megadetector.detect_all(image_path)
+            md_status = self.animal_detector.megadetector.get_status()
             
         mn_debug = []
         if hasattr(self.animal_detector, 'mobilenet') and self.animal_detector.mobilenet:
@@ -131,6 +133,7 @@ class ImageProcessor:
         return {
             'ocr': ocr_debug,
             'megadetector': md_debug,
+            'megadetector_status': md_status,
             'mobilenet': mn_debug
         }
     

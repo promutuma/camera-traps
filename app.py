@@ -605,6 +605,16 @@ with tab5:
                     
                     # 2. MegaDetector Internals
                     st.subheader("2. MegaDetector Raw Candidates")
+                    
+                    md_status = debug_info.get('megadetector_status')
+                    if md_status:
+                        if md_status.get('error'):
+                            st.error(f"MegaDetector Failed to Load: {md_status['error']}")
+                            st.info("Try restarting the app to pick up recent fixes.")
+                        elif not md_status.get('loaded'):
+                             st.warning("MegaDetector not loaded (unknown reason).")
+                        else:
+                             st.success("MegaDetector Loaded Successfully")
                     st.markdown("Shows **ALL** detections found by the model, including those below the confidence threshold.")
                     md_data = debug_info.get('megadetector')
                     if md_data:
