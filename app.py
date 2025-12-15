@@ -315,139 +315,165 @@ with tab2:
     if st.session_state.processed_data is not None:
         st.header("Review and Edit Results")
         
-        df = st.session_state.processed_data
+        # Initialize viewing state
+        if 'view_mode' not in st.session_state:
+            st.session_state.view_mode = 'gallery'  # 'gallery' or 'inspector'
+        if 'current_image_index' not in st.session_state:
+            st.session_state.current_image_index = 0
 
-        # Backfill new columns for legacy data to prevent KeyError
-        if 'primary_label' not in df.columns:
-            df['primary_label'] = df['detected_animal']
-        if 'species_label' not in df.columns:
-            df['species_label'] = 'N/A'
+        df = st.session_state.processed_data
         
-        # Display editable table
-        st.subheader("📋 Processed Data (Editable)")
+        # Ensure columns exist
+        if 'primary_label' not in df.columns: df['primary_label'] = df['detected_animal']
+        if 'species_label' not in df.columns: df['species_label'] = 'N/A'
         
-        # Create editable dataframe
-        edited_df = st.data_editor(
-            df[['filename', 'primary_label', 'species_label', 'detected_animal', 'date', 'time', 'temperature', 
-                'day_night', 'brightness', 'detection_confidence', 'detection_method', 'user_notes']],
-            column_order=[
-                "filename", "primary_label", "species_label", "detection_confidence", 
-                "day_night", "brightness", "temperature", "date", "time", "user_notes"
-            ],
-            column_config={
-                "filename": "Image File",
-                "detected_animal": None, # Hide legacy column
-                "detection_method": None, # Hide method column
-                "primary_label": "Object Type",
-                "species_label": "Species",
-                "detection_confidence": st.column_config.ProgressColumn(
-                    "Confidence",
-                    help="Detection confidence score",
-                    format="%.2f",
-                    min_value=0,
-                    max_value=1
-                ),
-                "detection_method": st.column_config.TextColumn(
-                    "Method",
-                    help="Model used for detection"
-                ),
-                "day_night": st.column_config.SelectboxColumn(
-                    'Day/Night',
-                    options=['Day', 'Night', 'Unknown']
-                ),
-                "brightness": st.column_config.NumberColumn(
-                    "Brightness",
-                    help="Average image brightness (0-255)",
-                    format="%.1f"
-                ),
-                "temperature": "Temp (°C)",
-                "date": "Date",
-                "time": "Time",
-                "user_notes": "Notes"
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="results_editor"
-        )
+        # Repair missing filepath if possible
+        if 'filepath' not in df.columns and hasattr(st.session_state, 'image_paths') and len(st.session_state.image_paths) == len(df):
+             df['filepath'] = st.session_state.image_paths
         
-        # Update session state with edited data
-        st.session_state.processed_data = edited_df
-        
-        # Debug info
-        with st.expander("🔍 Debug Information"):
-            st.write("Raw data with debug fields:")
-            st.json(edited_df.to_dict(orient='records'))
-        
-        # Image viewer
-        st.subheader("🖼️ Image Viewer")
-        
-        if len(st.session_state.image_paths) > 0:
-            selected_idx = st.selectbox(
-                "Select image to view:",
-                range(len(st.session_state.image_paths)),
-                format_func=lambda x: df.iloc[x]['filename']
-            )
+        # Top Bar: Controls
+        col_ctrl_1, col_ctrl_2, col_ctrl_3 = st.columns([2, 2, 1])
+        with col_ctrl_1:
+            view_mode = st.radio("View Mode", ["Gallery View", "Inspector View"], horizontal=True)
+            st.session_state.view_mode = 'gallery' if view_mode == "Gallery View" else 'inspector'
             
-            if selected_idx is not None:
-                col1, col2 = st.columns([2, 1])
+        with col_ctrl_2:
+            # Filter example (can be expanded)
+            filter_animal = st.checkbox("Show only Animals", value=False)
+            
+        with col_ctrl_3:
+            st.caption(f"Total Images: {len(df)}")
+
+        # Filter Logic
+        filtered_df = df.copy()
+        if filter_animal:
+            filtered_df = filtered_df[filtered_df['primary_label'] == 'Animal']
+        
+        # --- VIEW MODES ---
+        
+        if st.session_state.view_mode == 'gallery':
+            st.subheader("🖼️ Image Gallery")
+            
+            # Simple Grid Layout
+            cols = st.columns(4)
+            for idx, row in filtered_df.iterrows():
+                col = cols[idx % 4]
+                with col:
+                    # Find image path
+                    # robust retrieval
+                    img_path = row.get('filepath')
+                    if not img_path or not os.path.exists(str(img_path)):
+                        # Fallback using index if alignment preserves
+                        if idx < len(st.session_state.image_paths):
+                            img_path = st.session_state.image_paths[idx]
+                    
+                    if img_path and os.path.exists(str(img_path)):
+                        # Display thumbnail
+                        # We use a trick to make it clickable-ish by putting a button below
+                        st.image(img_path, use_container_width=True)
+                        if st.button(f"🔍 Inspect", key=f"btn_inspect_{idx}"):
+                            st.session_state.view_mode = 'inspector'
+                            # Find the actual integer index in the full dataframe to set current_image_index
+                            st.session_state.current_image_index = df.index.get_loc(idx)
+                            st.rerun()
+                        st.caption(f"**{row['primary_label']}** ({row['detection_confidence']:.2f})")
+                    else:
+                        st.warning("Image missing")
+
+        else: # Inspector View
+            st.subheader("🔍 Inspector View")
+            
+            # Navigation
+            col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
+            with col_nav_1:
+                if st.button("⬅️ Previous"):
+                    st.session_state.current_image_index = max(0, st.session_state.current_image_index - 1)
+            with col_nav_2:
+                # Direct jump slider
+                new_idx = st.slider("Jump to Image", 0, len(df)-1, st.session_state.current_image_index)
+                st.session_state.current_image_index = new_idx
+            with col_nav_3:
+                if st.button("Next ➡️"):
+                    st.session_state.current_image_index = min(len(df)-1, st.session_state.current_image_index + 1)
+
+            # Content
+            current_idx = st.session_state.current_image_index
+            if 0 <= current_idx < len(df):
+                row = df.iloc[current_idx]
+                image_path = st.session_state.image_paths[current_idx] # Fallback to list if df sort is stable
                 
-                with col1:
-                    image_path = st.session_state.image_paths[selected_idx]
-                    detection_info = df.iloc[selected_idx].to_dict()
+                col_insp_1, col_insp_2 = st.columns([2, 1])
+                
+                with col_insp_1:
+                    # Image Display
+                    show_box = st.toggle("Show Bounding Box", value=True)
+                    detection_info = row.to_dict()
+                    if not show_box: detection_info['bbox'] = None # Hide box trick
                     
                     display_img = display_image_with_info(image_path, detection_info)
                     if display_img:
                         st.image(display_img, use_container_width=True)
-                
-                with col2:
-                    st.markdown("### 📝 Image Details")
-                    info = df.iloc[selected_idx]
-                    st.write(f"**Filename:** {info['filename']}")
-                    st.write(f"**Date:** {info['date'] or 'N/A'}")
-                    st.write(f"**Time:** {info['time'] or 'N/A'}")
-                    st.write(f"**Temperature:** {info['temperature'] or 'N/A'}")
-                    st.write(f"**Animal:** {info['detected_animal']}")
-                    st.write(f"**Confidence:** {info['detection_confidence']:.2%}")
-                    st.write(f"**Day/Night:** {info['day_night']}")
-                    st.write(f"**Brightness:** {info.get('brightness', 0.0):.1f}")
-        
-        # Download report
+                        
+                with col_insp_2:
+                    st.markdown("### Details & Edit")
+                    
+                    # Quick Edit Form
+                    with st.form(key=f"edit_form_{current_idx}"):
+                        new_primary = st.selectbox("Primary Label", ["Animal", "Person", "Vehicle", "Empty"], index=["Animal", "Person", "Vehicle", "Empty"].index(row['primary_label']) if row['primary_label'] in ["Animal", "Person", "Vehicle", "Empty"] else 3)
+                        new_species = st.text_input("Species", value=row['species_label'])
+                        new_notes = st.text_area("Notes", value=row.get('user_notes', ''))
+                        
+                        if st.form_submit_button("Update Record"):
+                            # Update DataFrame
+                            df.at[current_idx, 'primary_label'] = new_primary
+                            df.at[current_idx, 'species_label'] = new_species
+                            df.at[current_idx, 'detected_animal'] = new_species if new_primary == 'Animal' else new_primary
+                            df.at[current_idx, 'user_notes'] = new_notes
+                            st.session_state.processed_data = df
+                            st.success("Updated!")
+                            st.rerun()
+
+                    st.divider()
+                    st.metric("Confidence", f"{row['detection_confidence']:.2%}")
+                    st.metric("Time", str(row['time']))
+                    st.metric("Temperature", str(row['temperature']))
+            else:
+                st.info("No image selected.")
+
         st.divider()
-        st.subheader("📥 Export Data")
-        
-        col1, col2, col3 = st.columns([1, 1, 2])
-        
-        with col1:
+        # Bulk Editor (Collapsible)
+        with st.expander("📋 Bulk Data Editor (All Records)", expanded=False):
+            edited_df = st.data_editor(
+                df,
+                column_order=[
+                    "filename", "primary_label", "species_label", "detection_confidence", 
+                    "day_night", "brightness", "temperature", "date", "time", "user_notes"
+                ],
+                column_config={
+                     "primary_label": st.column_config.SelectboxColumn("Primary", options=["Animal", "Person", "Vehicle", "Empty"]),
+                     "detection_confidence": st.column_config.ProgressColumn("Conf", min_value=0, max_value=1)
+                },
+                use_container_width=True,
+                key="bulk_editor"
+            )
+            # Sync bulk edits
+            if not edited_df.equals(df):
+                st.session_state.processed_data = edited_df
+                st.rerun()
+
+        # Download / Save Area
+        st.subheader("out Export & Save")
+        c1, c2, c3 = st.columns([1,1,2])
+        with c1:
             excel_data = create_excel_report(st.session_state.processed_data)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            st.download_button(
-                label="📊 Download Excel Report",
-                data=excel_data,
-                file_name=f"wildlife_analysis_{timestamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary"
-            )
-        
-        with col2:
-            csv_data = st.session_state.processed_data.to_csv(index=False)
-            st.download_button(
-                label="📄 Download CSV",
-                data=csv_data,
-                file_name=f"wildlife_analysis_{timestamp}.csv",
-                mime="text/csv"
-            )
-            
-        with col3:
-            if st.button("💾 Save to History", type="secondary", use_container_width=True):
+            st.download_button("📊 Download Excel", data=excel_data, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        with c3:
+            if st.button("💾 Save to Database", type="secondary"):
                 count = st.session_state.db_manager.save_results(st.session_state.processed_data)
-                if count > 0:
-                    st.success(f"Successfully saved {count} records to database!")
-                else:
-                    st.warning("No new data to save.")
+                st.success(f"Saved {count} records!")
     
     else:
-        st.info("👈 Please upload and process images first in the 'Upload & Process' tab.")
+        st.info("👈 Please upload and process images first.")
 
 with tab3:
     if st.session_state.processed_data is not None:
