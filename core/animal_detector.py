@@ -72,7 +72,6 @@ class MegaDetectorWrapper:
             }
         
         try:
-        try:
             # Run detection directly
             img = Image.open(image_path)
             result = self.model.generate_detections_one_image(img, image_path, detection_threshold=0.0)
