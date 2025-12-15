@@ -29,7 +29,7 @@ from core.db_manager import DatabaseManager
 
 # Page configuration
 st.set_page_config(
-    page_title="Wildlife Analysis Dashboard",
+    page_title="WildlifeID Pro",
     page_icon="🦁",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -219,20 +219,8 @@ with st.sidebar:
     enable_day_night = st.checkbox("Enable Day/Night Classification", value=True)
     
     # Detection mode selector
-    if enable_detection:
-        detection_mode = st.radio(
-            "Detection Model",
-            options=["ensemble", "megadetector", "mobilenet"],
-            format_func=lambda x: {
-                "ensemble": "🎯 Ensemble (MegaDetector + MobileNetV2) - Best Accuracy",
-                "megadetector": "🔍 MegaDetector Only - Fast Detection",
-                "mobilenet": "🤖 MobileNetV2 Only - Species Classification"
-            }[x],
-            index=0,
-            help="Ensemble mode combines both models for highest accuracy"
-        )
-    else:
-        detection_mode = "ensemble"
+    # Professional Pipeline (Fixed Mode)
+    st.info("Active Pipeline: MegaDetector V5a + BioClip")
     
     st.subheader("Advanced Settings")
     detection_confidence = st.slider(
@@ -282,21 +270,19 @@ with tab1:
     if uploaded_files:
         st.success(f"✅ {len(uploaded_files)} file(s) uploaded successfully!")
         
-        col1, col2 = st.columns([1, 3])
-        
-        with col1:
+        # Processing section
+        with st.container():
             if st.button("🚀 Process Images", type="primary"):
                 try:
                     with st.spinner("Initializing processing modules..."):
                         # Initialize processor
-                        st.info("📥 Loading OCR, detection, and classification models. First run may take a few minutes to download models (~100MB)...")
+                        st.info("📥 Loading OCR, MegaDetector V5a, and BioClip models. First run will download model weights. Please wait...")
                         processor = ImageProcessor(
                             ocr_enabled=enable_ocr,
                             detection_enabled=enable_detection,
                             day_night_enabled=enable_day_night,
                             detection_confidence=detection_confidence,
                             brightness_threshold=brightness_threshold,
-                            detection_mode=detection_mode,
                             ocr_strip_percent=ocr_strip_height
                         )
 
@@ -330,21 +316,30 @@ with tab2:
         st.header("Review and Edit Results")
         
         df = st.session_state.processed_data
+
+        # Backfill new columns for legacy data to prevent KeyError
+        if 'primary_label' not in df.columns:
+            df['primary_label'] = df['detected_animal']
+        if 'species_label' not in df.columns:
+            df['species_label'] = 'N/A'
         
         # Display editable table
         st.subheader("📋 Processed Data (Editable)")
         
         # Create editable dataframe
         edited_df = st.data_editor(
-            df[['filename', 'date', 'time', 'temperature', 'detected_animal', 
+            df[['filename', 'primary_label', 'species_label', 'detected_animal', 'date', 'time', 'temperature', 
                 'day_night', 'brightness', 'detection_confidence', 'detection_method', 'user_notes']],
             column_order=[
-                "filename", "detected_animal", "detection_confidence", "detection_method", 
+                "filename", "primary_label", "species_label", "detection_confidence", 
                 "day_night", "brightness", "temperature", "date", "time", "user_notes"
             ],
             column_config={
                 "filename": "Image File",
-                "detected_animal": "Detected Animal",
+                "detected_animal": None, # Hide legacy column
+                "detection_method": None, # Hide method column
+                "primary_label": "Object Type",
+                "species_label": "Species",
                 "detection_confidence": st.column_config.ProgressColumn(
                     "Confidence",
                     help="Detection confidence score",
@@ -466,7 +461,7 @@ with tab3:
             st.metric("Total Images", len(df))
         
         with col2:
-            identified = len(df[df['detected_animal'] != 'Unidentified'])
+            identified = len(df[df['primary_label'] == 'Animal'])
             st.metric("Animals Identified", identified)
         
         with col3:
@@ -482,9 +477,11 @@ with tab3:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🦁 Animal Distribution")
-            animal_counts = df['detected_animal'].value_counts()
-            st.bar_chart(animal_counts)
+            st.subheader("🦁 Species Distribution")
+            # Filter for animals only
+            animal_df = df[df['primary_label'] == 'Animal']
+            species_counts = animal_df['species_label'].value_counts()
+            st.bar_chart(species_counts)
         
         with col2:
             st.subheader("🌓 Day/Night Distribution")

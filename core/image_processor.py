@@ -40,8 +40,7 @@ class ImageProcessor:
         # Initialize processors
         self.ocr_processor = OCRProcessor() if ocr_enabled else None
         self.animal_detector = EnsembleDetector(
-            confidence_threshold=detection_confidence,
-            mode=detection_mode
+            confidence_threshold=detection_confidence
         ) if detection_enabled else None
         self.day_night_classifier = DayNightClassifier(brightness_threshold=brightness_threshold) if day_night_enabled else None
     
@@ -63,6 +62,8 @@ class ImageProcessor:
             'date': None,
             'time': None,
             'detected_animal': 'Unidentified',
+            'primary_label': 'N/A',
+            'species_label': 'N/A',
             'detection_confidence': 0.0,
             'bbox': None,
             'detection_method': 'None',
@@ -87,6 +88,8 @@ class ImageProcessor:
                 
                 detection_result = self.animal_detector.detect(image_path)
                 result['detected_animal'] = detection_result['detected_animal']
+                result['primary_label'] = detection_result.get('primary_label', 'Unidentified')
+                result['species_label'] = detection_result.get('species_label', 'N/A')
                 result['detection_confidence'] = detection_result['detection_confidence']
                 result['bbox'] = detection_result['bbox']
                 result['detection_method'] = detection_result.get('method', 'Unknown')
@@ -123,7 +126,8 @@ class ImageProcessor:
         md_debug = []
         md_status = None
         if hasattr(self.animal_detector, 'megadetector') and self.animal_detector.megadetector:
-            md_debug = self.animal_detector.megadetector.detect_all(image_path)
+            raw_result = self.animal_detector.megadetector.detect_all(image_path)
+            md_debug = raw_result.get('detections', []) if isinstance(raw_result, dict) else []
             md_status = self.animal_detector.megadetector.get_status()
             
         mn_debug = []
