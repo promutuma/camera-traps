@@ -72,20 +72,10 @@ class MegaDetectorWrapper:
             }
         
         try:
-            from megadetector.detection.run_detector import load_and_run_detector_batch
-            
-            # Run detection
-            results = load_and_run_detector_batch(self.model, [image_path])
-            
-            if not results or len(results) == 0:
-                return {
-                    'category': 'empty',
-                    'confidence': 0.0,
-                    'bbox': None
-                }
-            
-            # Get first result
-            result = results[0]
+        try:
+            # Run detection directly
+            img = Image.open(image_path)
+            result = self.model.generate_detections_one_image(img, image_path, detection_threshold=0.0)
             detections = result.get('detections', [])
             
             if not detections:
@@ -139,11 +129,9 @@ class MegaDetectorWrapper:
         if self.model is None:
             return []
         try:
-            from megadetector.detection.run_detector import load_and_run_detector_batch
-            results = load_and_run_detector_batch(self.model, [image_path])
-            if results and len(results) > 0:
-                return results[0].get('detections', [])
-            return []
+            img = Image.open(image_path)
+            result = self.model.generate_detections_one_image(img, image_path, detection_threshold=0.0)
+            return result.get('detections', [])
         except:
             return []
 
