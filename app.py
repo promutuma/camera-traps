@@ -534,15 +534,27 @@ with tab2:
                     st.markdown("### Details")
                     
                     # Read-only details mostly, unless we implement complex write-back
-                    st.info(f"Species detected:\n{row['species_label']}")
-                    
                     with st.form(key=f"edit_form_{current_idx}"):
-                        new_notes = st.text_area("User Notes (Applies to image)", value=row.get('user_notes', ''))
+                        # Primary Label (Applies to all)
+                        current_primary = row['primary_label']
+                        if current_primary not in ["Animal", "Person", "Vehicle", "Empty"]:
+                             current_primary = "Animal"
                         
-                        if st.form_submit_button("Update Notes"):
+                        new_primary = st.selectbox("Primary Label", ["Animal", "Person", "Vehicle", "Empty"], 
+                                                 index=["Animal", "Person", "Vehicle", "Empty"].index(current_primary))
+                        
+                        # Editable Species List
+                        new_species = st.text_area("Species List (Edit to correct)", value=row['species_label'])
+                        
+                        new_notes = st.text_area("User Notes", value=row.get('user_notes', ''))
+                        
+                        if st.form_submit_button("Update Details"):
                             # Update RAW DataFrame
                             # We update all rows matching this filepath
                             mask = st.session_state.processed_data['filepath'] == image_path
+                            st.session_state.processed_data.loc[mask, 'primary_label'] = new_primary
+                            st.session_state.processed_data.loc[mask, 'species_label'] = new_species
+                            st.session_state.processed_data.loc[mask, 'detected_animal'] = new_species # Update this too for backward compat
                             st.session_state.processed_data.loc[mask, 'user_notes'] = new_notes
                             st.success("Updated!")
                             st.rerun()
