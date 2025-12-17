@@ -430,7 +430,7 @@ with tab2:
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
             'species_label': join_unique, # List all species (String)
             'species_label': join_unique, # List all species (String)
-            'data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Aggregated list of all detection objects (species+bbox)
+            'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Aggregated list of all detection objects (species+bbox)
             'raw_text': 'first', # Keep raw OCR text
             'image_id': 'first', # Unique ID
             'md_confidence': lambda x: list(x), # List of MD confidences
@@ -561,7 +561,7 @@ with tab2:
                     needs_update = False
                     if 'image_id' not in row or not row['image_id'] or row['image_id'] != current_hash:
                          needs_update = True
-                    elif isinstance(row.get('data'), list) and len(row.get('data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
+                    elif isinstance(row.get('species_data'), list) and len(row.get('species_data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
                          # Potentially stale if we expect animals but see none in the list
                          pass
 
@@ -609,7 +609,7 @@ with tab2:
                         
                         # Editable Species List using Data Editor
                         st.caption("Detailed Species List")
-                        current_species_data = row.get('data', [])
+                        current_species_data = row.get('species_data', [])
                         # Ensure it's a list (handle NaN or legacy data)
                         if not isinstance(current_species_data, list): current_species_data = [] 
                         
@@ -645,7 +645,7 @@ with tab2:
                             
                             # Update all rows
                             for i in st.session_state.processed_data.index[mask]:
-                                st.session_state.processed_data.at[i, 'data'] = edited_species_data
+                                st.session_state.processed_data.at[i, 'species_data'] = edited_species_data
                                 st.session_state.processed_data.at[i, 'species_label'] = new_species_label_str
                                 st.session_state.processed_data.at[i, 'detected_animal'] = new_species_label_str
                                 st.session_state.processed_data.at[i, 'user_notes'] = new_notes
@@ -709,11 +709,11 @@ with tab2:
                         b64_str = None
                         
                     # 2. Build Detections Array
-                    # 'data' column contains the list of dicts we created in AnimalDetector
+                    # 'species_data' column contains the list of dicts we created in AnimalDetector
                     detections = []
-                    # Merge data from arguably identical rows, or just take the updated 'data' col from first row
-                    if 'data' in first_row and isinstance(first_row['data'], list):
-                        raw_dets = first_row['data']
+                    # Merge data from arguably identical rows, or just take the updated 'species_data' col from first_row
+                    if 'species_data' in first_row and isinstance(first_row['species_data'], list):
+                        raw_dets = first_row['species_data']
                         for i, d in enumerate(raw_dets):
                             # Add detection_id
                             d_copy = d.copy()
