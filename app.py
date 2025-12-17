@@ -709,16 +709,19 @@ with tab2:
                         b64_str = None
                         
                     # 2. Build Detections Array
-                    # 'species_data' column contains the list of dicts we created in AnimalDetector
+                    # 'species_data' in each row contains the BioClip results for that specific bounding box (row)
+                    # We must aggregate them from ALL rows for this image
                     detections = []
-                    # Merge data from arguably identical rows, or just take the updated 'species_data' col from first_row
-                    if 'species_data' in first_row and isinstance(first_row['species_data'], list):
-                        raw_dets = first_row['species_data']
-                        for i, d in enumerate(raw_dets):
-                            # Add detection_id
-                            d_copy = d.copy()
-                            d_copy['detection_id'] = i + 1
-                            detections.append(d_copy)
+                    
+                    id_counter = 1
+                    for _, row in rows.iterrows():
+                        if 'species_data' in row and isinstance(row['species_data'], list):
+                             # Each item in species_data is a candidate (species, conf, bbox, etc.)
+                             for d in row['species_data']:
+                                 d_copy = d.copy()
+                                 d_copy['detection_id'] = id_counter
+                                 id_counter += 1
+                                 detections.append(d_copy)
                     
                     # 3. Construct Item
                     item = {
