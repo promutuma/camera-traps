@@ -478,7 +478,9 @@ with tab2:
             current_idx = st.session_state.current_image_index
             if 0 <= current_idx < len(df):
                 row = df.iloc[current_idx]
-                image_path = st.session_state.image_paths[current_idx] # Fallback to list if df sort is stable
+                image_path = row.get('filepath')
+                if not image_path and hasattr(st.session_state, 'image_paths') and current_idx < len(st.session_state.image_paths):
+                    image_path = st.session_state.image_paths[current_idx]
                 
                 col_insp_1, col_insp_2 = st.columns([2, 1])
                 
