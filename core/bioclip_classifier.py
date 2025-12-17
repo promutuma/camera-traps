@@ -94,3 +94,33 @@ class BioClipClassifier:
         except Exception as e:
             print(f"Error in BioClip prediction: {e}")
             return ("Error", 0.0)
+
+    def predict_list(self, image: Image.Image, threshold: float = 0.0, top_k: int = 5) -> List[Tuple[str, float]]:
+        """
+        Return list of (species, confidence) tuples above threshold.
+        """
+        if not self.model or not self.text_features is not None:
+             return []
+             
+        try:
+            image_input = self.preprocess(image).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                image_features = self.model.encode_image(image_input)
+                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+                
+                similarity = (100.0 * image_features @ self.text_features.T).softmax(dim=-1)
+                
+                # Get top K
+                values, indices = similarity[0].topk(min(top_k, len(self.species_list)))
+                
+                results = []
+                for v, i in zip(values, indices):
+                    score = v.item()
+                    if score >= threshold:
+                        results.append((self.species_list[i.item()], score))
+                
+                return results
+                
+        except Exception as e:
+            print(f"Error in BioClip list prediction: {e}")
+            return []

@@ -217,13 +217,30 @@ class AnimalDetector:
                 crop_pil = Image.fromarray(crop_rgb)
                 
                 # Step 4: BioClip
-                species, bio_conf = self.bioclip.predict(crop_pil)
+                # Use the same threshold as detection, or the configured one
+                threshold = self.megadetector.confidence_threshold if self.megadetector else 0.1
+                candidates = self.bioclip.predict_list(crop_pil, threshold=threshold)
+                
+                if candidates:
+                    # Format: "Lion 0.95, Tiger 0.40"
+                    species_label = ", ".join([f"{s.title()} {c:.2f}" for s, c in candidates])
+                    top_species, top_conf = candidates[0]
+                else:
+                    # Fallback if nothing above threshold but it was an animal
+                    top_candidates = self.bioclip.predict_list(crop_pil, threshold=0.0, top_k=1)
+                    if top_candidates:
+                         top_species, top_conf = top_candidates[0]
+                         species_label = f"{top_species.title()} {top_conf:.2f} (Low Conf)"
+                    else:
+                         top_species = "Unknown"
+                         top_conf = 0.0
+                         species_label = "Unknown"
                 
                 # Update result
                 result['primary_label'] = 'Animal'
-                result['species_label'] = species.title()
-                result['detected_animal'] = species.title()
-                result['detection_confidence'] = bio_conf # Use BioClip confidence? Or MD? Usually BioClip for species.
+                result['species_label'] = species_label
+                result['detected_animal'] = top_species.title()
+                result['detection_confidence'] = top_conf 
                 result['method'] = 'MDv5a + BioClip'
                 result['secondary_method'] = 'BioClip'
                 

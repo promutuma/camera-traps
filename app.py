@@ -290,7 +290,7 @@ with st.sidebar:
         "Detection Confidence Threshold",
         min_value=0.05,
         max_value=1.0,
-        value=0.15,
+        value=0.35,
         step=0.05,
         help="Minimum confidence score to accept animal predictions. Lower this if animals are missed."
     )
@@ -396,15 +396,48 @@ with tab2:
         if 'current_image_index' not in st.session_state:
             st.session_state.current_image_index = 0
 
-        df = st.session_state.processed_data
+        raw_df = st.session_state.processed_data
+
+        # --- Aggregation Logic for Display ---
+        # We want one row per image.
+        # We need to aggregate species labels and confidences.
+        if 'filepath' not in raw_df.columns and hasattr(st.session_state, 'image_paths'):
+             # Fallback repair if needed (though we fixed it locally previously)
+             pass 
+
+        # Create distinct image view
+        # We group by filepath and aggregate
+        # First ensure we have necessary cols
+        if 'detected_animal' not in raw_df.columns: raw_df['detected_animal'] = 'Unknown'
         
-        # Ensure columns exist
-        if 'primary_label' not in df.columns: df['primary_label'] = df['detected_animal']
-        if 'species_label' not in df.columns: df['species_label'] = 'N/A'
+        # Helper to join unique strings
+        def join_unique(series):
+            unique_vals = sorted(set([s for s in series if s and s != 'N/A' and s != 'Unknown']))
+            return ", ".join(unique_vals) if unique_vals else "Empty"
+
+        # Aggregation rules
+        agg_rules = {
+            'filename': 'first',
+            'date': 'first', 
+            'time': 'first',
+            'temperature': 'first',
+            'day_night': 'first',
+            'brightness': 'first',
+            'user_notes': 'first',  # Assuming notes are per-image
+            'detection_confidence': 'max', # Show max confidence
+            'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
+            'species_label': join_unique # List all species
+        }
         
-        # Repair missing filepath if possible
-        if 'filepath' not in df.columns and hasattr(st.session_state, 'image_paths') and len(st.session_state.image_paths) == len(df):
-             df['filepath'] = st.session_state.image_paths
+        # Only aggregate existing columns
+        valid_rules = {k: v for k, v in agg_rules.items() if k in raw_df.columns}
+        
+        # Group by filepath
+        if 'filepath' in raw_df.columns:
+            display_df = raw_df.groupby('filepath', as_index=False).agg(valid_rules)
+        else:
+            # Fallback if no filepath column (shouldn't happen with valid data)
+            display_df = raw_df.drop_duplicates(subset=['filename']) 
         
         # Top Bar: Controls
         col_ctrl_1, col_ctrl_2, col_ctrl_3 = st.columns([2, 2, 1])
@@ -413,74 +446,72 @@ with tab2:
             st.session_state.view_mode = 'gallery' if view_mode == "Gallery View" else 'inspector'
             
         with col_ctrl_2:
-            # Filter example (can be expanded)
             filter_animal = st.checkbox("Show only Animals", value=False)
             
         with col_ctrl_3:
-            st.caption(f"Total Images: {len(df)}")
+            st.caption(f"Total Images: {len(display_df)}")
 
-        # Filter Logic
-        filtered_df = df.copy()
+        # Filter Logic (on display_df)
+        filtered_display_df = display_df.copy()
         if filter_animal:
-            filtered_df = filtered_df[filtered_df['primary_label'] == 'Animal']
+            # Contains 'Animal' in species list or primary label is Animal
+            filtered_display_df = filtered_display_df[
+                (filtered_display_df['primary_label'] == 'Animal') | 
+                (filtered_display_df['species_label'].str.contains('Animal', case=False))
+            ]
         
         # --- VIEW MODES ---
         
         if st.session_state.view_mode == 'gallery':
             st.subheader("🖼️ Image Gallery")
             
-            # Simple Grid Layout
             cols = st.columns(4)
-            for idx, row in filtered_df.iterrows():
+            for idx, row in filtered_display_df.iterrows():
                 col = cols[idx % 4]
                 with col:
-                    # Find image path
-                    # robust retrieval
-                    img_path = row.get('filepath')
-                    if not img_path or not os.path.exists(str(img_path)):
-                        # Fallback using index if alignment preserves
-                        if idx < len(st.session_state.image_paths):
-                            img_path = st.session_state.image_paths[idx]
+                    img_path = row['filepath']
                     
                     if img_path and os.path.exists(str(img_path)):
-                        # Display thumbnail
-                        # We use a trick to make it clickable-ish by putting a button below
                         st.image(img_path, width="stretch")
                         if st.button(f"🔍 Inspect", key=f"btn_inspect_{idx}"):
                             st.session_state.view_mode = 'inspector'
-                            # Find the actual integer index in the full dataframe to set current_image_index
-                            st.session_state.current_image_index = df.index.get_loc(idx)
+                            # Find index in full display_df
+                            # Reset index to find the integer loc
+                            matches = display_df.index[display_df['filepath'] == img_path].tolist()
+                            if matches:
+                                st.session_state.current_image_index = matches[0]
                             st.rerun()
-                        st.caption(f"**{row['primary_label']}** ({row['detection_confidence']:.2f})")
+                        # Show aggregated species
+                        label_display = row['species_label'] if row['species_label'] else row['primary_label']
+                        st.caption(f"**{label_display}** ({row['detection_confidence']:.2f})")
                     else:
                         st.warning("Image missing")
 
         else: # Inspector View
-            st.subheader("🔍 Inspector View")
+            st.subheader("🔍 Inspector View (One Record per Image)")
             
             # Navigation
             col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
+            total_imgs = len(display_df)
+            
             with col_nav_1:
                 if st.button("⬅️ Previous"):
                     st.session_state.current_image_index = max(0, st.session_state.current_image_index - 1)
             with col_nav_2:
-                # Direct jump slider
-                if len(df) > 1:
-                    new_idx = st.slider("Jump to Image", 0, len(df)-1, st.session_state.current_image_index)
+                if total_imgs > 1:
+                    new_idx = st.slider("Jump to Image", 0, total_imgs-1, st.session_state.current_image_index)
                     st.session_state.current_image_index = new_idx
                 else:
                     st.caption("Single record view")
             with col_nav_3:
                 if st.button("Next ➡️"):
-                    st.session_state.current_image_index = min(len(df)-1, st.session_state.current_image_index + 1)
+                    st.session_state.current_image_index = min(total_imgs-1, st.session_state.current_image_index + 1)
 
             # Content
             current_idx = st.session_state.current_image_index
-            if 0 <= current_idx < len(df):
-                row = df.iloc[current_idx]
-                image_path = row.get('filepath')
-                if not image_path and hasattr(st.session_state, 'image_paths') and current_idx < len(st.session_state.image_paths):
-                    image_path = st.session_state.image_paths[current_idx]
+            if 0 <= current_idx < total_imgs:
+                row = display_df.iloc[current_idx]
+                image_path = row['filepath']
                 
                 col_insp_1, col_insp_2 = st.columns([2, 1])
                 
@@ -488,9 +519,9 @@ with tab2:
                     # Image Display
                     show_box = st.toggle("Show Bounding Box", value=True)
                     
-                    # Gather all detections for this image
-                    # Filter df for same filepath
-                    image_records = df[df['filepath'] == row['filepath']].to_dict('records')
+                    # Gather ALL detections for this image from the RAW dataframe
+                    # This allows drawing all boxes
+                    image_records = raw_df[raw_df['filepath'] == image_path].to_dict('records')
                     
                     if not show_box: 
                         for rec in image_records: rec['bbox'] = None
@@ -500,51 +531,45 @@ with tab2:
                         st.image(display_img, width="stretch")
                         
                 with col_insp_2:
-                    st.markdown("### Details & Edit")
+                    st.markdown("### Details")
                     
-                    # Quick Edit Form
+                    # Read-only details mostly, unless we implement complex write-back
+                    st.info(f"Species detected:\n{row['species_label']}")
+                    
                     with st.form(key=f"edit_form_{current_idx}"):
-                        new_primary = st.selectbox("Primary Label", ["Animal", "Person", "Vehicle", "Empty"], index=["Animal", "Person", "Vehicle", "Empty"].index(row['primary_label']) if row['primary_label'] in ["Animal", "Person", "Vehicle", "Empty"] else 3)
-                        new_species = st.text_input("Species", value=row['species_label'])
-                        new_notes = st.text_area("Notes", value=row.get('user_notes', ''))
+                        new_notes = st.text_area("User Notes (Applies to image)", value=row.get('user_notes', ''))
                         
-                        if st.form_submit_button("Update Record"):
-                            # Update DataFrame
-                            df.at[current_idx, 'primary_label'] = new_primary
-                            df.at[current_idx, 'species_label'] = new_species
-                            df.at[current_idx, 'detected_animal'] = new_species if new_primary == 'Animal' else new_primary
-                            df.at[current_idx, 'user_notes'] = new_notes
-                            st.session_state.processed_data = df
+                        if st.form_submit_button("Update Notes"):
+                            # Update RAW DataFrame
+                            # We update all rows matching this filepath
+                            mask = st.session_state.processed_data['filepath'] == image_path
+                            st.session_state.processed_data.loc[mask, 'user_notes'] = new_notes
                             st.success("Updated!")
                             st.rerun()
 
                     st.divider()
-                    st.metric("Confidence", f"{row['detection_confidence']:.2%}")
+                    st.metric("Max Confidence", f"{row['detection_confidence']:.2%}")
                     st.metric("Time", str(row['time']))
                     st.metric("Temperature", str(row['temperature']))
             else:
                 st.info("No image selected.")
 
         st.divider()
-        # Bulk Editor (Collapsible)
-        with st.expander("📋 Bulk Data Editor (All Records)", expanded=False):
-            edited_df = st.data_editor(
-                df,
-                column_order=[
-                    "filename", "primary_label", "species_label", "detection_confidence", 
-                    "day_night", "brightness", "temperature", "date", "time", "user_notes"
-                ],
-                column_config={
-                     "primary_label": st.column_config.SelectboxColumn("Primary", options=["Animal", "Person", "Vehicle", "Empty"]),
-                     "detection_confidence": st.column_config.ProgressColumn("Conf", min_value=0, max_value=1)
-                },
-                width="stretch",
-                key="bulk_editor"
-            )
-            # Sync bulk edits
-            if not edited_df.equals(df):
-                st.session_state.processed_data = edited_df
-                st.rerun()
+        # Bulk Editor (Read-Only or Limited)
+        st.subheader("📋 Results Summary (One Row per Image)")
+        st.dataframe(
+            display_df,
+            column_order=[
+                "filename", "species_label", "primary_label", "detection_confidence", 
+                "day_night", "time", "user_notes"
+            ],
+            column_config={
+                 "detection_confidence": st.column_config.ProgressColumn("Max Conf", min_value=0, max_value=1),
+                 "species_label": st.column_config.TextColumn("Species List")
+            },
+            width="stretch",
+            hide_index=True
+        )
 
         # Download / Save Area
         st.subheader("out Export & Save")
