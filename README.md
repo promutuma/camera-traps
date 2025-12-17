@@ -1,17 +1,20 @@
 # Wildlife Camera Trap Auto-Analyzer
 
-A user-friendly **Streamlit-based dashboard** for automated analysis of wildlife camera trap images. This system extracts metadata via OCR, detects animals using state-of-the-art models (MegaDetector + MobileNet), classifies day/night conditions, and generates downloadable reports.
+A user-friendly **Streamlit-based dashboard** for automated analysis of wildlife camera trap images. This system extracts metadata via OCR, detects animals using state-of-the-art models (**MegaDetector V5a**), identifies species using **BioClip**, classifies day/night conditions, and generates downloadable reports.
 
 ![Streamlit](https://img.shields.io/badge/Streamlit-1.29.0-red)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)
-![MegaDetector](https://img.shields.io/badge/MegaDetector-V5%2FV6-blue)
+![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
+![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
 
 ## 🌟 Features
 
 - **📤 Batch Image Upload**: Upload multiple camera trap images (JPG/PNG) simultaneously
 - **🔍 OCR Metadata Extraction**: Automatically extracts date, time, and temperature from image metadata strips
-- **🦁 Advanced Animal Detection**: Uses **MegaDetector (V6b/V5a)** for detection and **MobileNetV2 (PyTorch)** for classification
-- **🔧 Diagnostics Tool**: specialized tab to debug OCR crops and view raw model candidates (all confidence levels)
+- **🦁 Advanced Animal Detection**:
+  - **MegaDetector V5a** for localizing animals, people, and vehicles
+  - **BioClip (OpenCLIP)** for fine-grained species classification
+- **🔧 Diagnostics Tool**: Specialized tab to debug OCR crops and view raw model candidates
 - **🌓 Day/Night Classification**: Automatically classifies images based on brightness analysis
 - **💾 History & Analytics**: Save results to SQLite database and view long-term trends
 - **✏️ Editable Results**: Review and manually correct detected animal names in an interactive table
@@ -19,42 +22,56 @@ A user-friendly **Streamlit-based dashboard** for automated analysis of wildlife
 
 ## 🏗️ Project Structure
 
-```
+```text
 camera-traps/
-├── app.py                          # Main Streamlit application
-├── requirements.txt                # Python dependencies
-├── README.md                       # This file
-├── wildlife_data.db                # SQLite database (auto-created)
-└── core/                           # Processing modules
-    ├── __init__.py
-    ├── ocr_processor.py           # OCR metadata extraction
-    ├── animal_detector.py         # Ensemble (MD + MobileNet via PyTorch)
-    ├── day_night_classifier.py    # Day/night classification
-    ├── db_manager.py              # Database interactions
-    └── image_processor.py         # Unified processing pipeline
+├── app.py                      # Main Streamlit application
+├── requirements.txt            # Python dependencies
+├── Dockerfile                  # Container definition
+├── docker-compose.yml          # Container orchestration
+├── wildlife_data.db            # SQLite database (auto-created)
+├── README.md                   # Documentation
+└── core/                       # Processing modules
+    ├── animal_detector.py      # Ensemble (MD + BioClip)
+    ├── bioclip_classifier.py   # BioClip implementation
+    ├── day_night_classifier.py # Day/night classification
+    ├── ocr_processor.py        # OCR metadata extraction
+    └── image_processor.py      # Unified processing pipeline
 ```
 
-## 🚀 Installation
+## 🚀 Deployment Scenarios
 
-### Prerequisites
+Choose the deployment method that best fits your needs.
 
-- **Python 3.11** (Required for ML dependencies on Windows)
-- pip package manager
+### Scenario A: Local Installation (Windows/Mac/Linux)
 
-### Setup Steps
+Best for development and running on a personal laptop.
 
-1. **Clone or navigate to the project directory:**
+**Prerequisites:**
+
+- **Python 3.11** (Strict requirement for dependency compatibility)
+- git
+
+1. **Clone the repository:**
 
    ```bash
-   cd c:\wamp64\www\camera-traps
+   git clone <repository-url>
+   cd camera-traps
    ```
 
-2. **Create a virtual environment (recommended):**
-   _Ensure you use Python 3.11_
+2. **Create a virtual environment:**
+
+   _Windows:_
 
    ```bash
    python -m venv venv
-   venv\Scripts\activate  # On Windows
+   venv\Scripts\activate
+   ```
+
+   _Mac/Linux:_
+
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
    ```
 
 3. **Install dependencies:**
@@ -63,79 +80,83 @@ camera-traps/
    pip install -r requirements.txt
    ```
 
-   **Note:** The first run will download the MobileNetV2 model weights and MegaDetector models. This is a one-time download.
+   _Note: The first run will download significant model weights (MegaDetector, BioClip). Ensure you have a stable internet connection._
 
-## 💻 Usage
-
-### Running the Application
-
-1. **Start the Streamlit server:**
-
+4. **Run the application:**
    ```bash
    streamlit run app.py
    ```
+   Access at `http://localhost:8501`.
 
-   _(Or `python -m streamlit run app.py` if streamlit is not in PATH)_
+---
 
-2. **Open your browser:**
-   - The application will automatically open at `http://localhost:8501`
+### Scenario B: Docker (Containerized)
 
-### Using the Dashboard
+Best for reproducible environments and easy cleanup. Requires **Docker Desktop**.
+
+1. **Build and Run with Docker Compose:**
+
+   ```bash
+   docker-compose up --build
+   ```
+
+   _Alternatively, using plain Docker:_
+
+   ```bash
+   docker build -t wildlife-analyzer .
+   docker run -p 8501:8501 wildlife-analyzer
+   ```
+
+2. **Access the App:**
+   Open `http://localhost:8501` in your browser.
+
+   _Note: Model weights are downloaded inside the container. To persist them between runs, you may want to mount a volume for the cache directories._
+
+---
+
+### Scenario C: Streamlit Community Cloud
+
+Best for sharing with others without hosting infrastructure.
+
+1. **Push your code to GitHub.**
+2. Go to [share.streamlit.io](https://share.streamlit.io/).
+3. Connect your GitHub account and select your repository.
+4. Set the "Main file path" to `app.py`.
+5. Click **Deploy**.
+   _Streamlit Cloud will automatically detect `requirements.txt` and install dependencies (including system dependencies for OpenCV)._
+
+## 💻 Usage Guide
 
 1. **Upload Images** (Tab 1):
-
-   - Click "Browse files" to select images
-   - Adjust "OCR Strip Height" in sidebar if your metadata is getting cut off
-   - Click "🚀 Process Images"
-
+   - Drag and drop camera trap images.
+   - Click "🚀 Process Images".
 2. **Review Results** (Tab 2):
 
-   - View extracted data and detections
-   - Use "Save to History" to persist data to the database
+   - Switch between **Gallery View** and **Inspector View**.
+   - **Inspector View**: Allows deep-diving into individual images, seeing bounding boxes, and editing incorrect detections.
+   - **Editing**: Change the "Primary Label" or "Species Name" and click "💾 Save Changes".
 
 3. **History & Analytics** (Tab 3):
 
-   - View past processing runs and aggregate statistics
+   - View aggregate statistics of all processed batches.
 
 4. **Diagnostics** (Tab 4):
-   - Debug specific images that failed detection or OCR
-   - View raw OCR text and Model internal candidates (red boxes)
+   - Use if OCR is failing. Adjust the "OCR Strip Height" in the sidebar to match your camera's metadata bar.
 
 ## ⚙️ Configuration
 
 ### Sidebar Settings
 
-- **Processing Options:**
-  - Enable/disable modules (OCR, Det, Day/Night)
-- **OCR Settings:**
-  - **Metadata Bottom Strip (%)**: Adjust crop area for timestamp reading. Default 0.10.
-- **Advanced Settings:**
-  - **Detection Confidence**: Threshold to accept predictions (default 0.3)
-  - **Brightness Threshold**: Cutoff for day/night (default 100)
+- **Confidence Threshold**: Defaults to 0.35. Lower this if the AI is missing animals (false negatives). Raise it if it's detecting rocks/trees as animals (false positives).
+- **Brightness Threshold**: Adjusts the sensitivity for Day/Night classification.
+- **OCR Strip Height**: Percentage of the image bottom to scan for date/time text.
 
 ## 🔧 Technical Details
 
-### Animal Detection (Ensemble)
-
-- **Primary**: Uses **MegaDetector (YOLOv5)** to find bounding boxes of animals/people/vehicles.
-- **Secondary**: Uses **MobileNetV2** (via PyTorch/Torchvision) to classify the species within the box.
-- **Fallback**: If MegaDetector fails to load, falls back to full-image MobileNet classification.
-
-### OCR Metadata Extraction
-
-- Uses **EasyOCR** to read text from the configurable bottom strip of images.
-- Parses format: `M [Temp] [Date] [Time]` (customizable regex in `core/ocr_processor.py`).
-
-## 🚀 Future Enhancements
-
-- [x] Integration with **MegaDetector**
-- [x] Database storage for long-term analysis
-- [x] Diagnostics Debugging Tool
-- [x] Migration to PyTorch backend
-- [ ] Video file processing
-- [ ] Batch export of cropped animal detections
-- [ ] GPS coordinate extraction
+- **MegaDetector V5a**: A Microsoft AI for Earth model tuned to detect generic "Animal", "Person", and "Vehicle" classes.
+- **BioClip**: A foundation model by Imageomics that classifies specific species from the cropped animal regions found by MegaDetector.
+- **OCR**: Uses EasyOCR with regex pattern matching to parse standardized camera trap timestamps.
 
 ## 📝 License
 
-This project is provided as-is for wildlife research and conservation purposes.
+This project is open-source and intended for wildlife research and conservation purposes.
