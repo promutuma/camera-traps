@@ -559,7 +559,7 @@ with tab2:
                                 "confidence": st.column_config.NumberColumn("Conf", min_value=0.0, max_value=1.0)
                             },
                             key=f"species_editor_{current_idx}",
-                            use_container_width=True
+                            width="stretch"
                         )
                         
                         new_notes = st.text_area("User Notes", value=row.get('user_notes', ''))
@@ -764,7 +764,7 @@ with tab5:
                 with st.spinner("Analyzing internals..."):
                     # Init specific debug processor
                     # Init specific debug processor
-                    ocr_model, md_model, bio_model, dn_model = load_models()
+                    ocr_model, md_model, bio_model, dn_model = load_models_v2()
                     
                     # Ensure debug settings
                     # md_model.set_confidence_threshold(0.0) # Debug often wants low threshold, but detect_all handles this independently
@@ -837,13 +837,23 @@ with tab5:
 
                     st.divider()
 
-                    # 3. MobileNet Fallback
-                    st.subheader("3. MobileNetV2 Top-5 Predictions")
-                    mn_data = debug_info.get('mobilenet')
-                    if mn_data:
-                        st.write(mn_data)
+                    # 3. BioClip Classifier
+                    st.subheader("3. BioClip Top-20 Predictions")
+                    bc_data = debug_info.get('bioclip')
+                    if bc_data:
+                        # Convert list of tuples to DataFrame
+                        bc_df = pd.DataFrame(bc_data, columns=['Species', 'Confidence'])
+                        # Sort by confidence
+                        bc_df = bc_df.sort_values(by='Confidence', ascending=False)
+                        st.dataframe(
+                            bc_df, 
+                            column_config={
+                                "Confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1, format="%.4f")
+                            },
+                            width="stretch"
+                        )
                     else:
-                        st.warning("MobileNet data unavailable")
+                        st.warning("BioClip data unavailable")
 
 # Footer
 st.divider()

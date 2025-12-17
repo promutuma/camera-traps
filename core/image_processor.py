@@ -4,6 +4,8 @@ Orchestrates OCR, animal detection, and day/night classification.
 """
 
 import os
+import cv2
+from PIL import Image
 from typing import Dict, Optional, Callable
 from .ocr_processor import OCRProcessor
 from .animal_detector import EnsembleDetector
@@ -143,15 +145,23 @@ class ImageProcessor:
             md_debug = raw_result.get('detections', []) if isinstance(raw_result, dict) else []
             md_status = self.animal_detector.megadetector.get_status()
             
-        mn_debug = []
-        if hasattr(self.animal_detector, 'mobilenet') and self.animal_detector.mobilenet:
-            mn_debug = self.animal_detector.mobilenet.get_raw_classifications(image_path)
+        bc_debug = []
+        if hasattr(self.animal_detector, 'bioclip') and self.animal_detector.bioclip:
+             try:
+                 # Load image for BioClip
+                 img = cv2.imread(image_path)
+                 if img is not None:
+                      img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                      pil_img = Image.fromarray(img)
+                      bc_debug = self.animal_detector.bioclip.predict_list(pil_img, threshold=0.0, top_k=20)
+             except Exception as e:
+                 print(f"BioClip debug error: {e}")
             
         return {
             'ocr': ocr_debug,
             'megadetector': md_debug,
             'megadetector_status': md_status,
-            'mobilenet': mn_debug
+            'bioclip': bc_debug
         }
     
     def process_batch(self, image_paths: list, progress_callback: Optional[Callable] = None) -> list:
