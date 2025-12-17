@@ -37,6 +37,9 @@ class MegaDetectorWrapper:
         self.load_error = None
         self._load_model()
         
+    def set_confidence_threshold(self, threshold: float):
+        self.confidence_threshold = threshold
+        
     def _load_model(self):
         if not MD_AVAILABLE:
             self.load_error = "megadetector library not found"
@@ -114,9 +117,12 @@ class AnimalDetector:
         'hippopotamus', 'crocodile', 'ostrich', 'antelope', 'wildebeest', 'human'
     ]
 
-    def __init__(self, confidence_threshold: float = 0.2):
-        self.megadetector = MegaDetectorWrapper(confidence_threshold)
-        self.bioclip = BioClipClassifier(species_list=self.WILDLIFE_CLASSES)
+    def __init__(self, megadetector, bioclip, confidence_threshold: float = 0.2):
+        self.megadetector = megadetector
+        self.bioclip = bioclip
+        # Update threshold on the injected instance
+        if self.megadetector:
+            self.megadetector.set_confidence_threshold(confidence_threshold)
         
     def detect(self, image_path: str) -> Dict:
         """

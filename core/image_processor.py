@@ -14,35 +14,33 @@ class ImageProcessor:
     """Unified pipeline for processing camera trap images."""
     
     def __init__(self, 
+                 ocr_processor,
+                 animal_detector,
+                 day_night_classifier,
                  ocr_enabled: bool = True,
                  detection_enabled: bool = True,
                  day_night_enabled: bool = True,
-                 detection_confidence: float = 0.3,
-                 brightness_threshold: int = 100,
-                 detection_mode: str = 'ensemble',
                  ocr_strip_percent: float = 0.10):
         """
         Initialize the image processor.
         
         Args:
+            ocr_processor: Injected OCRProcessor instance
+            animal_detector: Injected AnimalDetector instance
+            day_night_classifier: Injected DayNightClassifier instance
             ocr_enabled: Enable OCR metadata extraction
             detection_enabled: Enable animal detection
             day_night_enabled: Enable day/night classification
-            detection_confidence: Confidence threshold for animal detection
-            brightness_threshold: Brightness threshold for day/night classification
-            detection_mode: Detection mode - 'ensemble', 'megadetector', or 'mobilenet'
         """
         self.ocr_enabled = ocr_enabled
         self.detection_enabled = detection_enabled
         self.day_night_enabled = day_night_enabled
         self.ocr_strip_percent = ocr_strip_percent
         
-        # Initialize processors
-        self.ocr_processor = OCRProcessor() if ocr_enabled else None
-        self.animal_detector = EnsembleDetector(
-            confidence_threshold=detection_confidence
-        ) if detection_enabled else None
-        self.day_night_classifier = DayNightClassifier(brightness_threshold=brightness_threshold) if day_night_enabled else None
+        # Injected processors
+        self.ocr_processor = ocr_processor if ocr_enabled else None
+        self.animal_detector = animal_detector if detection_enabled else None
+        self.day_night_classifier = day_night_classifier if day_night_enabled else None
     
     def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> Dict:
         """

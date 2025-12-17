@@ -26,6 +26,20 @@ import cv2
 
 from core.image_processor import ImageProcessor
 from core.db_manager import DatabaseManager
+from core.animal_detector import AnimalDetector, MegaDetectorWrapper
+from core.bioclip_classifier import BioClipClassifier
+from core.ocr_processor import OCRProcessor
+from core.day_night_classifier import DayNightClassifier
+
+@st.cache_resource(show_spinner="Loading AI Models...")
+def load_models():
+    """Load and cache heavy AI models."""
+    ocr = OCRProcessor()
+    # Initialize with default threshold, can be updated later
+    md = MegaDetectorWrapper(confidence_threshold=0.2)
+    bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
+    dn = DayNightClassifier()
+    return ocr, md, bio, dn
 
 # Page configuration
 st.set_page_config(
@@ -276,13 +290,25 @@ with tab1:
                 try:
                     with st.spinner("Initializing processing modules..."):
                         # Initialize processor
-                        st.info("📥 Loading OCR, MegaDetector V5a, and BioClip models. First run will download model weights. Please wait...")
+                        st.info("📥 Loading AI models (OCR, MegaDetector V5a, BioClip). First run will take a moment...")
+                        
+                        # Load Cached Models
+                        ocr_model, md_model, bio_model, dn_model = load_models()
+                        
+                        # Apply Runtime Settings
+                        md_model.set_confidence_threshold(detection_confidence)
+                        dn_model.brightness_threshold = brightness_threshold
+                        
+                        # Create Detector Wrapper
+                        animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
+                         
                         processor = ImageProcessor(
+                            ocr_processor=ocr_model,
+                            animal_detector=animal_detector,
+                            day_night_classifier=dn_model,
                             ocr_enabled=enable_ocr,
                             detection_enabled=enable_detection,
                             day_night_enabled=enable_day_night,
-                            detection_confidence=detection_confidence,
-                            brightness_threshold=brightness_threshold,
                             ocr_strip_percent=ocr_strip_height
                         )
 
@@ -370,7 +396,7 @@ with tab2:
                     if img_path and os.path.exists(str(img_path)):
                         # Display thumbnail
                         # We use a trick to make it clickable-ish by putting a button below
-                        st.image(img_path, use_container_width=True)
+                        st.image(img_path, width="stretch")
                         if st.button(f"🔍 Inspect", key=f"btn_inspect_{idx}"):
                             st.session_state.view_mode = 'inspector'
                             # Find the actual integer index in the full dataframe to set current_image_index
@@ -412,7 +438,7 @@ with tab2:
                     
                     display_img = display_image_with_info(image_path, detection_info)
                     if display_img:
-                        st.image(display_img, use_container_width=True)
+                        st.image(display_img, width="stretch")
                         
                 with col_insp_2:
                     st.markdown("### Details & Edit")
@@ -598,7 +624,7 @@ with tab5:
     if target_debug_img:
         col_dbg_1, col_dbg_2 = st.columns([1, 2])
         with col_dbg_1:
-            st.image(target_debug_img, caption="Target Image", use_container_width=True)
+            st.image(target_debug_img, caption="Target Image", width="stretch")
             
             ocr_strip_pct = st.slider("OCR Strip Height (%)", 0.05, 0.30, 0.10, 0.01, help="Adjust crop area for metadata")
             
@@ -606,7 +632,18 @@ with tab5:
             if st.button("🔍 Run Deep Inspection", type="primary"):
                 with st.spinner("Analyzing internals..."):
                     # Init specific debug processor
+                    # Init specific debug processor
+                    ocr_model, md_model, bio_model, dn_model = load_models()
+                    
+                    # Ensure debug settings
+                    # md_model.set_confidence_threshold(0.0) # Debug often wants low threshold, but detect_all handles this independently
+                    
+                    animal_detector = AnimalDetector(md_model, bio_model)
+                    
                     debug_processor = ImageProcessor(
+                        ocr_processor=ocr_model,
+                        animal_detector=animal_detector,
+                        day_night_classifier=dn_model,
                         ocr_enabled=True,
                         detection_enabled=True,
                         day_night_enabled=True
@@ -663,7 +700,7 @@ with tab5:
                                 label = f"{conf:.2f} {d.get('category', '?')}"
                                 cv2.putText(img_vis, label, (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
                                 
-                        st.image(img_vis, caption="Visualized Raw Detections (Red=<0.2, Orange=<0.8, Green=>0.8)", use_container_width=True)
+                        st.image(img_vis, caption="Visualized Raw Detections (Red=<0.2, Orange=<0.8, Green=>0.8)", width="stretch")
                     else:
                         st.warning("No MegaDetector candidates found.")
 
