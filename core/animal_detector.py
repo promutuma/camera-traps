@@ -61,40 +61,47 @@ class MegaDetectorWrapper:
             'error': self.load_error
         }
 
-    def detect_primary(self, image_path: str) -> Tuple[str, float, Optional[List[float]]]:
+    def detect_all_candidates(self, image_path: str) -> List[Dict]:
         """
-        Run detection and return primary label.
-        Returns: (Label, Confidence, BBox [x,y,w,h])
+        Run detection and return all valid candidates above threshold.
+        Returns: List of dicts {'label': str, 'conf': float, 'bbox': [x,y,w,h]}
         """
         if self.model is None:
-            return 'Empty', 0.0, None
+            return []
 
         try:
             image = Image.open(image_path)
             result = self.model.generate_detections_one_image(image)
             
-            # result structure: {'detections': [{'category': '1', 'conf': 0.9, 'bbox': [x,y,w,h]}, ...]}
             detections = result.get('detections', [])
-            
-            best_det = None
-            best_conf = 0.0
+            candidates = []
             
             for det in detections:
                 conf = det['conf']
-                if conf > best_conf and conf >= self.confidence_threshold:
-                    best_conf = conf
-                    best_det = det
+                if conf >= self.confidence_threshold:
+                    cat_id = det['category']
+                    label = self.CLASS_MAP.get(cat_id, 'Unknown')
+                    candidates.append({
+                        'label': label,
+                        'conf': conf,
+                        'bbox': det['bbox']
+                    })
             
-            if best_det:
-                cat_id = best_det['category'] # String '1', '2', '3'
-                label = self.CLASS_MAP.get(cat_id, 'Unknown')
-                return label, best_conf, best_det['bbox']
-            else:
-                return 'Empty', 0.0, None
+            return candidates
 
         except Exception as e:
             print(f"Error in MDv5a inference: {e}")
+            return []
+
+    def detect_primary(self, image_path: str) -> Tuple[str, float, Optional[List[float]]]:
+        """Legacy support: Return best detection."""
+        candidates = self.detect_all_candidates(image_path)
+        if not candidates:
             return 'Empty', 0.0, None
+            
+        # Sort by confidence
+        best = max(candidates, key=lambda x: x['conf'])
+        return best['label'], best['conf'], best['bbox']
 
     def detect_all(self, image_path: str) -> Any:
         """Return all raw detections for diagnostics."""
@@ -124,89 +131,109 @@ class AnimalDetector:
         if self.megadetector:
             self.megadetector.set_confidence_threshold(confidence_threshold)
         
-    def detect(self, image_path: str) -> Dict:
+    def detect(self, image_path: str) -> List[Dict]:
         """
         Pipeline:
-        1. MDv5a Detection
+        1. MDv5a Detection (All candidates)
         2. Filter (Stop if not Animal)
         3. Crop
         4. BioClip Classification
+        
+        Returns: List of detection result dictionaries
         """
-        result = {
-            'detected_animal': 'Empty', # Legacy/Display default
-            'primary_label': 'Empty',   # Animal, Person, Vehicle, Empty
-            'species_label': 'Not Animal', # Species name or 'Not Animal'
+        base_result = {
+            'detected_animal': 'Empty',
+            'primary_label': 'Empty', 
+            'species_label': 'N/A',
             'detection_confidence': 0.0,
             'bbox': None,
             'method': 'MDv5a',
             'secondary_method': None
         }
         
-        # Step 1: MDv5a
-        label, conf, bbox = self.megadetector.detect_primary(image_path)
+        # Step 1: Get all candidates
+        candidates = self.megadetector.detect_all_candidates(image_path)
         
-        # Default assignment
-        result['primary_label'] = label
-        result['detected_animal'] = label # Default to primary
-        result['species_label'] = 'Not Animal'
-        result['detection_confidence'] = conf
-        result['bbox'] = bbox
-        
-        # Step 2: Filter
-        if label != 'Animal':
-            return result
+        if not candidates:
+            return [base_result]
             
-        # If Animal, proceed to Step 3 & 4
-        try:
-            # Step 3: Crop with padding
-            # Helper to crop
-            img = cv2.imread(image_path)
-            if img is None:
-                return result # Fail safe
+        final_results = []
+        
+        # Optimization: Read image once for cropping
+        img_cv2 = None
+        
+        for cand in candidates:
+            label = cand['label']
+            conf = cand['conf']
+            bbox = cand['bbox']
+            
+            result = base_result.copy()
+            result['primary_label'] = label
+            result['detected_animal'] = label
+            result['detection_confidence'] = conf
+            result['bbox'] = bbox
+            
+            # Step 2: Filter non-animals (Vehicles, Persons) 
+            # We still return them, but don't run BioClip
+            if label != 'Animal':
+                final_results.append(result)
+                continue
                 
-            h, w = img.shape[:2]
-            x, y, box_w, box_h = bbox
-            
-            # Convert normalized to pixel
-            x_px = int(x * w)
-            y_px = int(y * h)
-            w_px = int(box_w * w)
-            h_px = int(box_h * h)
-            
-            # Add 10% padding
-            pad_w = int(w_px * 0.1)
-            pad_h = int(h_px * 0.1)
-            
-            x1 = max(0, x_px - pad_w)
-            y1 = max(0, y_px - pad_h)
-            x2 = min(w, x_px + w_px + pad_w)
-            y2 = min(h, y_px + h_px + pad_h)
-            
-            crop = img[y1:y2, x1:x2]
-            
-            if crop.size == 0:
-                return result
-            
-            # Convert BGR (OpenCV) to RGB (PIL) for BioClip
-            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-            crop_pil = Image.fromarray(crop_rgb)
-            
-            # Step 4: BioClip
-            species, bio_conf = self.bioclip.predict(crop_pil)
-            
-            # Update result
-            result['primary_label'] = 'Animal'
-            result['species_label'] = species.title()
-            result['detected_animal'] = species.title() # Update legacy to specific
-            result['detection_confidence'] = bio_conf
-            result['method'] = 'MDv5a + BioClip'
-            result['secondary_method'] = 'BioClip'
-            
-        except Exception as e:
-            print(f"Error in BioClip step: {e}")
-            # Fallback to just "Animal"
-            
-        return result
+            # Step 3 & 4 for Animals
+            try:
+                if img_cv2 is None:
+                    img_cv2 = cv2.imread(image_path)
+                
+                if img_cv2 is None:
+                    final_results.append(result)
+                    continue
+
+                h, w = img_cv2.shape[:2]
+                x, y, box_w, box_h = bbox
+                
+                # Convert normalized to pixel
+                x_px = int(x * w)
+                y_px = int(y * h)
+                w_px = int(box_w * w)
+                h_px = int(box_h * h)
+                
+                # Add 10% padding
+                pad_w = int(w_px * 0.1)
+                pad_h = int(h_px * 0.1)
+                
+                x1 = max(0, x_px - pad_w)
+                y1 = max(0, y_px - pad_h)
+                x2 = min(w, x_px + w_px + pad_w)
+                y2 = min(h, y_px + h_px + pad_h)
+                
+                crop = img_cv2[y1:y2, x1:x2]
+                
+                if crop.size == 0:
+                    final_results.append(result)
+                    continue
+                
+                # Convert BGR (OpenCV) to RGB (PIL) for BioClip
+                crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+                crop_pil = Image.fromarray(crop_rgb)
+                
+                # Step 4: BioClip
+                species, bio_conf = self.bioclip.predict(crop_pil)
+                
+                # Update result
+                result['primary_label'] = 'Animal'
+                result['species_label'] = species.title()
+                result['detected_animal'] = species.title()
+                result['detection_confidence'] = bio_conf # Use BioClip confidence? Or MD? Usually BioClip for species.
+                result['method'] = 'MDv5a + BioClip'
+                result['secondary_method'] = 'BioClip'
+                
+                final_results.append(result)
+                
+            except Exception as e:
+                print(f"Error in BioClip step for {label}: {e}")
+                final_results.append(result)
+                
+        return final_results if final_results else [base_result]
 
 # Compatibility alias
 EnsembleDetector = AnimalDetector

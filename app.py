@@ -26,19 +26,60 @@ import cv2
 
 from core.image_processor import ImageProcessor
 from core.db_manager import DatabaseManager
+from core.db_manager import DatabaseManager
 from core.animal_detector import AnimalDetector, MegaDetectorWrapper
 from core.bioclip_classifier import BioClipClassifier
 from core.ocr_processor import OCRProcessor
 from core.day_night_classifier import DayNightClassifier
+import contextlib
+
+class StreamlitLogRedirector:
+    """Redirects stdout/stderr to a Streamlit UI element."""
+    def __init__(self, container, prefix=""):
+        self.container = container
+        self.prefix = prefix
+        self.buffer = []
+        
+    def write(self, text):
+        # Filter out some noise if needed, or just append
+        if text.strip():
+            # Add timestamp or just raw
+             self.buffer.append(text)
+             # Update the container
+             # We join the last N lines to avoid UI lag if buffer gets huge
+             display_text = "".join(self.buffer[-20:]) 
+             self.container.code(display_text, language="text")
+             
+    def flush(self):
+        pass
 
 @st.cache_resource(show_spinner="Loading AI Models...")
 def load_models():
     """Load and cache heavy AI models."""
-    ocr = OCRProcessor()
-    # Initialize with default threshold, can be updated later
-    md = MegaDetectorWrapper(confidence_threshold=0.2)
-    bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
-    dn = DayNightClassifier()
+    
+    # Create a place for logs
+    log_expander = st.expander("Show Model Loading Logs", expanded=True)
+    with log_expander:
+        log_placeholder = st.empty()
+        
+    redirector = StreamlitLogRedirector(log_placeholder)
+    
+    # Capture stdio
+    with contextlib.redirect_stdout(redirector), contextlib.redirect_stderr(redirector):
+        print("Starting Model Loading...")
+        ocr = OCRProcessor()
+        
+        print("Initializing MegaDetector Wrapper...")
+        # Initialize with default threshold, can be updated later
+        md = MegaDetectorWrapper(confidence_threshold=0.2)
+        
+        print("Loading BioClip Classifier...")
+        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
+        
+        print("Initializing Day/Night Classifier...")
+        dn = DayNightClassifier()
+        print("All models loaded successfully.")
+        
     return ocr, md, bio, dn
 
 # Page configuration
@@ -118,7 +159,10 @@ def process_images_with_progress(image_paths, processor):
         
         # Process image
         result = processor.process_single_image(image_path)
-        results.append(result)
+        if isinstance(result, list):
+            results.extend(result)
+        else:
+            results.append(result)
     
     progress_bar.empty()
     status_text.empty()
@@ -169,45 +213,50 @@ def create_excel_report(df):
     return output
 
 
-def display_image_with_info(image_path, detection_info):
-    """Display image with detection information overlay and bounding boxes."""
+def display_image_with_info(image_path, detections):
+    """Display image with detection information overlay and bounding boxes for ALL detections."""
     try:
         # Read image
         image = cv2.imread(image_path)
+        if image is None: return None
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         h, w = image_rgb.shape[:2]
         
-        # Draw bounding box if available
-        if detection_info.get('bbox') is not None:
-            bbox = detection_info['bbox']
-            # Convert normalized bbox to pixel coordinates
-            x, y, box_w, box_h = bbox
-            x1 = int(x * w)
-            y1 = int(y * h)
-            x2 = int((x + box_w) * w)
-            y2 = int((y + box_h) * h)
-            
-            # Draw green rectangle
-            cv2.rectangle(image_rgb, (x1, y1), (x2, y2), (0, 255, 0), 3)
-            
-            # Add label background
-            label = f"{detection_info['detected_animal']}"
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.7
-            thickness = 2
-            (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
-            
-            # Draw label background
-            cv2.rectangle(image_rgb, (x1, y1 - text_h - 10), (x1 + text_w + 10, y1), (0, 255, 0), -1)
-            cv2.putText(image_rgb, label, (x1 + 5, y1 - 5), font, font_scale, (0, 0, 0), thickness)
+        # Draw all bounding boxes
+        for det in detections:
+            if det.get('bbox') is not None:
+                bbox = det['bbox']
+                # Convert normalized bbox to pixel coordinates
+                x, y, box_w, box_h = bbox
+                x1 = int(x * w)
+                y1 = int(y * h)
+                x2 = int((x + box_w) * w)
+                y2 = int((y + box_h) * h)
+                
+                # Draw green rectangle
+                cv2.rectangle(image_rgb, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                
+                # Add label background
+                label = f"{det.get('detected_animal', 'Unknown')} {det.get('detection_confidence', 0):.2f}"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                thickness = 2
+                (text_w, text_h), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                
+                # Draw label background
+                cv2.rectangle(image_rgb, (x1, y1 - text_h - 10), (x1 + text_w + 10, y1), (0, 255, 0), -1)
+                cv2.putText(image_rgb, label, (x1 + 5, y1 - 5), font, font_scale, (0, 0, 0), thickness)
         
-        # Add overall detection info overlay
+        # Add overall detection info overlay (Summary)
         font = cv2.FONT_HERSHEY_SIMPLEX
-        text = f"{detection_info['detected_animal']} ({detection_info['detection_confidence']:.2f})"
+        
+        # Summarize detections
+        animal_count = len([d for d in detections if d.get('primary_label') == 'Animal'])
+        text = f"Detected: {len(detections)} Objects ({animal_count} Animals)"
         
         # Add semi-transparent background for text
         overlay = image_rgb.copy()
-        cv2.rectangle(overlay, (10, 10), (400, 60), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (10, 10), (450, 60), (0, 0, 0), -1)
         image_rgb = cv2.addWeighted(overlay, 0.3, image_rgb, 0.7, 0)
         
         # Add text
@@ -416,8 +465,11 @@ with tab2:
                     st.session_state.current_image_index = max(0, st.session_state.current_image_index - 1)
             with col_nav_2:
                 # Direct jump slider
-                new_idx = st.slider("Jump to Image", 0, len(df)-1, st.session_state.current_image_index)
-                st.session_state.current_image_index = new_idx
+                if len(df) > 1:
+                    new_idx = st.slider("Jump to Image", 0, len(df)-1, st.session_state.current_image_index)
+                    st.session_state.current_image_index = new_idx
+                else:
+                    st.caption("Single record view")
             with col_nav_3:
                 if st.button("Next ➡️"):
                     st.session_state.current_image_index = min(len(df)-1, st.session_state.current_image_index + 1)
@@ -433,10 +485,15 @@ with tab2:
                 with col_insp_1:
                     # Image Display
                     show_box = st.toggle("Show Bounding Box", value=True)
-                    detection_info = row.to_dict()
-                    if not show_box: detection_info['bbox'] = None # Hide box trick
                     
-                    display_img = display_image_with_info(image_path, detection_info)
+                    # Gather all detections for this image
+                    # Filter df for same filepath
+                    image_records = df[df['filepath'] == row['filepath']].to_dict('records')
+                    
+                    if not show_box: 
+                        for rec in image_records: rec['bbox'] = None
+                    
+                    display_img = display_image_with_info(image_path, image_records)
                     if display_img:
                         st.image(display_img, width="stretch")
                         

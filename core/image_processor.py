@@ -42,7 +42,7 @@ class ImageProcessor:
         self.animal_detector = animal_detector if detection_enabled else None
         self.day_night_classifier = day_night_classifier if day_night_enabled else None
     
-    def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> Dict:
+    def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> list:
         """
         Process a single image through the complete pipeline.
         
@@ -51,20 +51,14 @@ class ImageProcessor:
             progress_callback: Optional callback function for progress updates
             
         Returns:
-            Dictionary containing all extracted information
+            List of dictionaries containing all extracted information (one per detected entity)
         """
-        result = {
+        base_result = {
             'filename': os.path.basename(image_path),
             'filepath': image_path,
             'temperature': None,
             'date': None,
             'time': None,
-            'detected_animal': 'Unidentified',
-            'primary_label': 'N/A',
-            'species_label': 'N/A',
-            'detection_confidence': 0.0,
-            'bbox': None,
-            'detection_method': 'None',
             'day_night': 'Unknown',
             'brightness': 0.0,
             'user_notes': '',
@@ -72,40 +66,61 @@ class ImageProcessor:
         }
         
         try:
-            # 1. OCR Processing
+            # 1. OCR Processing (Common to all)
             if self.ocr_enabled and self.ocr_processor:
                 if progress_callback:
-                    progress_callback(f"Extracting metadata from {result['filename']}...")
+                    progress_callback(f"Extracting metadata from {base_result['filename']}...")
                 ocr_metadata = self.ocr_processor.process_image(image_path, strip_height_percent=self.ocr_strip_percent)
-                result.update(ocr_metadata)
-            
-            # 2. Animal Detection
-            if self.detection_enabled and self.animal_detector:
-                if progress_callback:
-                    progress_callback(f"Detecting animal in {result['filename']}...")
+                base_result.update(ocr_metadata)
                 
-                detection_result = self.animal_detector.detect(image_path)
-                result['detected_animal'] = detection_result['detected_animal']
-                result['primary_label'] = detection_result.get('primary_label', 'Unidentified')
-                result['species_label'] = detection_result.get('species_label', 'N/A')
-                result['detection_confidence'] = detection_result['detection_confidence']
-                result['bbox'] = detection_result['bbox']
-                result['detection_method'] = detection_result.get('method', 'Unknown')
-            
-            # Step 3: Day/Night Classification
+            # Step 2: Day/Night Classification (Common to all)
             if self.day_night_enabled and self.day_night_classifier:
                 if progress_callback:
-                    progress_callback(f"Classifying day/night for {result['filename']}...")
+                    progress_callback(f"Classifying day/night for {base_result['filename']}...")
                 
                 classification, brightness = self.day_night_classifier.classify(image_path)
-                result['day_night'] = classification
-                result['brightness'] = brightness
+                base_result['day_night'] = classification
+                base_result['brightness'] = brightness
             
+            # 3. Animal Detection (Returns List)
+            final_results = []
+            
+            if self.detection_enabled and self.animal_detector:
+                if progress_callback:
+                    progress_callback(f"Detecting animal in {base_result['filename']}...")
+                
+                detections = self.animal_detector.detect(image_path)
+                # detections is now a List[Dict], ensuring at least one 'Empty' or valid detections
+                
+                for det in detections:
+                    # Create a copy of base metadata for each detection
+                    row = base_result.copy()
+                    row['detected_animal'] = det['detected_animal']
+                    row['primary_label'] = det.get('primary_label', 'Unidentified')
+                    row['species_label'] = det.get('species_label', 'N/A')
+                    row['detection_confidence'] = det['detection_confidence']
+                    row['bbox'] = det['bbox']
+                    row['detection_method'] = det.get('method', 'Unknown')
+                    final_results.append(row)
+            else:
+                # If detection disabled, just return the base metadata as one row
+                row = base_result.copy()
+                row['detected_animal'] = 'Unidentified'
+                row['primary_label'] = 'N/A'
+                row['species_label'] = 'N/A'
+                row['detection_confidence'] = 0.0
+                row['bbox'] = None
+                row['detection_method'] = 'None'
+                final_results.append(row)
+                
         except Exception as e:
-            result['processing_status'] = f'Error: {str(e)}'
+            # On error, return one error row
+            base_result['processing_status'] = f'Error: {str(e)}'
+            base_result['detected_animal'] = 'Error'
             print(f"Error processing {image_path}: {str(e)}")
+            return [base_result]
         
-        return result
+        return final_results
 
     def get_debug_info(self, image_path: str, ocr_strip_percent: float = 0.10) -> Dict:
         """Get comprehensive debug info for an image."""
@@ -158,7 +173,7 @@ class ImageProcessor:
                 progress_callback(f"Processing image {idx}/{total}: {os.path.basename(image_path)}")
             
             result = self.process_single_image(image_path, progress_callback)
-            results.append(result)
+            results.extend(result)
         
         return results
 
