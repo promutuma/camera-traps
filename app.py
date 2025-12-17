@@ -19,6 +19,7 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import tempfile
+import base64
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
@@ -427,7 +428,8 @@ with tab2:
             'detection_confidence': 'max', # Show max confidence
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
             'species_label': join_unique, # List all species (String)
-            'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Flatten list of species data
+            'species_label': join_unique, # List all species (String)
+            'data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Aggregated list of all detection objects (species+bbox)
             'raw_text': 'first', # Keep raw OCR text
             'image_id': 'first', # Unique ID
             'md_confidence': lambda x: list(x), # List of MD confidences
@@ -558,11 +560,8 @@ with tab2:
                     needs_update = False
                     if 'image_id' not in row or not row['image_id'] or row['image_id'] != current_hash:
                          needs_update = True
-                    elif isinstance(row.get('species_data'), list) and len(row.get('species_data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
+                    elif isinstance(row.get('data'), list) and len(row.get('data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
                          # Potentially stale if we expect animals but see none in the list
-                         # But could be genuine.
-                         # A safer check for "Stale" is if the 'species_data' column was newly added and older cached rows don't really populate it well
-                         # Let's rely on explicit missing 'image_id' which is new.
                          pass
 
                     if 'image_id' not in row or pd.isna(row['image_id']):
@@ -609,7 +608,7 @@ with tab2:
                         
                         # Editable Species List using Data Editor
                         st.caption("Detailed Species List")
-                        current_species_data = row.get('species_data', [])
+                        current_species_data = row.get('data', [])
                         # Ensure it's a list (handle NaN or legacy data)
                         if not isinstance(current_species_data, list): current_species_data = [] 
                         
@@ -617,8 +616,8 @@ with tab2:
                             current_species_data,
                             num_rows="dynamic",
                             column_config={
-                                "species": st.column_config.TextColumn("Species Name", required=True),
-                                "confidence": st.column_config.NumberColumn("Conf", min_value=0.0, max_value=1.0)
+                                "species_label": st.column_config.TextColumn("Species Name", required=True),
+                                "detection_confidence": st.column_config.NumberColumn("Conf", min_value=0.0, max_value=1.0)
                             },
                             key=f"species_editor_{current_idx}",
                             width="stretch"
@@ -633,8 +632,8 @@ with tab2:
                             if edited_species_data:
                                 parts = []
                                 for item in edited_species_data:
-                                    s = item.get('species', 'Unknown')
-                                    c = item.get('confidence', 0.0)
+                                    s = item.get('species_label', 'Unknown')
+                                    c = item.get('detection_confidence', 0.0)
                                     parts.append(f"{s} {c:.2f}")
                                 new_species_label_str = ", ".join(parts)
                             else:
@@ -645,7 +644,7 @@ with tab2:
                             
                             # Update all rows
                             for i in st.session_state.processed_data.index[mask]:
-                                st.session_state.processed_data.at[i, 'species_data'] = edited_species_data
+                                st.session_state.processed_data.at[i, 'data'] = edited_species_data
                                 st.session_state.processed_data.at[i, 'species_label'] = new_species_label_str
                                 st.session_state.processed_data.at[i, 'detected_animal'] = new_species_label_str
                                 st.session_state.processed_data.at[i, 'user_notes'] = new_notes
@@ -688,7 +687,59 @@ with tab2:
             st.download_button("📊 Download Excel", data=excel_data, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
         
         with c2:
-            json_str = st.session_state.processed_data.to_json(orient='records', indent=2)
+            # Custom JSON generation with Base64 and specific structure
+            def generate_custom_json():
+                export_list = []
+                # Use aggregated view logic to ensure unique images
+                # (Simple approach: iterate unique filepaths)
+                df = st.session_state.processed_data
+                unique_files = df['filepath'].unique()
+                
+                for fp in unique_files:
+                    # Get rows for this file
+                    rows = df[df['filepath'] == fp]
+                    first_row = rows.iloc[0]
+                    
+                    # 1. Base64 Encode Image
+                    try:
+                        with open(fp, "rb") as img_f:
+                            b64_str = base64.b64encode(img_f.read()).decode('utf-8')
+                    except Exception:
+                        b64_str = None
+                        
+                    # 2. Build Detections Array
+                    # 'data' column contains the list of dicts we created in AnimalDetector
+                    detections = []
+                    # Merge data from arguably identical rows, or just take the updated 'data' col from first row
+                    if 'data' in first_row and isinstance(first_row['data'], list):
+                        raw_dets = first_row['data']
+                        for i, d in enumerate(raw_dets):
+                            # Add detection_id
+                            d_copy = d.copy()
+                            d_copy['detection_id'] = i + 1
+                            detections.append(d_copy)
+                    
+                    # 3. Construct Item
+                    item = {
+                        "image_id": first_row.get('image_id'),
+                        "filename": first_row['filename'],
+                        "filepath": first_row['filepath'],
+                        "image_data": b64_str,
+                        "temperature": first_row.get('temperature'),
+                        "date": first_row.get('date'),
+                        "time": first_row.get('time'),
+                        "day_night": first_row.get('day_night'),
+                        "brightness": float(first_row.get('brightness', 0)),
+                        "user_notes": first_row.get('user_notes', ''),
+                        "processing_status": first_row.get('processing_status', 'Success'),
+                        "raw_text": first_row.get('raw_text'),
+                        "detections": detections
+                    }
+                    export_list.append(item)
+                
+                return json.dumps(export_list, indent=2)
+
+            json_str = generate_custom_json()
             st.download_button(
                 label="📋 Download JSON",
                 data=json_str,

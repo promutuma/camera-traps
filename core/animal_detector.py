@@ -224,7 +224,19 @@ class AnimalDetector:
                 if candidates:
                     # Format: "Lion 0.95, Tiger 0.40"
                     species_label = ", ".join([f"{s.title()} {c:.2f}" for s, c in candidates])
-                    species_data = [{'species': s.title(), 'confidence': float(c)} for s, c in candidates]
+                    
+                    # Create detailed structured data for each candidate, sharing the same MD bbox
+                    species_data = []
+                    for s, c in candidates:
+                        species_data.append({
+                            'species_label': f"{s.title()} {float(c):.2f}",
+                            'detected_animal': s.title(),
+                            'detection_confidence': float(c),
+                            'primary_label': 'Animal',
+                            'detection_method': 'MDv5a + BioClip',
+                            'bbox': bbox  # Include the MegaDetector bbox for this animal
+                        })
+                        
                     top_species, top_conf = candidates[0]
                 else:
                     # Fallback if nothing above threshold but it was an animal
@@ -232,7 +244,14 @@ class AnimalDetector:
                     if top_candidates:
                          top_species, top_conf = top_candidates[0]
                          species_label = f"{top_species.title()} {top_conf:.2f} (Low Conf)"
-                         species_data = [{'species': top_species.title(), 'confidence': float(top_conf)}]
+                         species_data = [{
+                             'species_label': f"{top_species.title()} {top_conf:.2f}",
+                             'detected_animal': top_species.title(),
+                             'detection_confidence': float(top_conf),
+                             'primary_label': 'Animal',
+                             'detection_method': 'MDv5a + BioClip',
+                             'bbox': bbox
+                         }]
                     else:
                          top_species = "Unknown"
                          top_conf = 0.0

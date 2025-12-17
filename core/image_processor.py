@@ -76,6 +76,7 @@ class ImageProcessor:
             'time': None,
             'day_night': 'Unknown',
             'brightness': 0.0,
+            'species_data': [], # Initialize structured data
             'user_notes': '',
             'processing_status': 'Success'
         }
