@@ -428,7 +428,8 @@ with tab2:
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
             'species_label': join_unique, # List all species (String)
             'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Flatten list of species data
-            'raw_text': 'first' # Keep raw OCR text
+            'raw_text': 'first', # Keep raw OCR text
+            'image_id': 'first' # Unique ID
         }
         
         # Only aggregate existing columns
@@ -531,6 +532,63 @@ with tab2:
                     display_img = display_image_with_info(image_path, image_records)
                     if display_img:
                         st.image(display_img, width="stretch")
+                    
+                    st.divider()
+                    if display_img:
+                        st.image(display_img, width="stretch")
+                    
+                    st.divider()
+
+                    # --- Auto-Repair Logic (Lazy Analysis) ---
+                    # Calculate ID of the image we are viewing
+                    current_hash = ImageProcessor.get_image_hash(image_path)
+                    
+                    # Check if the data is stale (missing species_data)
+                    # We check the row we are viewing. 'species_data' might be empty list [] for genuinely empty images.
+                    # But if it's missing entirely or in old format, we might want to re-run.
+                    # Here we assume if 'species_data' key exists it's fine, but let's be robust.
+                    
+                    # Logic: If row['image_id'] is NaN/None or doesn't match current hash -> Data is unlinked/old
+                    # Or if species_data is empty AND primary_label is Animal (suggesting it should have something)
+                    
+                    needs_update = False
+                    if 'image_id' not in row or not row['image_id'] or row['image_id'] != current_hash:
+                         needs_update = True
+                    elif isinstance(row.get('species_data'), list) and len(row.get('species_data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
+                         # Potentially stale if we expect animals but see none in the list
+                         # But could be genuine.
+                         # A safer check for "Stale" is if the 'species_data' column was newly added and older cached rows don't really populate it well
+                         # Let's rely on explicit missing 'image_id' which is new.
+                         pass
+
+                    if 'image_id' not in row or pd.isna(row['image_id']):
+                         needs_update = True
+                    
+                    if needs_update:
+                        st.info("🔄 Auto-linking data to image content (First run for this file)...")
+                        # Auto-run analysis
+                        with st.spinner("Analyzing high-resolution details..."):
+                            ocr_model, md_model, bio_model, dn_model = load_models_v2()
+                            md_model.set_confidence_threshold(detection_confidence)
+                            dn_model.brightness_threshold = brightness_threshold
+                            animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
+                            processor = ImageProcessor(
+                                ocr_processor=ocr_model, animal_detector=animal_detector, day_night_classifier=dn_model,
+                                ocr_enabled=enable_ocr, detection_enabled=enable_detection, day_night_enabled=enable_day_night, ocr_strip_percent=ocr_strip_height
+                            )
+                            
+                            new_results = processor.process_single_image(image_path)
+                            
+                            # Update Dataframe
+                            current_df = st.session_state.processed_data
+                            # Remove old by filepath (fallback)
+                            current_df = current_df[current_df['filepath'] != image_path]
+                            
+                            if new_results:
+                                new_df = pd.DataFrame(new_results)
+                                current_df = pd.concat([current_df, new_df], ignore_index=True)
+                                st.session_state.processed_data = current_df
+                                st.rerun()
                         
                 with col_insp_2:
                     st.markdown("### Details")

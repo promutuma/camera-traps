@@ -4,6 +4,7 @@ Orchestrates OCR, animal detection, and day/night classification.
 """
 
 import os
+import hashlib
 import cv2
 from PIL import Image
 from typing import Dict, Optional, Callable
@@ -39,10 +40,21 @@ class ImageProcessor:
         self.day_night_enabled = day_night_enabled
         self.ocr_strip_percent = ocr_strip_percent
         
-        # Injected processors
         self.ocr_processor = ocr_processor if ocr_enabled else None
         self.animal_detector = animal_detector if detection_enabled else None
         self.day_night_classifier = day_night_classifier if day_night_enabled else None
+
+    @staticmethod
+    def get_image_hash(image_path: str) -> str:
+        """Generate a unique ID based on image content (MD5)."""
+        try:
+            with open(image_path, "rb") as f:
+                file_hash = hashlib.md5()
+                while chunk := f.read(8192):
+                    file_hash.update(chunk)
+            return file_hash.hexdigest()
+        except Exception:
+            return "unknown_hash"
     
     def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> list:
         """
@@ -56,6 +68,7 @@ class ImageProcessor:
             List of dictionaries containing all extracted information (one per detected entity)
         """
         base_result = {
+            'image_id': self.get_image_hash(image_path),
             'filename': os.path.basename(image_path),
             'filepath': image_path,
             'temperature': None,
