@@ -21,6 +21,7 @@ from pathlib import Path
 import tempfile
 import base64
 import json
+import re
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
@@ -414,7 +415,18 @@ with tab2:
         
         # Helper to join unique strings
         def join_unique(series):
-            unique_vals = sorted(set([s for s in series if s and s != 'N/A' and s != 'Unknown']))
+            # Clean species strings: Remove confidence scores (e.g., " 0.98", " 1.00", " (Low Conf)")
+            cleaned_vals = []
+            for s in series:
+                if s and s != 'N/A' and s != 'Unknown':
+                    # Regex: Space followed by digits, dot, digits OR " (Low Conf)"
+                    # e.g. "Impala 0.95" -> "Impala"
+                    cleaned = re.sub(r'\s\d+(\.\d+)?', '', str(s)) 
+                    cleaned = cleaned.replace(" (Low Conf)", "").strip()
+                    if cleaned:
+                        cleaned_vals.append(cleaned)
+            
+            unique_vals = sorted(set(cleaned_vals))
             return ", ".join(unique_vals) if unique_vals else "Empty"
 
         # Aggregation rules
@@ -428,8 +440,7 @@ with tab2:
             'user_notes': 'first',  # Assuming notes are per-image
             'detection_confidence': 'max', # Show max confidence
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
-            'species_label': join_unique, # List all species (String)
-            'species_label': join_unique, # List all species (String)
+            'species_label': join_unique, # List all species (String) - Cleaned
             'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Aggregated list of all detection objects (species+bbox)
             'raw_text': 'first', # Keep raw OCR text
             'image_id': 'first', # Unique ID
@@ -449,35 +460,116 @@ with tab2:
             # Fallback if no filepath column (shouldn't happen with valid data)
             display_df = raw_df.drop_duplicates(subset=['filename']) 
         
-        # Top Bar: Controls
-        col_ctrl_1, col_ctrl_2, col_ctrl_3 = st.columns([2, 2, 1])
+        # --- Top Control Bar ---
+        col_ctrl_1, col_ctrl_2, col_ctrl_3 = st.columns([2, 1, 1])
         with col_ctrl_1:
-            view_mode = st.radio("View Mode", ["Gallery View", "Inspector View"], horizontal=True)
+            view_mode = st.radio("View Mode", ["Gallery View", "Inspector View"], horizontal=True, label_visibility="collapsed")
             st.session_state.view_mode = 'gallery' if view_mode == "Gallery View" else 'inspector'
             
         with col_ctrl_2:
-            filter_animal = st.checkbox("Show only Animals", value=False)
-            
-        with col_ctrl_3:
             st.caption(f"Total Images: {len(display_df)}")
-
-        # Filter Logic (on display_df)
-        filtered_display_df = display_df.copy()
-        if filter_animal:
-            # Contains 'Animal' in species list or primary label is Animal
-            filtered_display_df = filtered_display_df[
-                (filtered_display_df['primary_label'] == 'Animal') | 
-                (filtered_display_df['species_label'].str.contains('Animal', case=False))
-            ]
+            
+        # --- Advanced Sidebar Filters ---
+        st.sidebar.markdown("### 🛠️ Filter Options")
         
+        # 1. Species Filter
+        # Extract unique species from the 'detected_animal' or primary label column
+        all_species = sorted(display_df['primary_label'].unique().tolist())
+        # Try to get more granular species from species_label if available
+        # This is a bit tricky with aggregation, but let's stick to primary labels for now 
+        # as they are cleaner for filtering.
+        
+        selected_species = st.sidebar.multiselect(
+            "Species",
+            options=all_species,
+            default=[]
+        )
+        
+        # 2. Confidence Filter
+        min_conf, max_conf = st.sidebar.slider(
+            "Confidence Range",
+            min_value=0.0, max_value=1.0, value=(0.0, 1.0)
+        )
+        
+        # 3. Day/Night Filter
+        day_night_opts = ["All", "Day", "Night"]
+        day_night_filter = st.sidebar.radio("Time of Day", day_night_opts)
+        
+        # 4. Date Filter
+        # Convert date strings to datetime objects if possible for filtering
+        try:
+            # Clean date column
+            display_df['date_dt'] = pd.to_datetime(display_df['date'], errors='coerce')
+            min_date = display_df['date_dt'].min()
+            max_date = display_df['date_dt'].max()
+            
+            if pd.notnull(min_date) and pd.notnull(max_date):
+                date_range = st.sidebar.date_input(
+                    "Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+            else:
+                date_range = None
+        except Exception:
+            date_range = None
+            
+        # Apply Filters
+        filtered_display_df = display_df.copy()
+        
+        # Species
+        if selected_species:
+            filtered_display_df = filtered_display_df[filtered_display_df['primary_label'].isin(selected_species)]
+            
+        # Confidence
+        filtered_display_df = filtered_display_df[
+            (filtered_display_df['detection_confidence'] >= min_conf) & 
+            (filtered_display_df['detection_confidence'] <= max_conf)
+        ]
+        
+        # Day/Night
+        if day_night_filter != "All":
+            filtered_display_df = filtered_display_df[filtered_display_df['day_night'] == day_night_filter]
+            
+        # Date
+        if date_range and len(date_range) == 2:
+            start_date, end_date = date_range
+            # Ensure row date is comparable
+            mask = (filtered_display_df['date_dt'].dt.date >= start_date) & (filtered_display_df['date_dt'].dt.date <= end_date)
+            filtered_display_df = filtered_display_df[mask]
+            
+        st.sidebar.markdown(f"**Showing {len(filtered_display_df)} / {len(display_df)} images**")
+        
+
+        # --- Statistics Dashboard ---
+        st.markdown("### 📊 Overview")
+        stat_c1, stat_c2, stat_c3, stat_c4 = st.columns(4)
+        
+        total_imgs = len(display_df)
+        total_animals = len(display_df[display_df['primary_label'] == 'Animal'])
+        total_vehicles = len(display_df[display_df['primary_label'] == 'Vehicle'])
+        total_persons = len(display_df[display_df['primary_label'] == 'Person'])
+        
+        stat_c1.metric("Total Images", total_imgs)
+        stat_c2.metric("Animals Detected", total_animals)
+        stat_c3.metric("Vehicles", total_vehicles)
+        stat_c4.metric("Persons", total_persons)
+        
+        st.divider()
+
         # --- VIEW MODES ---
         
         if st.session_state.view_mode == 'gallery':
-            st.subheader("🖼️ Image Gallery")
+            c_head, c_grid = st.columns([3, 1])
+            with c_head:
+                st.subheader("🖼️ Image Gallery")
+            with c_grid:
+                grid_cols = st.slider("Grid Size", 2, 6, 4)
             
-            cols = st.columns(4)
+            cols = st.columns(grid_cols)
             for idx, row in filtered_display_df.iterrows():
-                col = cols[idx % 4]
+                col = cols[idx % grid_cols]
                 with col:
                     img_path = row['filepath']
                     
@@ -493,7 +585,11 @@ with tab2:
                             st.rerun()
                         # Show aggregated species
                         label_display = row['species_label'] if row['species_label'] else row['primary_label']
-                        st.caption(f"**{label_display}** ({row['detection_confidence']:.2f})")
+                        
+                        # Info Overlay (Caption)
+                        date_str = row.get('date', '') if row.get('date') else ''
+                        time_str = row.get('time', '') if row.get('time') else ''
+                        st.caption(f"**{label_display}**\n{date_str} {time_str}")
                     else:
                         st.warning("Image missing")
 
@@ -522,136 +618,160 @@ with tab2:
             if 0 <= current_idx < total_imgs:
                 row = display_df.iloc[current_idx]
                 image_path = row['filepath']
+                    
+                # --- 1. Image Display (Top) ---
+                show_box = st.toggle("Show Bounding Box", value=True)
                 
-                col_insp_1, col_insp_2 = st.columns([2, 1])
+                # Gather ALL detections for this image from the RAW dataframe
+                image_records = raw_df[raw_df['filepath'] == image_path].to_dict('records')
                 
-                with col_insp_1:
-                    # Image Display
-                    show_box = st.toggle("Show Bounding Box", value=True)
-                    
-                    # Gather ALL detections for this image from the RAW dataframe
-                    # This allows drawing all boxes
-                    image_records = raw_df[raw_df['filepath'] == image_path].to_dict('records')
-                    
-                    if not show_box: 
-                        for rec in image_records: rec['bbox'] = None
-                    
-                    display_img = display_image_with_info(image_path, image_records)
-                    if display_img:
-                        st.image(display_img, width="stretch")
-                    
-                    st.divider()
-                    if display_img:
-                        st.image(display_img, width="stretch")
-                    
-                    st.divider()
+                if not show_box: 
+                    for rec in image_records: rec['bbox'] = None
+                
+                display_img = display_image_with_info(image_path, image_records)
+                if display_img:
+                    st.image(display_img, width="stretch")
+                
 
-                    # --- Auto-Repair Logic (Lazy Analysis) ---
-                    # Calculate ID of the image we are viewing
-                    current_hash = ImageProcessor.get_image_hash(image_path)
-                    
-                    # Check if the data is stale (missing species_data)
-                    # We check the row we are viewing. 'species_data' might be empty list [] for genuinely empty images.
-                    # But if it's missing entirely or in old format, we might want to re-run.
-                    # Here we assume if 'species_data' key exists it's fine, but let's be robust.
-                    
-                    # Logic: If row['image_id'] is NaN/None or doesn't match current hash -> Data is unlinked/old
-                    # Or if species_data is empty AND primary_label is Animal (suggesting it should have something)
-                    
-                    needs_update = False
-                    if 'image_id' not in row or not row['image_id'] or row['image_id'] != current_hash:
-                         needs_update = True
-                    elif isinstance(row.get('species_data'), list) and len(row.get('species_data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
-                         # Potentially stale if we expect animals but see none in the list
-                         pass
+                # --- Auto-Repair Logic (Lazy Analysis) ---
+                # Calculate ID of the image we are viewing
+                current_hash = ImageProcessor.get_image_hash(image_path)
+                
+                # Check if the data is stale (missing species_data)
+                needs_update = False
+                if 'image_id' not in row or not row['image_id'] or row['image_id'] != current_hash:
+                     needs_update = True
+                elif isinstance(row.get('species_data'), list) and len(row.get('species_data')) == 0 and row['primary_label'] == 'Animal' and row['detection_confidence'] > 0:
+                     pass
 
-                    if 'image_id' not in row or pd.isna(row['image_id']):
-                         needs_update = True
-                    
-                    if needs_update:
-                        st.info("🔄 Auto-linking data to image content (First run for this file)...")
-                        # Auto-run analysis
-                        with st.spinner("Analyzing high-resolution details..."):
-                            ocr_model, md_model, bio_model, dn_model = load_models_v2()
-                            md_model.set_confidence_threshold(detection_confidence)
-                            dn_model.brightness_threshold = brightness_threshold
-                            animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
-                            processor = ImageProcessor(
-                                ocr_processor=ocr_model, animal_detector=animal_detector, day_night_classifier=dn_model,
-                                ocr_enabled=enable_ocr, detection_enabled=enable_detection, day_night_enabled=enable_day_night, ocr_strip_percent=ocr_strip_height
-                            )
-                            
-                            new_results = processor.process_single_image(image_path)
-                            
-                            # Update Dataframe
-                            current_df = st.session_state.processed_data
-                            # Remove old by filepath (fallback)
-                            current_df = current_df[current_df['filepath'] != image_path]
-                            
-                            if new_results:
-                                new_df = pd.DataFrame(new_results)
-                                current_df = pd.concat([current_df, new_df], ignore_index=True)
-                                st.session_state.processed_data = current_df
-                                st.rerun()
-                        
-                with col_insp_2:
-                    st.markdown("### Details")
-                    
-                    # Read-only details mostly, unless we implement complex write-back
-                    with st.form(key=f"edit_form_{current_idx}"):
-                        # Primary Label (Applies to all)
-                        current_primary = row['primary_label']
-                        if current_primary not in ["Animal", "Person", "Vehicle", "Empty"]:
-                             current_primary = "Animal"
-                        
-                        new_primary = st.selectbox("Primary Label", ["Animal", "Person", "Vehicle", "Empty"], 
-                                                 index=["Animal", "Person", "Vehicle", "Empty"].index(current_primary))
-                        
-                        # Editable Species List using Data Editor
-                        st.caption("Detailed Species List")
-                        current_species_data = row.get('species_data', [])
-                        # Ensure it's a list (handle NaN or legacy data)
-                        if not isinstance(current_species_data, list): current_species_data = [] 
-                        
-                        edited_species_data = st.data_editor(
-                            current_species_data,
-                            num_rows="dynamic",
-                            column_config={
-                                "species_label": st.column_config.TextColumn("Species Name", required=True),
-                                "detection_confidence": st.column_config.NumberColumn("Conf", min_value=0.0, max_value=1.0)
-                            },
-                            key=f"species_editor_{current_idx}",
-                            width="stretch"
+                if 'image_id' not in row or pd.isna(row['image_id']):
+                     needs_update = True
+                
+                if needs_update:
+                    st.info("🔄 Auto-linking data to image content (First run for this file)...")
+                    # Auto-run analysis
+                    with st.spinner("Analyzing high-resolution details..."):
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2()
+                        md_model.set_confidence_threshold(detection_confidence)
+                        dn_model.brightness_threshold = brightness_threshold
+                        animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
+                        processor = ImageProcessor(
+                            ocr_processor=ocr_model, animal_detector=animal_detector, day_night_classifier=dn_model,
+                            ocr_enabled=enable_ocr, detection_enabled=enable_detection, day_night_enabled=enable_day_night, ocr_strip_percent=ocr_strip_height
                         )
                         
-                        new_notes = st.text_area("User Notes", value=row.get('user_notes', ''))
+                        new_results = processor.process_single_image(image_path)
                         
-                        if st.form_submit_button("Update Details"):
-                            # Update RAW DataFrame
-                            # Reconstruct string
+                        # Update Dataframe
+                        current_df = st.session_state.processed_data
+                        # Remove old by filepath (fallback)
+                        current_df = current_df[current_df['filepath'] != image_path]
+                        
+                        if new_results:
+                            new_df = pd.DataFrame(new_results)
+                            current_df = pd.concat([current_df, new_df], ignore_index=True)
+                            st.session_state.processed_data = current_df
+                            st.rerun()
+                        
+                    # --- 2. Details & Editing (Below Image) ---
+                    st.divider()
+                    st.subheader("📝 Details & Edits")
+                    
+                    # --- Editing Form ---
+                    with st.form(key=f"edit_form_{current_idx}"):
+                        st.caption("Detailed Detections List (Edit Species and Primary Label)")
+                        
+                        current_species_data = row.get('species_data', [])
+                        if not isinstance(current_species_data, list): current_species_data = [] 
+                        
+                        # Configure column config for better UX
+                        column_cfg = {
+                            "primary_label": st.column_config.SelectboxColumn("Primary Label", options=["Animal", "Person", "Vehicle", "Empty"], required=True),
+                            "species_label": st.column_config.TextColumn("Species Name", required=True, width="medium"),
+                            "detection_confidence": st.column_config.NumberColumn("Conf (0-1)", min_value=0.0, max_value=1.0, format="%.2f"),
+                            "detected_animal": st.column_config.TextColumn("Original Detection", disabled=True), # Read-only original
+                            "bbox": st.column_config.TextColumn("BBox", disabled=True) # Hide or disable
+                        }
+
+                        edited_species_data = st.data_editor(
+                            current_species_data,
+                            column_config=column_cfg,
+                            num_rows="dynamic",
+                            width="stretch",
+                            key=f"species_editor_{current_idx}"
+                        )
+                        
+                        # User Notes
+                        current_notes = row.get('user_notes')
+                        if pd.isna(current_notes): current_notes = ""
+                        new_notes = st.text_area("User Notes", value=str(current_notes), height=100)
+                        
+                        # Validation Flag
+                        is_verified = "[VERIFIED]" in str(current_notes)
+                        new_verified = st.checkbox("Mark as Verified", value=is_verified)
+                        
+                        # Save Button
+                        if st.form_submit_button("💾 Save Changes"):
+                             # Reconstruct notes
+                            final_notes = new_notes
+                            if new_verified and "[VERIFIED]" not in final_notes:
+                                final_notes = f"[VERIFIED] {final_notes}".strip()
+                            elif not new_verified:
+                                final_notes = final_notes.replace("[VERIFIED]", "").strip()
+
+                            # Reconstruct string label for display and infer main Primary Label
                             new_species_label_str = ""
+                            inferred_primary = "Empty" # Default
+                            
                             if edited_species_data:
                                 parts = []
+                                primary_votes = []
                                 for item in edited_species_data:
                                     s = item.get('species_label', 'Unknown')
                                     c = item.get('detection_confidence', 0.0)
+                                    p = item.get('primary_label', 'Animal')
                                     parts.append(f"{s} {c:.2f}")
+                                    primary_votes.append(p)
                                 new_species_label_str = ", ".join(parts)
+                                
+                                # Infer Main Primary Label from table rows
+                                # Priority: Person > Vehicle > Animal > Empty
+                                if "Person" in primary_votes:
+                                    inferred_primary = "Person"
+                                elif "Vehicle" in primary_votes:
+                                    inferred_primary = "Vehicle"
+                                elif "Animal" in primary_votes:
+                                    inferred_primary = "Animal"
+                                else:
+                                    inferred_primary = "Empty"
                             else:
-                                new_species_label_str = "Empty" if new_primary != 'Animal' else "Unknown"
+                                new_species_label_str = "Empty"
+                                inferred_primary = "Empty"
                             
+                            # Update DataFrame (All rows for this file)
                             mask = st.session_state.processed_data['filepath'] == image_path
-                            st.session_state.processed_data.loc[mask, 'primary_label'] = new_primary
                             
-                            # Update all rows
+                            # Update columns
+                            st.session_state.processed_data.loc[mask, 'primary_label'] = inferred_primary
+                            st.session_state.processed_data.loc[mask, 'user_notes'] = final_notes
+                            
+                            # Update species data for all rows
                             for i in st.session_state.processed_data.index[mask]:
                                 st.session_state.processed_data.at[i, 'species_data'] = edited_species_data
                                 st.session_state.processed_data.at[i, 'species_label'] = new_species_label_str
-                                st.session_state.processed_data.at[i, 'detected_animal'] = new_species_label_str
-                                st.session_state.processed_data.at[i, 'user_notes'] = new_notes
-                                
-                            st.success("Updated!")
+                            
+                            st.success("Changes saved successfully!")
                             st.rerun()
+
+                    # Read-only Info (Metadata)
+                    st.markdown("---")
+                    st.caption(f"**Date:** {row.get('date', 'Unknown')}")
+                    st.caption(f"**Time:** {row.get('time', 'Unknown')}")
+                    st.caption(f"**Temp:** {row.get('temperature', 'Unknown')}")
+                    st.caption(f"**Condition:** {row.get('day_night', 'Unknown')}")
+                    
+                    # (Removed redundant static species list since we have the editor above)
+
 
                     st.divider()
                     st.metric("Max Confidence", f"{row['detection_confidence']:.2%}")
@@ -669,12 +789,15 @@ with tab2:
         st.dataframe(
             display_df,
             column_order=[
-                "filename", "species_label", "primary_label", "detection_confidence", 
-                "day_night", "time", "user_notes"
+                "image_id", "filename", "species_label", "primary_label", 
+                "detection_confidence", "date", "time", "day_night", 
+                "temperature", "brightness", "user_notes", "raw_text"
             ],
             column_config={
                  "detection_confidence": st.column_config.ProgressColumn("Max Conf", min_value=0, max_value=1),
-                 "species_label": st.column_config.TextColumn("Species List")
+                 "species_label": st.column_config.TextColumn("Species List"),
+                 "image_id": st.column_config.TextColumn("Image ID", help="Unique content hash"),
+                 "raw_text": st.column_config.TextColumn("OCR Text", width="small")
             },
             width="stretch",
             hide_index=True
@@ -708,22 +831,33 @@ with tab2:
                     except Exception:
                         b64_str = None
                         
-                    # 2. Build Detections Array
-                    # 'species_data' in each row contains the BioClip results for that specific bounding box (row)
-                    # We must aggregate them from ALL rows for this image
+                    # 3. Build Detections Array
                     detections = []
                     
                     id_counter = 1
                     for _, row in rows.iterrows():
-                        if 'species_data' in row and isinstance(row['species_data'], list):
-                             # Each item in species_data is a candidate (species, conf, bbox, etc.)
-                             for d in row['species_data']:
-                                 d_copy = d.copy()
-                                 d_copy['detection_id'] = id_counter
-                                 id_counter += 1
-                                 detections.append(d_copy)
+                        # Each row behaves as a "Detection"
+                        # We use the 'species_data' list mainly to get the confidence/names if we need detail
+                        # BUT, effectively, the row itself is the primary detection unit (Animal, Person, etc)
+                        
+                        # However, 'species_label' column in the row holds the "Baboon 0.48, Warthog 0.39"
+                        
+                        det_item = {
+                            "detection_id": id_counter,
+                            "primary_label": row['primary_label'],
+                            "detected_animal": row['detected_animal'],
+                            # We want the rich string with confidence here, so we use species_label column 
+                            # (which we ensure has confidence in Save logic).
+                            # If it was stripped for view, we might need to rely on species_data reconstruction
+                            "species_label": row['species_label'], 
+                            "detection_confidence": float(row['detection_confidence']),
+                            "bbox": row['bbox'],
+                            "detection_method": row.get('detection_method', 'Unknown')
+                        }
+                        detections.append(det_item)
+                        id_counter += 1
                     
-                    # 3. Construct Item
+                    # 4. Construct Item
                     item = {
                         "image_id": first_row.get('image_id'),
                         "filename": first_row['filename'],

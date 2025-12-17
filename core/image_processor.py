@@ -117,6 +117,7 @@ class ImageProcessor:
                     row['detection_confidence'] = det['detection_confidence']
                     row['bbox'] = det['bbox']
                     row['detection_method'] = det.get('method', 'Unknown')
+                    row['species_data'] = det.get('species_data', [])
                     final_results.append(row)
             else:
                 # If detection disabled, just return the base metadata as one row
