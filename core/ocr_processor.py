@@ -69,14 +69,16 @@ class OCRProcessor:
         text = text.strip()
         
         # Pattern 1: M [Temp] [Date] [Time]
-        # Temperature: digits followed by C or °C or F
-        temp_pattern = r'(\d+\.?\d*)\s*[°]?[CF]'
+        # Pattern 1: M [Temp] [Date] [Time]
+        # Temperature: digits followed by C or °C or F, allowing for common OCR noise like ' or " or .
+        temp_pattern = r'(\d+\.?\d*)\s*[°\'"\.]?[CF]'
         
         # Date patterns: YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, DD-MM-YYYY
         date_pattern = r'(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})'
         
-        # Time patterns: HH:MM:SS, HH:MM, HH:MM AM/PM
-        time_pattern = r'(\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)'
+        # Time patterns: HH:MM:SS, HH:MM, HH.MM.SS (common in some cams)
+        # Allow : or . as separator
+        time_pattern = r'(\d{1,2}[:.]\d{2}(?:[:.]\d{2})?(?:\s*[AP]M)?)'
         
         # Extract temperature
         temp_match = re.search(temp_pattern, text, re.IGNORECASE)
