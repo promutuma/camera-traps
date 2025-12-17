@@ -429,7 +429,11 @@ with tab2:
             'species_label': join_unique, # List all species (String)
             'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Flatten list of species data
             'raw_text': 'first', # Keep raw OCR text
-            'image_id': 'first' # Unique ID
+            'image_id': 'first', # Unique ID
+            'md_confidence': lambda x: list(x), # List of MD confidences
+            'md_bbox': lambda x: list(x), # List of bboxes
+            'md_category': 'first',
+            'bioclip_confidence': lambda x: list(x) # List of BioClip confidences
         }
         
         # Only aggregate existing columns
@@ -682,6 +686,15 @@ with tab2:
         with c1:
             excel_data = create_excel_report(st.session_state.processed_data)
             st.download_button("📊 Download Excel", data=excel_data, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+        
+        with c2:
+            json_str = st.session_state.processed_data.to_json(orient='records', indent=2)
+            st.download_button(
+                label="📋 Download JSON",
+                data=json_str,
+                file_name=f"data_{datetime.now().strftime('%Y%m%d')}.json",
+                mime="application/json"
+            )
         with c3:
             if st.button("💾 Save to Database", type="secondary"):
                 count = st.session_state.db_manager.save_results(st.session_state.processed_data)

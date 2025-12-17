@@ -244,7 +244,18 @@ class AnimalDetector:
                 result['species_label'] = species_label
                 result['species_data'] = species_data
                 result['detected_animal'] = top_species.title()
+                
+                # Metadata
+                result['md_confidence'] = conf
+                result['md_bbox'] = bbox
+                result['md_category'] = '1' # Animal
+                result['bioclip_confidence'] = top_conf
+                
+                # Final detection confidence is usually the Classifier confidence if high enough, 
+                # but we keep MD confidence if classifier is low? 
+                # For now, let's stick to BioClip as the primary "confidence" for the species ID.
                 result['detection_confidence'] = top_conf 
+                
                 result['method'] = 'MDv5a + BioClip'
                 result['secondary_method'] = 'BioClip'
                 
