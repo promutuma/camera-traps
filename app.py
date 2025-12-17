@@ -479,7 +479,7 @@ with tab2:
                      "primary_label": st.column_config.SelectboxColumn("Primary", options=["Animal", "Person", "Vehicle", "Empty"]),
                      "detection_confidence": st.column_config.ProgressColumn("Conf", min_value=0, max_value=1)
                 },
-                use_container_width=True,
+                width="stretch",
                 key="bulk_editor"
             )
             # Sync bulk edits
@@ -574,7 +574,7 @@ with tab4:
                 "temperature": "Temp",
                 "user_notes": "Notes"
             },
-            use_container_width=True,
+            width="stretch",
             hide_index=True
         )
         
@@ -679,7 +679,7 @@ with tab5:
                     md_data = debug_info.get('megadetector')
                     if md_data:
                         md_df = pd.DataFrame(md_data)
-                        st.dataframe(md_df, use_container_width=True)
+                        st.dataframe(md_df, width="stretch")
                         
                         # Visualizer
                         img_vis = cv2.imread(target_debug_img)
