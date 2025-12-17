@@ -54,7 +54,7 @@ class StreamlitLogRedirector:
         pass
 
 @st.cache_resource(show_spinner="Loading AI Models...")
-def load_models():
+def load_models_v2():
     """Load and cache heavy AI models."""
     
     # Create a place for logs
@@ -342,7 +342,7 @@ with tab1:
                         st.info("📥 Loading AI models (OCR, MegaDetector V5a, BioClip). First run will take a moment...")
                         
                         # Load Cached Models
-                        ocr_model, md_model, bio_model, dn_model = load_models()
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2()
                         
                         # Apply Runtime Settings
                         md_model.set_confidence_threshold(detection_confidence)
@@ -426,7 +426,8 @@ with tab2:
             'user_notes': 'first',  # Assuming notes are per-image
             'detection_confidence': 'max', # Show max confidence
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
-            'species_label': join_unique # List all species
+            'species_label': join_unique, # List all species (String)
+            'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])] # Flatten list of species data
         }
         
         # Only aggregate existing columns
