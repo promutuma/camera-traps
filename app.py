@@ -427,7 +427,8 @@ with tab2:
             'detection_confidence': 'max', # Show max confidence
             'primary_label': lambda x: sorted(x.tolist())[0], # Simple pick
             'species_label': join_unique, # List all species (String)
-            'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])] # Flatten list of species data
+            'species_data': lambda x: [item for sublist in x for item in (sublist if isinstance(sublist, list) else [])], # Flatten list of species data
+            'raw_text': 'first' # Keep raw OCR text
         }
         
         # Only aggregate existing columns
@@ -594,6 +595,9 @@ with tab2:
                     st.metric("Max Confidence", f"{row['detection_confidence']:.2%}")
                     st.metric("Time", str(row['time']))
                     st.metric("Temperature", str(row['temperature']))
+                    
+                    st.caption("Raw OCR Text")
+                    st.text_area("Raw Metadata", row.get('raw_text', 'N/A'), height=68, disabled=True, label_visibility="collapsed")
             else:
                 st.info("No image selected.")
 

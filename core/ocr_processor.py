@@ -125,6 +125,7 @@ class OCRProcessor:
             
             # Parse metadata
             metadata = self.parse_metadata_text(full_text)
+            metadata['raw_text'] = full_text
             
             return metadata
             
@@ -133,7 +134,8 @@ class OCRProcessor:
             return {
                 'temperature': None,
                 'date': None,
-                'time': None
+                'time': None,
+                'raw_text': None
             }
 
     def get_debug_data(self, image_path: str, strip_height_percent: float = 0.10) -> Tuple[Optional[np.ndarray], str, Dict]:
