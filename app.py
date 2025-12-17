@@ -20,6 +20,7 @@ import pandas as pd
 from pathlib import Path
 import tempfile
 import base64
+import json
 from datetime import datetime
 from io import BytesIO
 from PIL import Image
