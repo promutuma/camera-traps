@@ -224,6 +224,7 @@ class AnimalDetector:
                 if candidates:
                     # Format: "Lion 0.95, Tiger 0.40"
                     species_label = ", ".join([f"{s.title()} {c:.2f}" for s, c in candidates])
+                    species_data = [{'species': s.title(), 'confidence': float(c)} for s, c in candidates]
                     top_species, top_conf = candidates[0]
                 else:
                     # Fallback if nothing above threshold but it was an animal
@@ -231,14 +232,17 @@ class AnimalDetector:
                     if top_candidates:
                          top_species, top_conf = top_candidates[0]
                          species_label = f"{top_species.title()} {top_conf:.2f} (Low Conf)"
+                         species_data = [{'species': top_species.title(), 'confidence': float(top_conf)}]
                     else:
                          top_species = "Unknown"
                          top_conf = 0.0
                          species_label = "Unknown"
+                         species_data = []
                 
                 # Update result
                 result['primary_label'] = 'Animal'
                 result['species_label'] = species_label
+                result['species_data'] = species_data
                 result['detected_animal'] = top_species.title()
                 result['detection_confidence'] = top_conf 
                 result['method'] = 'MDv5a + BioClip'

@@ -543,19 +543,49 @@ with tab2:
                         new_primary = st.selectbox("Primary Label", ["Animal", "Person", "Vehicle", "Empty"], 
                                                  index=["Animal", "Person", "Vehicle", "Empty"].index(current_primary))
                         
-                        # Editable Species List
-                        new_species = st.text_area("Species List (Edit to correct)", value=row['species_label'])
+                        # Editable Species List using Data Editor
+                        st.caption("Detailed Species List")
+                        current_species_data = row.get('species_data', [])
+                        # Ensure it's a list (handle NaN or legacy data)
+                        if not isinstance(current_species_data, list): current_species_data = [] 
+                        
+                        edited_species_data = st.data_editor(
+                            current_species_data,
+                            num_rows="dynamic",
+                            column_config={
+                                "species": st.column_config.TextColumn("Species Name", required=True),
+                                "confidence": st.column_config.NumberColumn("Conf", min_value=0.0, max_value=1.0)
+                            },
+                            key=f"species_editor_{current_idx}",
+                            use_container_width=True
+                        )
                         
                         new_notes = st.text_area("User Notes", value=row.get('user_notes', ''))
                         
                         if st.form_submit_button("Update Details"):
                             # Update RAW DataFrame
-                            # We update all rows matching this filepath
+                            # Reconstruct string
+                            new_species_label_str = ""
+                            if edited_species_data:
+                                parts = []
+                                for item in edited_species_data:
+                                    s = item.get('species', 'Unknown')
+                                    c = item.get('confidence', 0.0)
+                                    parts.append(f"{s} {c:.2f}")
+                                new_species_label_str = ", ".join(parts)
+                            else:
+                                new_species_label_str = "Empty" if new_primary != 'Animal' else "Unknown"
+                            
                             mask = st.session_state.processed_data['filepath'] == image_path
                             st.session_state.processed_data.loc[mask, 'primary_label'] = new_primary
-                            st.session_state.processed_data.loc[mask, 'species_label'] = new_species
-                            st.session_state.processed_data.loc[mask, 'detected_animal'] = new_species # Update this too for backward compat
-                            st.session_state.processed_data.loc[mask, 'user_notes'] = new_notes
+                            
+                            # Update all rows
+                            for i in st.session_state.processed_data.index[mask]:
+                                st.session_state.processed_data.at[i, 'species_data'] = edited_species_data
+                                st.session_state.processed_data.at[i, 'species_label'] = new_species_label_str
+                                st.session_state.processed_data.at[i, 'detected_animal'] = new_species_label_str
+                                st.session_state.processed_data.at[i, 'user_notes'] = new_notes
+                                
                             st.success("Updated!")
                             st.rerun()
 
