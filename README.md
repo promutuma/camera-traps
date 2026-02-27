@@ -7,20 +7,20 @@ A user-friendly **Streamlit-based dashboard** for automated analysis of wildlife
 ![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
 ![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
 
-## 🌟 Features
+## Features
 
-- **📤 Batch Image Upload**: Upload multiple camera trap images (JPG/PNG) simultaneously
-- **🔍 OCR Metadata Extraction**: Automatically extracts date, time, and temperature from image metadata strips
-- **🦁 Advanced Animal Detection**:
+- **Batch Image Upload**: Upload multiple camera trap images (JPG/PNG) simultaneously
+- **OCR Metadata Extraction**: Automatically extracts date, time, and temperature from image metadata strips
+- **Advanced Animal Detection**:
   - **MegaDetector V5a** for localizing animals, people, and vehicles
   - **BioClip (OpenCLIP)** for fine-grained species classification
-- **🔧 Diagnostics Tool**: Specialized tab to debug OCR crops and view raw model candidates
-- **🌓 Day/Night Classification**: Automatically classifies images based on brightness analysis
-- **💾 History & Analytics**: Save results to SQLite database and view long-term trends
-- **✏️ Editable Results**: Review and manually correct detected animal names in an interactive table
-- **📊 Excel Reports**: Generate downloadable Excel (.xlsx) reports with all extracted data
+- **Diagnostics Tool**: Specialized tab to debug OCR crops and view raw model candidates
+- **Day/Night Classification**: Automatically classifies images based on brightness analysis
+- **History & Analytics**: Save results to SQLite database and view long-term trends
+- **Editable Results**: Review and manually correct detected animal names in an interactive table
+- **Excel Reports**: Generate downloadable Excel (.xlsx) reports with all extracted data
 
-## 🏗️ Project Structure
+## Project Structure
 
 ```text
 camera-traps/
@@ -38,7 +38,7 @@ camera-traps/
     └── image_processor.py      # Unified processing pipeline
 ```
 
-## 🚀 Deployment Scenarios
+## Deployment Scenarios
 
 Choose the deployment method that best fits your needs.
 
@@ -50,6 +50,10 @@ Best for development and running on a personal laptop.
 
 - **Python 3.11** (Strict requirement for dependency compatibility)
 - git
+- **System Dependencies** (Linux only): OpenCV requires missing shared libraries. On Ubuntu/Debian run:
+  ```bash
+  sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+  ```
 
 1. **Clone the repository:**
 
@@ -58,29 +62,50 @@ Best for development and running on a personal laptop.
    cd camera-traps
    ```
 
-2. **Create a virtual environment:**
+2. **Environment Setup:**
 
+   **Option A: Virtual Environment (Recommended for keeping system clean)**
+   
    _Windows:_
-
    ```bash
    python -m venv venv
    venv\Scripts\activate
    ```
-
    _Mac/Linux:_
-
    ```bash
-   python -m venv venv
+   python3 -m venv venv
    source venv/bin/activate
    ```
 
+   **Option B: Bare-Metal (No Virtual Environment)**
+   
+   If virtual environments are causing permission or networking issues on your machine, you can install directly to your user space using the `--user` flag.
+   _Warning: This may conflict with other global Python projects you have installed._
+   
 3. **Install dependencies:**
 
+   _If using a virtual environment (Option A):_
    ```bash
    pip install -r requirements.txt
    ```
+   
+   _If installing Bare-Metal (Option B):_
+   ```bash
+   pip install --user -r requirements.txt
+   ```
 
-   _Note: The first run will download significant model weights (MegaDetector, BioClip). Ensure you have a stable internet connection._
+   _Tip: If you experience timeout errors during installation on slow or unreliable connections, try using `pip install --default-timeout=1000 -r requirements.txt` instead._
+
+   > [!WARNING]
+   > The first time you run an analysis, the app requires the **MegaDetector** and **BioClip** AI models (~1.5 GB). 
+   > 
+   > **CRITICAL SETUP STEP:** Downloading these massive models via Streamlit's background threads from within a Python virtual environment (`venv`) is unstable and prone to crashing or hanging indefinitely due to network timeouts.
+   
+   To permanently install the models to your cache *before* running the dashboard, please run the included dedicated download script:
+   ```bash
+   python force_download.py
+   ```
+   _(If this script fails due to a timeout, just re-run the command. It is designed to resume exactly where it left off until finished.)_
 
 4. **Run the application:**
    ```bash
@@ -125,16 +150,16 @@ Best for sharing with others without hosting infrastructure.
 5. Click **Deploy**.
    _Streamlit Cloud will automatically detect `requirements.txt` and install dependencies (including system dependencies for OpenCV)._
 
-## 💻 Usage Guide
+## Usage Guide
 
 1. **Upload Images** (Tab 1):
    - Drag and drop camera trap images.
-   - Click "🚀 Process Images".
+   - Click "Process Images".
 2. **Review Results** (Tab 2):
 
    - Switch between **Gallery View** and **Inspector View**.
    - **Inspector View**: Allows deep-diving into individual images, seeing bounding boxes, and editing incorrect detections.
-   - **Editing**: Change the "Primary Label" or "Species Name" and click "💾 Save Changes".
+   - **Editing**: Change the "Primary Label" or "Species Name" and click "Save Changes".
 
 3. **History & Analytics** (Tab 3):
 
@@ -143,7 +168,7 @@ Best for sharing with others without hosting infrastructure.
 4. **Diagnostics** (Tab 4):
    - Use if OCR is failing. Adjust the "OCR Strip Height" in the sidebar to match your camera's metadata bar.
 
-## ⚙️ Configuration
+## Configuration
 
 ### Sidebar Settings
 
@@ -151,12 +176,12 @@ Best for sharing with others without hosting infrastructure.
 - **Brightness Threshold**: Adjusts the sensitivity for Day/Night classification.
 - **OCR Strip Height**: Percentage of the image bottom to scan for date/time text.
 
-## 🔧 Technical Details
+## Technical Details
 
 - **MegaDetector V5a**: A Microsoft AI for Earth model tuned to detect generic "Animal", "Person", and "Vehicle" classes.
 - **BioClip**: A foundation model by Imageomics that classifies specific species from the cropped animal regions found by MegaDetector.
 - **OCR**: Uses EasyOCR with regex pattern matching to parse standardized camera trap timestamps.
 
-## 📝 License
+## License
 
 This project is open-source and intended for wildlife research and conservation purposes.

@@ -1,0 +1,4 @@
+[server]
+# Max upload size in megabytes (MB)
+# 800MB allows ~200 images safely within an 8GB RAM machine avoiding Out-Of-Memory crashes
+maxUploadSize = 800

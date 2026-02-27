@@ -26,6 +26,24 @@ from datetime import datetime
 from io import BytesIO
 from PIL import Image
 import cv2
+import logging
+
+# A more aggressive filter to catch Streamlit's missing context warnings 
+# which are often spawned dynamically by libraries like tqdm and annoyingly bypass basic log levels.
+class NoScriptRunContextFilter(logging.Filter):
+    def filter(self, record):
+        if "missing ScriptRunContext" in record.getMessage():
+            return False
+        return True
+
+# Apply to root logger and known Streamlit loggers
+logging.getLogger().addFilter(NoScriptRunContextFilter())
+logging.getLogger("streamlit").addFilter(NoScriptRunContextFilter())
+try:
+    from streamlit.runtime.scriptrunner.script_run_context import SCRIPT_RUN_CONTEXT_LOGGER_NAME
+    logging.getLogger(SCRIPT_RUN_CONTEXT_LOGGER_NAME).addFilter(NoScriptRunContextFilter())
+except ImportError:
+    pass
 
 from core.image_processor import ImageProcessor
 from core.db_manager import DatabaseManager
@@ -42,16 +60,34 @@ class StreamlitLogRedirector:
         self.container = container
         self.prefix = prefix
         self.buffer = []
+        try:
+            from streamlit.runtime.scriptrunner import get_script_run_ctx
+            self.ctx = get_script_run_ctx()
+        except ImportError:
+            self.ctx = None
         
     def write(self, text):
-        # Filter out some noise if needed, or just append
-        if text.strip():
-            # Add timestamp or just raw
-             self.buffer.append(text)
-             # Update the container
-             # We join the last N lines to avoid UI lag if buffer gets huge
-             display_text = "".join(self.buffer[-20:]) 
-             self.container.code(display_text, language="text")
+        if text:
+            # text could be bytes from some underlying C streams (like in OpenCV/Torch)
+            if isinstance(text, bytes):
+                text = text.decode('utf-8', errors='replace')
+                
+            if text.strip():
+                 # Assign Streamlit context to background threads (e.g. HuggingFace downloads)
+                 if self.ctx:
+                     try:
+                         from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+                         import threading
+                         if get_script_run_ctx() is None:
+                             add_script_run_ctx(threading.current_thread(), self.ctx)
+                     except Exception:
+                         pass
+
+                 self.buffer.append(text)
+                 # Update the container
+                 # We join the last N lines to avoid UI lag if buffer gets huge
+                 display_text = "".join(str(item) for item in self.buffer[-20:]) 
+                 self.container.code(display_text, language="text")
              
     def flush(self):
         pass
@@ -76,7 +112,15 @@ def load_models_v2():
         # Initialize with default threshold, can be updated later
         md = MegaDetectorWrapper(confidence_threshold=0.2)
         
+        
         print("Loading BioClip Classifier...")
+        # Add a manual context manager context to avoid streamlit context missing warnings
+        try:
+            from streamlit.runtime.scriptrunner import add_script_run_ctx
+            import threading
+            add_script_run_ctx(threading.current_thread())
+        except ImportError:
+            pass
         bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
         
         print("Initializing Day/Night Classifier...")
@@ -342,7 +386,7 @@ with tab1:
                 try:
                     with st.spinner("Initializing processing modules..."):
                         # Initialize processor
-                        st.info("📥 Loading AI models (OCR, MegaDetector V5a, BioClip). First run will take a moment...")
+                        st.info("📥 **Loading AI Models...**\n\n*Note: The first time you run this, it will download ~1.5 GB of AI models. This may take several minutes depending on your internet connection.*")
                         
                         # Load Cached Models
                         ocr_model, md_model, bio_model, dn_model = load_models_v2()
