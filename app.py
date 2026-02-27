@@ -132,7 +132,7 @@ def load_models_v2():
 # Page configuration
 st.set_page_config(
     page_title="WildlifeID Pro",
-    page_icon="🦁",
+    page_icon="line-chart",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -316,12 +316,12 @@ def display_image_with_info(image_path, detections):
 
 
 # Main UI
-st.markdown('<div class="main-header">🦁 Wildlife Analysis Dashboard</div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header">Wildlife Analysis Dashboard</div>', unsafe_allow_html=True)
 st.markdown('<div class="sub-header">Automated Camera Trap Image Analysis</div>', unsafe_allow_html=True)
 
 # Sidebar configuration
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header("Configuration")
     
     st.subheader("Processing Options")
     enable_ocr = st.checkbox("Enable OCR Metadata Extraction", value=True)
@@ -361,11 +361,11 @@ with st.sidebar:
     )
     
     st.divider()
-    st.info("💡 **Tip:** You can manually edit the detected animal names in the results table below.")
-    st.info("🌙 **Night Vision Support:** The system automatically detects infrared/grayscale images and classifies them as 'Night' regardless of brightness.")
+    st.info("**Tip:** You can manually edit the detected animal names in the results table below.")
+    st.info("**Night Vision Support:** The system automatically detects infrared/grayscale images and classifies them as 'Night' regardless of brightness.")
 
 # Main content area
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 Upload & Process", "📊 Review Results", "📈 Statistics", "📚 History & Analytics", "🔧 Diagnostics"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["Upload & Process", "Review Results", "Statistics", "History & Analytics", "Diagnostics"])
 
 with tab1:
     st.header("Upload Camera Trap Images")
@@ -378,15 +378,15 @@ with tab1:
     )
     
     if uploaded_files:
-        st.success(f"✅ {len(uploaded_files)} file(s) uploaded successfully!")
+        st.success(f"{len(uploaded_files)} file(s) uploaded successfully!")
         
         # Processing section
         with st.container():
-            if st.button("🚀 Process Images", type="primary"):
+            if st.button("Process Images", type="primary"):
                 try:
                     with st.spinner("Initializing processing modules..."):
                         # Initialize processor
-                        st.info("📥 **Loading AI Models...**\n\n*Note: The first time you run this, it will download ~1.5 GB of AI models. This may take several minutes depending on your internet connection.*")
+                        st.info("**Loading AI Models...**\n\n*Note: The first time you run this, it will download ~1.5 GB of AI models. This may take several minutes depending on your internet connection.*")
                         
                         # Load Cached Models
                         ocr_model, md_model, bio_model, dn_model = load_models_v2()
@@ -408,7 +408,7 @@ with tab1:
                             ocr_strip_percent=ocr_strip_height
                         )
 
-                        st.success("✅ Models loaded successfully!")
+                        st.success("Models loaded successfully!")
                     
                     with st.spinner("Processing images..."):
                         # Save uploaded files
@@ -423,11 +423,11 @@ with tab1:
                         df = pd.DataFrame(results)
                         st.session_state.processed_data = df
                         
-                        st.balloons()
-                        st.success("🎉 Processing complete! Switch to the 'Review Results' tab to see the data.")
+                        # st.balloons()
+                        st.success("Processing complete! Switch to the 'Review Results' tab to see the data.")
                 
                 except Exception as e:
-                    st.error(f"❌ Error during processing: {str(e)}")
+                    st.error(f"Error during processing: {str(e)}")
                     st.error(f"Error type: {type(e).__name__}")
                     import traceback
                     st.code(traceback.format_exc())
@@ -514,7 +514,7 @@ with tab2:
             st.caption(f"Total Images: {len(display_df)}")
             
         # --- Advanced Sidebar Filters ---
-        st.sidebar.markdown("### 🛠️ Filter Options")
+        st.sidebar.markdown("### Filter Options")
         
         # 1. Species Filter
         # Extract unique species from the 'detected_animal' or primary label column
@@ -587,7 +587,7 @@ with tab2:
         
 
         # --- Statistics Dashboard ---
-        st.markdown("### 📊 Overview")
+        st.markdown("### Overview")
         stat_c1, stat_c2, stat_c3, stat_c4 = st.columns(4)
         
         total_imgs = len(display_df)
@@ -607,7 +607,7 @@ with tab2:
         if st.session_state.view_mode == 'gallery':
             c_head, c_grid = st.columns([3, 1])
             with c_head:
-                st.subheader("🖼️ Image Gallery")
+                st.subheader("Image Gallery")
             with c_grid:
                 grid_cols = st.slider("Grid Size", 2, 6, 4)
             
@@ -619,7 +619,7 @@ with tab2:
                     
                     if img_path and os.path.exists(str(img_path)):
                         st.image(img_path, width="stretch")
-                        if st.button(f"🔍 Inspect", key=f"btn_inspect_{idx}"):
+                        if st.button(f"Inspect", key=f"btn_inspect_{idx}"):
                             st.session_state.view_mode = 'inspector'
                             # Find index in full display_df
                             # Reset index to find the integer loc
@@ -638,14 +638,14 @@ with tab2:
                         st.warning("Image missing")
 
         else: # Inspector View
-            st.subheader("🔍 Inspector View (One Record per Image)")
+            st.subheader("Inspector View (One Record per Image)")
             
             # Navigation
             col_nav_1, col_nav_2, col_nav_3 = st.columns([1, 2, 1])
             total_imgs = len(display_df)
             
             with col_nav_1:
-                if st.button("⬅️ Previous"):
+                if st.button("<-Previous"):
                     st.session_state.current_image_index = max(0, st.session_state.current_image_index - 1)
             with col_nav_2:
                 if total_imgs > 1:
@@ -654,7 +654,7 @@ with tab2:
                 else:
                     st.caption("Single record view")
             with col_nav_3:
-                if st.button("Next ➡️"):
+                if st.button("Next ->"):
                     st.session_state.current_image_index = min(total_imgs-1, st.session_state.current_image_index + 1)
 
             # Content
@@ -692,7 +692,7 @@ with tab2:
                      needs_update = True
                 
                 if needs_update:
-                    st.info("🔄 Auto-linking data to image content (First run for this file)...")
+                    st.info("Auto-linking data to image content (First run for this file)...")
                     # Auto-run analysis
                     with st.spinner("Analyzing high-resolution details..."):
                         ocr_model, md_model, bio_model, dn_model = load_models_v2()
@@ -719,7 +719,7 @@ with tab2:
                         
                     # --- 2. Details & Editing (Below Image) ---
                     st.divider()
-                    st.subheader("📝 Details & Edits")
+                    st.subheader("Details & Edits")
                     
                     # --- Editing Form ---
                     with st.form(key=f"edit_form_{current_idx}"):
@@ -755,7 +755,7 @@ with tab2:
                         new_verified = st.checkbox("Mark as Verified", value=is_verified)
                         
                         # Save Button
-                        if st.form_submit_button("💾 Save Changes"):
+                        if st.form_submit_button("Save Changes"):
                              # Reconstruct notes
                             final_notes = new_notes
                             if new_verified and "[VERIFIED]" not in final_notes:
@@ -829,7 +829,7 @@ with tab2:
 
         st.divider()
         # Bulk Editor (Read-Only or Limited)
-        st.subheader("📋 Results Summary (One Row per Image)")
+        st.subheader("Results Summary (One Row per Image)")
         st.dataframe(
             display_df,
             column_order=[
@@ -852,7 +852,7 @@ with tab2:
         c1, c2, c3 = st.columns([1,1,2])
         with c1:
             excel_data = create_excel_report(st.session_state.processed_data)
-            st.download_button("📊 Download Excel", data=excel_data, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+            st.download_button("Download Excel", data=excel_data, file_name=f"report_{datetime.now().strftime('%Y%m%d')}.xlsx")
         
         with c2:
             # Custom JSON generation with Base64 and specific structure
@@ -923,22 +923,22 @@ with tab2:
 
             json_str = generate_custom_json()
             st.download_button(
-                label="📋 Download JSON",
+                label="Download JSON",
                 data=json_str,
                 file_name=f"data_{datetime.now().strftime('%Y%m%d')}.json",
                 mime="application/json"
             )
         with c3:
-            if st.button("💾 Save to Database", type="secondary"):
+            if st.button("Save to Database", type="secondary"):
                 count = st.session_state.db_manager.save_results(st.session_state.processed_data)
                 st.success(f"Saved {count} records!")
     
     else:
-        st.info("👈 Please upload and process images first.")
+        st.info("Please upload and process images first.")
 
 with tab3:
     if st.session_state.processed_data is not None:
-        st.header("📈 Analysis Statistics")
+        st.header("Analysis Statistics")
         
         df = st.session_state.processed_data
         
@@ -964,26 +964,26 @@ with tab3:
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("🦁 Species Distribution")
+            st.subheader("Species Distribution")
             # Filter for animals only
             animal_df = df[df['primary_label'] == 'Animal']
             species_counts = animal_df['species_label'].value_counts()
             st.bar_chart(species_counts)
         
         with col2:
-            st.subheader("🌓 Day/Night Distribution")
+            st.subheader("Day/Night Distribution")
             day_night_counts = df['day_night'].value_counts()
             st.bar_chart(day_night_counts)
         
         # Detection confidence distribution
-        st.subheader("📊 Detection Confidence Distribution")
+        st.subheader("Detection Confidence Distribution")
         st.line_chart(df['detection_confidence'])
         
     else:
-        st.info("👈 Please upload and process images first in the 'Upload & Process' tab.")
+        st.info("Please upload and process images first in the 'Upload & Process' tab.")
 
 with tab4:
-    st.header("📚 Analysis History")
+    st.header("Analysis History")
     
     # Load history
     history_df = st.session_state.db_manager.get_history_df()
@@ -1022,13 +1022,13 @@ with tab4:
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(
-                label="📥 Export Full History (CSV)",
+                label="Export Full History (CSV)",
                 data=csv,
                 file_name=f"wildlife_history_export_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
             )
         with col2:
-            if st.button("🗑️ Clear History", type="secondary"):
+            if st.button("️ Clear History", type="secondary"):
                 if st.checkbox("Confirm Clear History? This cannot be undone."):
                     st.session_state.db_manager.clear_history()
                     st.rerun()
@@ -1036,7 +1036,7 @@ with tab4:
         st.info("No historical data found. Process and save images to build your history!")
 
 with tab5:
-    st.header("🔧 Deep Inspection Tool")
+    st.header("Deep Inspection Tool")
     st.warning("This tool helps debug model performance issues. It runs models without filtering to show all candidates.")
     
     debug_mode = st.radio("Select Image Source", ["Processed Image", "Upload Debug Image"], horizontal=True)
@@ -1064,7 +1064,7 @@ with tab5:
             ocr_strip_pct = st.slider("OCR Strip Height (%)", 0.05, 0.30, 0.10, 0.01, help="Adjust crop area for metadata")
             
         with col_dbg_2:
-            if st.button("🔍 Run Deep Inspection", type="primary"):
+            if st.button("Run Deep Inspection", type="primary"):
                 with st.spinner("Analyzing internals..."):
                     # Init specific debug processor
                     # Init specific debug processor
@@ -1164,6 +1164,6 @@ st.divider()
 st.markdown("""
     <div style='text-align: center; color: #888; padding: 1rem;'>
         <p>Wildlife Camera Trap Auto-Analyzer v1.0 | Built with Streamlit</p>
-        <p>💡 Tip: The animal detection model can be swapped for specialized models like MegaDetector</p>
+        <p>Tip: The animal detection model can be swapped for specialized models like MegaDetector</p>
     </div>
 """, unsafe_allow_html=True)

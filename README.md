@@ -91,10 +91,13 @@ Best for development and running on a personal laptop.
    
    _If installing Bare-Metal (Option B):_
    ```bash
-   pip install --user -r requirements.txt
+   # On recent Linux versions (like Ubuntu 24.04), you must bypass PEP 668 protections:
+   pip3 install --user --break-system-packages -r requirements.txt
    ```
 
-   _Tip: If you experience timeout errors during installation on slow or unreliable connections, try using `pip install --default-timeout=1000 -r requirements.txt` instead._
+   _Tip: If you experience timeout errors during installation on slow or unreliable connections, try using `pip3 install --default-timeout=1000 -r requirements.txt` instead._
+
+   _Note: During Bare-Metal installation, you may see multiple warnings stating that scripts are installed in `~/.local/bin` which is not on PATH. You can safely ignore these warnings, as we bypass them by running `python3 -m streamlit` later._
 
    > [!WARNING]
    > The first time you run an analysis, the app requires the **MegaDetector** and **BioClip** AI models (~1.5 GB). 
@@ -103,13 +106,13 @@ Best for development and running on a personal laptop.
    
    To permanently install the models to your cache *before* running the dashboard, please run the included dedicated download script:
    ```bash
-   python force_download.py
+   python3 force_download.py
    ```
    _(If this script fails due to a timeout, just re-run the command. It is designed to resume exactly where it left off until finished.)_
 
 4. **Run the application:**
    ```bash
-   streamlit run app.py
+   python3 -m streamlit run app.py
    ```
    Access at `http://localhost:8501`.
 
