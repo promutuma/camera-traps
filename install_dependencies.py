@@ -2,6 +2,8 @@ import os
 import sys
 import glob
 import tarfile
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import shutil
 import subprocess
 import threading
