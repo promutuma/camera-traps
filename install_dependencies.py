@@ -31,6 +31,34 @@ def extract_pkg_name(line):
         return pkg
     return None
 
+def detect_tty():
+    if sys.stdout.isatty():
+        return True
+        
+    term = os.environ.get("TERM", "").lower()
+    if term in ("xterm", "xterm-256color", "screen", "screen-256color", "tmux", "tmux-256color", "rxvt", "cygwin"):
+        return True
+        
+    if "COLORTERM" in os.environ:
+        return True
+        
+    if "BASH_VERSION" in os.environ or "SHELL" in os.environ:
+        return True
+        
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            hStdout = kernel32.GetStdHandle(-11)
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(hStdout, ctypes.byref(mode)):
+                if kernel32.SetConsoleMode(hStdout, mode.value | 0x0004):
+                    return True
+        except Exception:
+            pass
+            
+    return False
+
 def format_status(pkg, status_obj, is_tty, cols):
     pkg_str = f"  - {pkg}: "
     phase = "Downloading"
@@ -126,6 +154,7 @@ def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_
     
     cmd = [
         sys.executable, "-m", "pip", "download",
+        "--progress-bar", "on",
         "--dest", pkg_dest_dir,
         package
     ] + extra_args
@@ -161,14 +190,38 @@ def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_
                     cleaned = clean_line(line)
                     pkg = extract_pkg_name(cleaned)
                     if pkg:
+                        matched_existing = None
+                        norm_pkg = pkg.lower().replace("-", "_")
                         with list_lock:
-                            if pkg not in progress_dict:
+                            for existing in tracked_items:
+                                norm_existing = existing.lower().replace("-", "_")
+                                if (norm_pkg == norm_existing or 
+                                    norm_pkg.startswith(norm_existing + "_") or 
+                                    norm_pkg.startswith(norm_existing + "-") or
+                                    norm_existing.startswith(norm_pkg + "_") or 
+                                    norm_existing.startswith(norm_pkg + "-")):
+                                    matched_existing = existing
+                                    break
+                            
+                            if matched_existing:
+                                if len(pkg) > len(matched_existing):
+                                    try:
+                                        idx = tracked_items.index(matched_existing)
+                                        tracked_items[idx] = pkg
+                                        if matched_existing in progress_dict:
+                                            progress_dict[pkg] = progress_dict.pop(matched_existing)
+                                    except ValueError:
+                                        pass
+                                    matched_existing = pkg
+                            else:
                                 tracked_items.append(pkg)
                                 progress_dict[pkg] = "Pending..."
-                        if active_item and active_item != pkg:
+                                matched_existing = pkg
+                                
+                        if active_item and active_item != matched_existing:
                             if isinstance(progress_dict.get(active_item), dict):
                                 progress_dict[active_item] = "Downloaded and ready"
-                        active_item = pkg
+                        active_item = matched_existing
                         
                     if active_item:
                         match = bar_pattern.search(cleaned)
@@ -287,18 +340,7 @@ def main():
     }
     
     last_printed_lines = 0
-    is_tty = sys.stdout.isatty()
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            hStdout = kernel32.GetStdHandle(-11)
-            mode = ctypes.c_ulong()
-            if kernel32.GetConsoleMode(hStdout, ctypes.byref(mode)):
-                if kernel32.SetConsoleMode(hStdout, mode.value | 0x0004):
-                    is_tty = True
-        except Exception:
-            pass
+    is_tty = detect_tty()
     last_print_time = 0.0
     last_output = ""
     
@@ -310,14 +352,50 @@ def main():
             cols = 80
 
         # Build progress status
-        status_lines = []
+        completed_items = []
+        active_items = []
+        failed_items = []
+        
         with list_lock:
-            items_to_print = list(tracked_items)
+            items_to_process = list(tracked_items)
             
-        for pkg in items_to_print:
+        for pkg in items_to_process:
             status = progress_dict.get(pkg, "Pending...")
-            formatted = format_status(pkg, status, is_tty, cols)
-            status_lines.append(formatted)
+            if status == "Downloaded and ready" or status == "Downloaded":
+                completed_items.append(pkg)
+            elif status == "Failed" or (isinstance(status, dict) and status.get("phase") == "Failed"):
+                failed_items.append(pkg)
+            elif isinstance(status, dict) and status.get("phase") == "Using Cache":
+                completed_items.append(pkg)
+            elif status != "Pending...":
+                active_items.append(pkg)
+                
+        total_resolved = len(items_to_process)
+        completed_count = len(completed_items)
+        failed_count = len(failed_items)
+        active_count = len(active_items)
+        
+        status_lines = []
+        header = f"[INFO] Downloading dependencies: {completed_count}/{total_resolved} complete, {active_count} active"
+        if failed_count > 0:
+            header += f", \033[31m{failed_count} failed\033[0m" if is_tty else f", {failed_count} failed"
+        status_lines.append(header)
+        
+        # Show active items (usually at most 5 due to ThreadPoolExecutor workers)
+        for pkg in active_items:
+            status = progress_dict.get(pkg)
+            status_lines.append(format_status(pkg, status, is_tty, cols))
+            
+        # Show recently completed items (last 5)
+        recent_completed = completed_items[-5:]
+        for pkg in recent_completed:
+            status = progress_dict.get(pkg)
+            status_lines.append(format_status(pkg, status, is_tty, cols))
+            
+        # Show failed items if any (last 5)
+        for pkg in failed_items[-5:]:
+            status = progress_dict.get(pkg)
+            status_lines.append(format_status(pkg, status, is_tty, cols))
             
         current_output = "\n".join(status_lines)
         if current_output != last_output:
@@ -333,10 +411,16 @@ def main():
                 current_time = time.time()
                 if current_time - last_print_time >= 5.0:
                     print("\n--- Download Progress ---")
-                    for pkg in items_to_print:
-                        status_obj = progress_dict.get(pkg, "Pending...")
-                        formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
-                        print(formatted_plain)
+                    print(header)
+                    for pkg in active_items:
+                        status = progress_dict.get(pkg)
+                        print(format_status(pkg, status, is_tty=False, cols=80))
+                    for pkg in recent_completed:
+                        status = progress_dict.get(pkg)
+                        print(format_status(pkg, status, is_tty=False, cols=80))
+                    for pkg in failed_items[-5:]:
+                        status = progress_dict.get(pkg)
+                        print(format_status(pkg, status, is_tty=False, cols=80))
                     print("-------------------------")
                     last_print_time = current_time
                     last_output = current_output
@@ -355,24 +439,34 @@ def main():
         cols = 80
 
     status_lines = []
-    for pkg in tracked_items:
-        status = progress_dict.get(pkg, "Downloaded and ready")
-        formatted = format_status(pkg, status, is_tty, cols)
-        status_lines.append(formatted)
+    header = f"[OK] Download completed: {len(tracked_items)} dependencies successfully resolved."
+    status_lines.append(header)
+    
+    failed_packages = [pkg for pkg in tracked_items if progress_dict.get(pkg) == "Failed"]
+    if failed_packages:
+        status_lines.append(f"\033[31m[ERROR] The following {len(failed_packages)} packages failed to install:\033[0m" if is_tty else f"[ERROR] The following {len(failed_packages)} packages failed to install:")
+        for pkg in failed_packages:
+            status_lines.append(format_status(pkg, "Failed", is_tty, cols))
         
     if is_tty:
         if last_printed_lines > 0:
             sys.stdout.write(f"\033[{last_printed_lines}A")
+        # Clear the old rolling dashboard lines completely
+        for _ in range(last_printed_lines):
+            sys.stdout.write("\r\033[K\n")
+        sys.stdout.write(f"\033[{last_printed_lines}A")
+        
+        # Print the final clean summary
         for line in status_lines:
             sys.stdout.write(f"\r\033[K{line}\n")
         sys.stdout.flush()
     else:
-        print("\n--- Final Download Status ---")
-        for pkg in tracked_items:
-            status_obj = progress_dict.get(pkg, "Downloaded and ready")
-            formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
-            print(formatted_plain)
-        print("-----------------------------")
+        print("\n--- Final Download Summary ---")
+        print(header)
+        if failed_packages:
+            for pkg in failed_packages:
+                print(format_status(pkg, "Failed", is_tty=False, cols=80))
+        print("------------------------------")
         
     # Check execution results
     failed = False
