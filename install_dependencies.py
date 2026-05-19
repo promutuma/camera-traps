@@ -288,6 +288,17 @@ def main():
     
     last_printed_lines = 0
     is_tty = sys.stdout.isatty()
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            hStdout = kernel32.GetStdHandle(-11)
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(hStdout, ctypes.byref(mode)):
+                if kernel32.SetConsoleMode(hStdout, mode.value | 0x0004):
+                    is_tty = True
+        except Exception:
+            pass
     last_print_time = 0.0
     last_output = ""
     
