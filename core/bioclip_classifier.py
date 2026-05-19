@@ -11,13 +11,14 @@ class BioClipClassifier:
     Model: hf-hub:imageomics/bioclip
     """
     
-    def __init__(self, species_list: Optional[List[str]] = None):
+    def __init__(self, species_list: Optional[List[str]] = None, low_spec: bool = False):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.preprocess = None
         self.tokenizer = None
         self.species_list = species_list or []
         self.text_features = None
+        self.low_spec = low_spec
         
         # Initialize model
         self._load_model()
@@ -28,12 +29,27 @@ class BioClipClassifier:
             
     def _load_model(self):
         try:
-            print(f"Loading BioClip on {self.device}...")
+            if self.low_spec:
+                self.device = "cpu"
+                
+            print(f"Loading BioClip on {self.device} (Low-Spec: {self.low_spec})...")
             # Create model and transforms
-            # using 'ViT-B-16-plus-240' pretrained on 'laion400m_e32' usually, 
-            # but using the specific HF hub string as requested
             model_name = 'hf-hub:imageomics/bioclip'
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(model_name)
+            
+            # Apply Dynamic Quantization if low-spec mode is active
+            if self.low_spec and self.model:
+                try:
+                    import torch
+                    self.model = torch.quantization.quantize_dynamic(
+                        self.model,
+                        {torch.nn.Linear},
+                        dtype=torch.qint8
+                    )
+                    print("BioClip dynamically quantized (INT8) successfully.")
+                except Exception as q_err:
+                    print(f"Failed to quantize BioClip: {q_err}")
+
             self.model.to(self.device)
             self.model.eval()
             self.tokenizer = open_clip.get_tokenizer(model_name)

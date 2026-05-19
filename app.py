@@ -103,8 +103,8 @@ class StreamlitLogRedirector:
         pass
 
 @st.cache_resource(show_spinner="Loading AI Models...")
-def load_models_v2():
-    """Load and cache heavy AI models."""
+def load_models_v2(low_spec: bool = False):
+    """Load and cache heavy AI models, with optional low-spec optimization."""
     
     # Create a place for logs
     log_expander = st.expander("Show Model Loading Logs", expanded=True)
@@ -115,13 +115,22 @@ def load_models_v2():
     
     # Capture stdio
     with contextlib.redirect_stdout(redirector), contextlib.redirect_stderr(redirector):
-        print("Starting Model Loading...")
-        ocr = OCRProcessor()
+        print(f"Starting Model Loading (Low-Spec Mode: {low_spec})...")
+        
+        # Apply thread count limits if low_spec is enabled
+        if low_spec:
+            try:
+                import torch
+                torch.set_num_threads(1)
+                print("Setting PyTorch threads to 1 for low-spec mode.")
+            except Exception as t_err:
+                print(f"Could not set thread limit: {t_err}")
+                
+        ocr = OCRProcessor(low_spec=low_spec)
         
         print("Initializing MegaDetector Wrapper...")
         # Initialize with default threshold, can be updated later
-        md = MegaDetectorWrapper(confidence_threshold=0.2)
-        
+        md = MegaDetectorWrapper(confidence_threshold=0.2, low_spec=low_spec)
         
         print("Loading BioClip Classifier...")
         # Add a manual context manager context to avoid streamlit context missing warnings
@@ -131,7 +140,7 @@ def load_models_v2():
             add_script_run_ctx(threading.current_thread())
         except ImportError:
             pass
-        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
+        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES, low_spec=low_spec)
         
         print("Initializing Day/Night Classifier...")
         dn = DayNightClassifier()
@@ -379,6 +388,11 @@ with st.sidebar:
         value=True,
         help="Blur faces and vehicles after processing. Scrubbed copies are shown in the review UI; originals are preserved."
     )
+    enable_low_spec = st.checkbox(
+        "Low-Spec / Low-Memory Mode",
+        value=False,
+        help="Enables dynamic PyTorch INT8 model quantization and reduces thread usage. Recommended for computers with < 8 GB RAM."
+    )
     
     # Detection mode selector
     # Professional Pipeline (Fixed Mode)
@@ -485,7 +499,7 @@ with tab1:
                         st.info("**Loading AI Models...**\n\n*Note: The first time you run this, it will download ~1.5 GB of AI models. This may take several minutes depending on your internet connection.*")
                         
                         # Load Cached Models
-                        ocr_model, md_model, bio_model, dn_model = load_models_v2()
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
                         
                         # Apply Runtime Settings
                         md_model.set_confidence_threshold(detection_confidence)
@@ -809,7 +823,7 @@ with tab2:
                     st.info("Auto-linking data to image content (First run for this file)...")
                     # Auto-run analysis
                     with st.spinner("Analyzing high-resolution details..."):
-                        ocr_model, md_model, bio_model, dn_model = load_models_v2()
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
                         md_model.set_confidence_threshold(detection_confidence)
                         dn_model.brightness_threshold = brightness_threshold
                         animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
@@ -1181,8 +1195,7 @@ with tab5:
             if st.button("Run Deep Inspection", type="primary"):
                 with st.spinner("Analyzing internals..."):
                     # Init specific debug processor
-                    # Init specific debug processor
-                    ocr_model, md_model, bio_model, dn_model = load_models_v2()
+                    ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
                     
                     # Ensure debug settings
                     # md_model.set_confidence_threshold(0.0) # Debug often wants low threshold, but detect_all handles this independently

@@ -31,8 +31,9 @@ class MegaDetectorWrapper:
     # MDv5a Classes: 1=Animal, 2=Person, 3=Vehicle
     CLASS_MAP = {'1': 'Animal', '2': 'Person', '3': 'Vehicle'}
     
-    def __init__(self, confidence_threshold: float = 0.2):
+    def __init__(self, confidence_threshold: float = 0.2, low_spec: bool = False):
         self.confidence_threshold = confidence_threshold
+        self.low_spec = low_spec
         self.model = None
         self.load_error = None
         self._load_model()
@@ -46,9 +47,34 @@ class MegaDetectorWrapper:
             return
             
         try:
-            print("Loading MegaDetector V5a...")
+            print(f"Loading MegaDetector V5a (Low-Spec: {self.low_spec})...")
             # Automatically downloads MDv5a if not present
             self.model = run_detector.load_detector("MDV5a")
+            
+            # Apply dynamic quantization to MegaDetector model
+            if self.low_spec and self.model:
+                try:
+                    import torch
+                    target_model = None
+                    if hasattr(self.model, 'model'):
+                        target_model = self.model.model
+                    elif isinstance(self.model, torch.nn.Module):
+                        target_model = self.model
+                        
+                    if target_model:
+                        quantized_model = torch.quantization.quantize_dynamic(
+                            target_model,
+                            {torch.nn.Linear, torch.nn.LSTM},
+                            dtype=torch.qint8
+                        )
+                        if hasattr(self.model, 'model'):
+                            self.model.model = quantized_model
+                        else:
+                            self.model = quantized_model
+                        print("MegaDetector dynamically quantized (INT8) successfully.")
+                except Exception as q_err:
+                    print(f"Failed to quantize MegaDetector: {q_err}")
+                    
             print("MDv5a loaded successfully.")
         except Exception as e:
             print(f"Error loading MDv5a: {e}")

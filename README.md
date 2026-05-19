@@ -390,6 +390,7 @@ All module-not-found errors across every file will disappear immediately.
   - Removed upper-bound limit (`<2.0.0`) on `numpy` to allow installing pre-compiled Numpy 2.x wheels on systems using newer Python runtimes (e.g. Python 3.14).
   - Enhanced the macOS/Linux setup installer (`install.sh`) to automatically detect compatibility-friendly Python installations (`python3.13` and `python3.12`) before falling back to default `python3`.
   - Fixed a `TypeError` in Excel report generation (`create_excel_report`) caused by `apply(len)` encountering null/missing float values on newer Pandas/Arrow string backends.
+  - Added a **Low-Spec / Low-Memory Mode** toggle to the sidebar, enabling INT8 dynamic quantization for PyTorch (used by BioClip, MegaDetector, and EasyOCR) and restricting CPU thread count to 1 to prevent memory issues on systems with less than 8 GB RAM.
 
 ## License
 

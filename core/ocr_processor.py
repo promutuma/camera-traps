@@ -25,9 +25,30 @@ from typing import Dict, Optional, Tuple
 class OCRProcessor:
     """Handles OCR extraction from camera trap metadata strips."""
     
-    def __init__(self):
+    def __init__(self, low_spec: bool = False):
         """Initialize EasyOCR reader with English language support."""
+        self.low_spec = low_spec
         self.reader = easyocr.Reader(['en'], gpu=False)
+        
+        # Apply dynamic quantization to reader models if in low-spec mode
+        if self.low_spec:
+            try:
+                import torch
+                if hasattr(self.reader, 'detector') and self.reader.detector:
+                    self.reader.detector = torch.quantization.quantize_dynamic(
+                        self.reader.detector,
+                        {torch.nn.Linear, torch.nn.LSTM},
+                        dtype=torch.qint8
+                    )
+                if hasattr(self.reader, 'recognizer') and self.reader.recognizer:
+                    self.reader.recognizer = torch.quantization.quantize_dynamic(
+                        self.reader.recognizer,
+                        {torch.nn.Linear, torch.nn.LSTM},
+                        dtype=torch.qint8
+                    )
+                print("EasyOCR reader models dynamically quantized (INT8) for low-spec mode.")
+            except Exception as q_err:
+                print(f"Failed to quantize EasyOCR: {q_err}")
     
     def extract_metadata_strip(self, image: np.ndarray, strip_height_percent: float = 0.10) -> np.ndarray:
         """
