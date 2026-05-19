@@ -12,8 +12,24 @@ from concurrent.futures import ThreadPoolExecutor
 # Regex to match contiguous segments of progress bar characters
 bar_pattern = re.compile(r"([━╸╺█░▊▋▌▍▎▏▕■□]+)")
 
+# Regex to match package names in pip's download logs
+pattern = re.compile(r"(?:Downloading|Using cached)\s+([a-zA-Z0-9_\-\.]+?)(?:-py[30]|-cp[30]|\.metadata|\.whl|\.tar\.gz|\.zip|\s*\()")
+collecting_pattern = re.compile(r"Collecting\s+([a-zA-Z0-9_\-\.]+)")
+
 def clean_line(line):
     return " ".join(line.split())
+
+def extract_pkg_name(line):
+    m = pattern.search(line)
+    if m:
+        return m.group(1).rstrip("-")
+    m2 = collecting_pattern.search(line)
+    if m2:
+        pkg = m2.group(1)
+        # Split on common dependency specifiers
+        pkg = re.split(r"[><= \(\[#]", pkg)[0]
+        return pkg
+    return None
 
 def format_status(pkg, status_obj, is_tty, cols):
     pkg_str = f"  - {pkg}: "
@@ -103,7 +119,7 @@ def format_status(pkg, status_obj, is_tty, cols):
             parts.append(meta_text)
         return pkg_str + " ".join(parts)
 
-def download_package(package, base_dest_dir, extra_args, progress_dict):
+def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_items, list_lock):
     safe_pkg_name = package.replace(">=", "_gt_").replace("<=", "_lt_").replace("==", "_eq_").replace(" ", "_")
     pkg_dest_dir = os.path.join(base_dest_dir, f"pkg_{safe_pkg_name}")
     os.makedirs(pkg_dest_dir, exist_ok=True)
@@ -120,7 +136,10 @@ def download_package(package, base_dest_dir, extra_args, progress_dict):
         stderr=subprocess.PIPE
     )
     
+    active_item = None
+    
     def read_stdout(stream):
+        nonlocal active_item
         buffer = b""
         while True:
             chunk = stream.read(1)
@@ -140,42 +159,59 @@ def download_package(package, base_dest_dir, extra_args, progress_dict):
                 buffer = buffer[idx+1:]
                 if line:
                     cleaned = clean_line(line)
-                    # Check if this is a progress bar line
-                    match = bar_pattern.search(cleaned)
-                    if match:
-                        bar = match.group(1)
-                        meta = cleaned[match.end():].strip()
-                        progress_dict[package] = {
-                            "phase": "Downloading",
-                            "bar": bar,
-                            "meta": meta
-                        }
-                    else:
-                        if "cached" in cleaned.lower():
-                            progress_dict[package] = {
-                                "phase": "Using Cache",
-                                "bar": "",
-                                "meta": cleaned
-                            }
-                        elif "downloading" in cleaned.lower():
-                            progress_dict[package] = {
+                    pkg = extract_pkg_name(cleaned)
+                    if pkg:
+                        with list_lock:
+                            if pkg not in progress_dict:
+                                tracked_items.append(pkg)
+                                progress_dict[pkg] = "Pending..."
+                        if active_item and active_item != pkg:
+                            if isinstance(progress_dict.get(active_item), dict):
+                                progress_dict[active_item] = "Downloaded and ready"
+                        active_item = pkg
+                        
+                    if active_item:
+                        match = bar_pattern.search(cleaned)
+                        if match:
+                            bar = match.group(1)
+                            meta = cleaned[match.end():].strip()
+                            progress_dict[active_item] = {
                                 "phase": "Downloading",
-                                "bar": "",
-                                "meta": cleaned
+                                "bar": bar,
+                                "meta": meta
                             }
                         else:
-                            progress_dict[package] = {
-                                "phase": "Resolving",
-                                "bar": "",
-                                "meta": cleaned
-                            }
+                            if "cached" in cleaned.lower():
+                                progress_dict[active_item] = {
+                                    "phase": "Using Cache",
+                                    "bar": "",
+                                    "meta": cleaned
+                                }
+                            elif "downloading" in cleaned.lower():
+                                progress_dict[active_item] = {
+                                    "phase": "Downloading",
+                                    "bar": "",
+                                    "meta": cleaned
+                                }
+                            elif "saved" in cleaned.lower() or "successfully downloaded" in cleaned.lower():
+                                progress_dict[active_item] = "Downloaded and ready"
+                            else:
+                                current_status = progress_dict.get(active_item)
+                                if isinstance(current_status, str) or current_status.get("phase") not in ("Downloading", "Using Cache"):
+                                    progress_dict[active_item] = {
+                                        "phase": "Resolving",
+                                        "bar": "",
+                                        "meta": cleaned
+                                    }
                         
     def read_stderr(stream):
+        nonlocal active_item
         for line in stream:
             line = line.decode("utf-8", errors="ignore").strip()
             if line:
                 if "error" in line.lower() or "warning" in line.lower():
-                    progress_dict[package] = {
+                    target = active_item if active_item else package
+                    progress_dict[target] = {
                         "phase": "Warning/Error",
                         "bar": "",
                         "meta": line[:60]
@@ -192,11 +228,14 @@ def download_package(package, base_dest_dir, extra_args, progress_dict):
     t1.join()
     t2.join()
     
+    if active_item:
+        if ret_code == 0:
+            progress_dict[active_item] = "Downloaded and ready"
+        else:
+            progress_dict[active_item] = "Failed"
+            
     if ret_code != 0:
-        progress_dict[package] = "Failed"
         return False, f"Failed to download {package}"
-    
-    progress_dict[package] = "Downloaded and ready"
     return True, f"Successfully downloaded {package}"
 
 def main():
@@ -234,25 +273,23 @@ def main():
         if not any("ultralytics-yolov5" in pkg for pkg in packages_to_download):
             packages_to_download.append("ultralytics-yolov5==0.1.1")
             
-    print(f"[INFO] Initializing parallel download of {len(packages_to_download)} packages...")
+    print(f"[INFO] Initializing parallel download of dependencies...")
     
     # 2. Concurrently download packages
-    progress_dict = {pkg: "Pending..." for pkg in packages_to_download}
+    tracked_items = []
+    progress_dict = {}
+    list_lock = threading.Lock()
     
     executor = ThreadPoolExecutor(max_workers=5)
     futures = {
-        executor.submit(download_package, pkg, temp_dir, extra_args, progress_dict): pkg 
+        executor.submit(download_package, pkg, temp_dir, extra_args, progress_dict, tracked_items, list_lock): pkg 
         for pkg in packages_to_download
     }
     
-    num_lines = len(packages_to_download)
+    last_printed_lines = 0
     is_tty = sys.stdout.isatty()
-    if is_tty:
-        for _ in range(num_lines):
-            print()
-            
-    last_output = ""
     last_print_time = 0.0
+    last_output = ""
     
     while not all(f.done() for f in futures):
         # Fetch current terminal dimensions
@@ -263,7 +300,10 @@ def main():
 
         # Build progress status
         status_lines = []
-        for pkg in packages_to_download:
+        with list_lock:
+            items_to_print = list(tracked_items)
+            
+        for pkg in items_to_print:
             status = progress_dict.get(pkg, "Pending...")
             formatted = format_status(pkg, status, is_tty, cols)
             status_lines.append(formatted)
@@ -271,16 +311,18 @@ def main():
         current_output = "\n".join(status_lines)
         if current_output != last_output:
             if is_tty:
-                sys.stdout.write(f"\033[{num_lines}A")
+                if last_printed_lines > 0:
+                    sys.stdout.write(f"\033[{last_printed_lines}A")
                 for line in status_lines:
                     sys.stdout.write(f"\r\033[K{line}\n")
                 sys.stdout.flush()
+                last_printed_lines = len(status_lines)
                 last_output = current_output
             else:
                 current_time = time.time()
                 if current_time - last_print_time >= 5.0:
                     print("\n--- Download Progress ---")
-                    for pkg in packages_to_download:
+                    for pkg in items_to_print:
                         status_obj = progress_dict.get(pkg, "Pending...")
                         formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
                         print(formatted_plain)
@@ -290,6 +332,11 @@ def main():
                     
         time.sleep(0.5)
         
+    # Final clean up states
+    for pkg in tracked_items:
+        if isinstance(progress_dict.get(pkg), dict):
+            progress_dict[pkg] = "Downloaded and ready"
+
     # Final print status
     try:
         cols = shutil.get_terminal_size().columns
@@ -297,18 +344,20 @@ def main():
         cols = 80
 
     status_lines = []
-    for pkg in packages_to_download:
+    for pkg in tracked_items:
         status = progress_dict.get(pkg, "Downloaded and ready")
         formatted = format_status(pkg, status, is_tty, cols)
         status_lines.append(formatted)
+        
     if is_tty:
-        sys.stdout.write(f"\033[{num_lines}A")
+        if last_printed_lines > 0:
+            sys.stdout.write(f"\033[{last_printed_lines}A")
         for line in status_lines:
             sys.stdout.write(f"\r\033[K{line}\n")
         sys.stdout.flush()
     else:
         print("\n--- Final Download Status ---")
-        for pkg in packages_to_download:
+        for pkg in tracked_items:
             status_obj = progress_dict.get(pkg, "Downloaded and ready")
             formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
             print(formatted_plain)
