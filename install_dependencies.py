@@ -257,11 +257,13 @@ def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_
                                         "meta": cleaned
                                     }
                         
+    stderr_lines = []
     def read_stderr(stream):
         nonlocal active_item
         for line in stream:
             line = line.decode("utf-8", errors="ignore").strip()
             if line:
+                stderr_lines.append(line)
                 if "error" in line.lower() or "warning" in line.lower():
                     target = active_item if active_item else package
                     progress_dict[target] = {
@@ -288,7 +290,8 @@ def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_
             progress_dict[active_item] = "Failed"
             
     if ret_code != 0:
-        return False, f"Failed to download {package}"
+        err_msg = "\n".join(stderr_lines[-5:]) if stderr_lines else "Unknown error"
+        return False, f"Failed to download {package}. Pip output:\n{err_msg}"
     return True, f"Successfully downloaded {package}"
 
 def main():
@@ -308,23 +311,76 @@ def main():
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir, exist_ok=True)
     
+    # Pre-download, patch and compile ultralytics-yolov5 wheel synchronously first.
+    # This prevents pip download from executing unpatched setup.py metadata code online.
+    print("[INFO] Pre-downloading and patching ultralytics-yolov5...")
+    yolo_url = "https://files.pythonhosted.org/packages/96/30/75569405437893eaa6ca177f2b8493d6d54318a62b45cf693463e51ef572/ultralytics-yolov5-0.1.1.tar.gz"
+    yolo_archive = os.path.join(temp_dir, "ultralytics-yolov5-0.1.1.tar.gz")
+    try:
+        import urllib.request
+        urllib.request.urlretrieve(yolo_url, yolo_archive)
+        
+        yolo_extract = os.path.join(temp_dir, "extracted_yolo")
+        with tarfile.open(yolo_archive, "r:gz") as tar:
+            tar.extractall(path=yolo_extract)
+            
+        setup_files = glob.glob(os.path.join(yolo_extract, "*", "setup.py"))
+        if setup_files:
+            setup_path = setup_files[0]
+            pkg_dir = os.path.dirname(setup_path)
+            with open(setup_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            target = "README = request.urlopen('https://raw.githubusercontent.com/ultralytics/yolov5/master/README.md').read().decode('utf-8')"
+            replacement = "README = 'ultralytics-yolov5 description'"
+            if target in content:
+                content = content.replace(target, replacement)
+            else:
+                import re
+                content = re.sub(
+                    r"README\s*=\s*request\.urlopen\([^)]+\)\.read\(\)\.decode\([^)]+\)",
+                    "README = 'ultralytics-yolov5 description'",
+                    content
+                )
+            with open(setup_path, "w", encoding="utf-8") as f:
+                f.write(content)
+                
+            print("[INFO] Pre-building patched ultralytics-yolov5 wheel...")
+            wheel_cmd = [
+                sys.executable, "-m", "pip", "wheel",
+                "--no-deps",
+                "--wheel-dir", temp_dir,
+                pkg_dir
+            ] + extra_args
+            subprocess.run(wheel_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+        if os.path.exists(yolo_archive):
+            os.remove(yolo_archive)
+        if os.path.exists(yolo_extract):
+            shutil.rmtree(yolo_extract)
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to pre-build patched ultralytics-yolov5: {e}")
+        sys.exit(1)
+        
     # 1. Determine packages
     packages_to_download = []
     if is_conda:
-        packages_to_download = ["megadetector>=5.0.0", "ultralytics-yolov5==0.1.1"]
+        packages_to_download = ["megadetector>=5.0.0"]
     else:
         if os.path.exists(requirements_file):
             with open(requirements_file, "r") as f:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#"):
-                        packages_to_download.append(line)
+                        if "ultralytics-yolov5" not in line:
+                            packages_to_download.append(line)
         else:
             print(f"[ERROR] Requirements file {requirements_file} not found.")
             sys.exit(1)
             
-        if not any("ultralytics-yolov5" in pkg for pkg in packages_to_download):
-            packages_to_download.append("ultralytics-yolov5==0.1.1")
+    # Add find-links so that dependent packages find the pre-built wheel locally
+    extra_args += ["--find-links", temp_dir]
             
     print(f"[INFO] Initializing parallel download of dependencies...")
     
@@ -499,64 +555,11 @@ def main():
             except OSError:
                 pass
                 
-    # 4. Find and patch ultralytics-yolov5
-    archives = glob.glob(os.path.join(temp_dir, "ultralytics-yolov5-*.tar.gz"))
-    if not archives:
-        wheels = glob.glob(os.path.join(temp_dir, "ultralytics_yolov5-*.whl"))
-        if wheels:
-            print("[INFO] ultralytics-yolov5 already exists as a wheel. Skipping patch.")
-        else:
-            print("[ERROR] Could not find ultralytics-yolov5 package in downloads.")
-            sys.exit(1)
-    else:
-        archive_path = archives[0]
-        extract_dir = os.path.join(temp_dir, "extracted")
-        print(f"[INFO] Extracting {archive_path} for patching...")
-        with tarfile.open(archive_path, "r:gz") as tar:
-            tar.extractall(path=extract_dir)
-            
-        setup_files = glob.glob(os.path.join(extract_dir, "*", "setup.py"))
-        if not setup_files:
-            print("[ERROR] Could not find setup.py in extracted ultralytics-yolov5.")
-            sys.exit(1)
-        setup_path = setup_files[0]
-        pkg_dir = os.path.dirname(setup_path)
-        
-        print(f"[INFO] Patching setup.py in {setup_path}...")
-        with open(setup_path, "r", encoding="utf-8") as f:
-            content = f.read()
-            
-        target = "README = request.urlopen('https://raw.githubusercontent.com/ultralytics/yolov5/master/README.md').read().decode('utf-8')"
-        replacement = "README = 'ultralytics-yolov5 description'"
-        
-        if target in content:
-            content = content.replace(target, replacement)
-        else:
-            import re
-            content, count = re.subn(
-                r"README\s*=\s*request\.urlopen\([^)]+\)\.read\(\)\.decode\([^)]+\)",
-                "README = 'ultralytics-yolov5 description'",
-                content
-            )
-            
-        with open(setup_path, "w", encoding="utf-8") as f:
-            f.write(content)
-            
-        print("[INFO] Building wheel from patched ultralytics-yolov5...")
-        wheel_cmd = [
-            sys.executable, "-m", "pip", "wheel",
-            "--no-deps",
-            "--wheel-dir", temp_dir,
-            pkg_dir
-        ] + extra_args
-        
-        result = subprocess.run(wheel_cmd)
-        if result.returncode != 0:
-            print("[ERROR] Failed to build wheel for patched ultralytics-yolov5.")
-            sys.exit(1)
-            
-        os.remove(archive_path)
-        shutil.rmtree(extract_dir)
+    # 4. Verify ultralytics-yolov5 wheel exists
+    wheels = glob.glob(os.path.join(temp_dir, "ultralytics_yolov5-*.whl"))
+    if not wheels:
+        print("[ERROR] Could not find pre-built ultralytics-yolov5 wheel.")
+        sys.exit(1)
         
     # 5. Offline install
     print("[INFO] Installing packages offline from local cache...")
