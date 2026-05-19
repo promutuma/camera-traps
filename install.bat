@@ -26,17 +26,20 @@ echo [INFO] Setting up Conda environment from environment.yml...
 set PYTHONHTTPSVERIFY=0
 
 REM --- Create temporary SSL patch directory and sitecustomize.py ---
-mkdir temp_ssl_patch
-echo import ssl > temp_ssl_patch\sitecustomize.py
-echo ssl._create_default_https_context = ssl._create_unverified_context >> temp_ssl_patch\sitecustomize.py
-set PYTHONPATH=temp_ssl_patch;!PYTHONPATH!
+REM     Use absolute path so pip subprocesses (which run from a temp dir) can find it.
+set SSL_PATCH_DIR=%~dp0temp_ssl_patch
+mkdir "!SSL_PATCH_DIR!"
+(echo import ssl) > "!SSL_PATCH_DIR!\sitecustomize.py"
+(echo ssl._create_default_https_context = ssl._create_unverified_context) >> "!SSL_PATCH_DIR!\sitecustomize.py"
+set PYTHONPATH=!SSL_PATCH_DIR!;!PYTHONPATH!
 
 conda env create -f environment.yml --force
 set CONDA_ERR=!errorlevel!
 
 REM --- Clean up SSL patch ---
 set PYTHONPATH=
-rd /s /q temp_ssl_patch
+rd /s /q "!SSL_PATCH_DIR!"
+set SSL_PATCH_DIR=
 
 if !CONDA_ERR! neq 0 (
     echo [ERROR] Conda environment creation failed.
@@ -109,10 +112,12 @@ set PYTHONHTTPSVERIFY=0
 set PYTHONWARNINGS=ignore::UserWarning
 
 REM --- Create temporary SSL patch directory and sitecustomize.py ---
-mkdir temp_ssl_patch
-echo import ssl > temp_ssl_patch\sitecustomize.py
-echo ssl._create_default_https_context = ssl._create_unverified_context >> temp_ssl_patch\sitecustomize.py
-set PYTHONPATH=temp_ssl_patch;!PYTHONPATH!
+REM     Use absolute path so pip subprocesses (which run from a temp dir) can find it.
+set SSL_PATCH_DIR=%~dp0temp_ssl_patch
+mkdir "!SSL_PATCH_DIR!"
+(echo import ssl) > "!SSL_PATCH_DIR!\sitecustomize.py"
+(echo ssl._create_default_https_context = ssl._create_unverified_context) >> "!SSL_PATCH_DIR!\sitecustomize.py"
+set PYTHONPATH=!SSL_PATCH_DIR!;!PYTHONPATH!
 
 echo [INFO] Installing dependencies (10-20 min on first run)...
 pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
@@ -120,7 +125,8 @@ set PIP_ERR=!errorlevel!
 
 REM --- Clean up SSL patch ---
 set PYTHONPATH=
-rd /s /q temp_ssl_patch
+rd /s /q "!SSL_PATCH_DIR!"
+set SSL_PATCH_DIR=
 
 if !PIP_ERR! neq 0 (
     echo.
