@@ -374,6 +374,75 @@ All module-not-found errors across every file will disappear immediately.
 
 ---
 
+## Troubleshooting: No Animals Detected
+
+If the pipeline returns `Empty` or `Unknown` for all images, work through the checks below in order.
+
+### Step 1 — Check the Diagnostics Tab
+
+Open the **Diagnostics** tab, upload one of the failing images, and click **Run Deep Inspection**. This bypasses the confidence threshold and shows raw model output.
+
+- **MegaDetector status** — must show `MegaDetector Loaded Successfully`. If it shows a load error, the model file is missing or corrupt. Re-run `python force_download.py` and restart the app.
+- **Raw candidates table** — lists every detection MegaDetector found, including those below the threshold. If the table is empty, MegaDetector found nothing in the image (see Step 3). If rows are present but all have low confidence, see Step 2.
+- **BioClip predictions** — lists the top-20 species scores for the image. If this section is blank or shows a warning, BioClip did not initialise correctly (see Step 4).
+
+### Step 2 — Lower the Confidence Threshold
+
+The sidebar **Detection Confidence Threshold** defaults to **0.35**. Camera trap images (especially night/IR shots, distant animals, or dense vegetation) often produce MegaDetector scores of 0.15–0.30.
+
+- Try **0.10–0.15** first, re-process, and check whether detections appear.
+- BioClip reuses the same threshold for species scoring. With 20 wildlife classes in the list, softmax probabilities are spread across all classes; the top species may only score 0.15–0.25 even on a clear image.
+- If lowering the threshold produces too many false positives, raise the **Review Queue Threshold** instead so genuine detections surface in the queue for manual review.
+
+### Step 3 — Check Image Quality
+
+MegaDetector may return zero detections if:
+
+| Condition | What to do |
+|-----------|-----------|
+| Very dark / underexposed night image | Increase camera flash range; check if Day/Night classification is correct |
+| Animal occupies < 2% of frame | Camera trap is too far from the path; reposition |
+| Heavy motion blur | Increase shutter speed on camera settings |
+| Image is grayscale or RGBA instead of RGB | Convert to standard JPEG/RGB before uploading |
+| Corrupted or zero-byte file | Re-export from the SD card |
+
+The **Diagnostics** raw candidate table shows detections at **all** confidence levels (including below 0.01), so even a poor-quality image should contain some rows if the animal is partially visible.
+
+### Step 4 — Verify BioClip Initialised Correctly
+
+BioClip requires two things to classify species: the model weights and pre-computed text embeddings for the species list. If either is missing, it silently returns nothing.
+
+Check the app startup logs (terminal window where you ran `streamlit run app.py`) for:
+
+```
+Loading BioClip on cpu (Low-Spec: False)...
+BioClip loaded successfully.
+BioClip: Updated text features for 20 species.
+```
+
+If you see `Error loading BioClip` or `Error updating species list`, the model download is incomplete. Run `python force_download.py` and restart.
+
+### Step 5 — Disable Low-Spec Mode
+
+The **Low-Spec / Low-Memory Mode** checkbox applies INT8 dynamic quantization to MegaDetector and BioClip. On some hardware this degrades detection confidence enough that borderline detections (scores near 0.20–0.35) drop below the threshold.
+
+If Low-Spec mode is enabled:
+1. Uncheck it in the sidebar.
+2. Re-load models (click **Load & Process** again).
+3. Re-run the failing images.
+
+Only use Low-Spec mode if the app crashes due to out-of-memory errors.
+
+### Step 6 — Known Diagnostics Limitations (Current Version)
+
+Be aware of two gaps in the current Diagnostics tab output:
+
+1. **BioClip runs on the full image in the Diagnostics tab**, not on the cropped bounding box that the real pipeline uses. A score of `Zebra 0.03` in the Diagnostics view does not mean the real pipeline scored 0.03 — cropping to the animal region typically produces much higher scores. Use the raw candidate table to confirm MegaDetector found the animal first; if it did, BioClip is likely classifying it correctly in the main pipeline.
+
+2. **The Diagnostics tab always uses a 0.2 threshold internally**, regardless of the sidebar slider. If your slider is set to 0.35, the Diagnostics view may show detections that the main pipeline would filter out. Compare the raw confidence values in the candidate table directly against your slider value.
+
+---
+
 ## Technical Notes
 
 - **MegaDetector V5a** — Microsoft AI for Earth model detecting Animal / Person / Vehicle classes.
