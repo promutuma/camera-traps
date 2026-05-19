@@ -295,8 +295,10 @@ def create_excel_report(df):
         # Auto-adjust column widths
         worksheet = writer.sheets['Wildlife Data']
         for idx, col in enumerate(df_export.columns):
+            # Calculate maximum length safely, avoiding TypeErrors on nulls/missing values with newer pandas/arrow dtypes
+            lengths = df_export[col].apply(lambda x: len(str(x)) if pd.notnull(x) else 0)
             max_length = max(
-                df_export[col].astype(str).apply(len).max(),
+                lengths.max() if not lengths.empty else 0,
                 len(col)
             ) + 2
             worksheet.column_dimensions[chr(65 + idx)].width = max_length

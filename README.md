@@ -385,10 +385,11 @@ All module-not-found errors across every file will disappear immediately.
 
 ## Recent Changes
 
-- **Dependency Compatibility Updates (May 2026)**
+- **Dependency & Platform Compatibility Updates (May 2026)**
   - Changed `megadetector` constraint from `>=10.0.0` to `>=5.0.0` to match official PyPI releases.
   - Removed upper-bound limit (`<2.0.0`) on `numpy` to allow installing pre-compiled Numpy 2.x wheels on systems using newer Python runtimes (e.g. Python 3.14).
   - Enhanced the macOS/Linux setup installer (`install.sh`) to automatically detect compatibility-friendly Python installations (`python3.13` and `python3.12`) before falling back to default `python3`.
+  - Fixed a `TypeError` in Excel report generation (`create_excel_report`) caused by `apply(len)` encountering null/missing float values on newer Pandas/Arrow string backends.
 
 ## License
 
