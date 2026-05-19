@@ -6,15 +6,102 @@ import shutil
 import subprocess
 import threading
 import time
+import re
 from concurrent.futures import ThreadPoolExecutor
 
+# Regex to match contiguous segments of progress bar characters
+bar_pattern = re.compile(r"([━╸╺█░▊▋▌▍▎▏▕■□]+)")
+
 def clean_line(line):
-    # Strip common terminal progress bar blocks/lines to make the text clean
-    bar_chars = ["━", "╸", "╺", "█", "░", "▊", "▋", "▌", "▍", "▎", "▏", "▕", "■", "□"]
-    for char in bar_chars:
-        line = line.replace(char, "")
-    line = " ".join(line.split())
-    return line
+    return " ".join(line.split())
+
+def format_status(pkg, status_obj, is_tty, cols):
+    pkg_str = f"  - {pkg}: "
+    phase = "Downloading"
+    bar = ""
+    meta = ""
+    
+    if isinstance(status_obj, str):
+        if status_obj == "Pending...":
+            phase = "Pending"
+        elif status_obj == "Downloaded and ready":
+            phase = "Downloaded"
+            meta = "✓ Done"
+        elif status_obj == "Failed":
+            phase = "Failed"
+            meta = "✗ Error occurred"
+        else:
+            phase = "Resolving"
+            meta = status_obj
+    else:
+        phase = status_obj.get("phase", "Downloading")
+        bar = status_obj.get("bar", "")
+        meta = status_obj.get("meta", "")
+
+    # Allocate space based on terminal width cols (minus 1 to prevent edge wrapping)
+    budget = cols - 1 - len(pkg_str)
+    phase_text = f"[{phase}]"
+    meta_text = meta
+    bar_text = bar
+    
+    current_len = len(phase_text) + (1 if bar_text else 0) + len(bar_text) + (1 if meta_text else 0) + len(meta_text)
+    if current_len > budget:
+        if bar_text:
+            allowed_bar_len = budget - len(phase_text) - len(meta_text) - 2
+            if allowed_bar_len >= 5:
+                bar_text = bar_text[:allowed_bar_len]
+            else:
+                bar_text = ""
+                
+        current_len = len(phase_text) + (1 if bar_text else 0) + len(bar_text) + (1 if meta_text else 0) + len(meta_text)
+        if current_len > budget:
+            allowed_meta_len = budget - len(phase_text) - (2 if bar_text else 1) - len(bar_text)
+            if allowed_meta_len > 3:
+                meta_text = meta_text[:allowed_meta_len - 3] + "..."
+            else:
+                meta_text = ""
+
+    green = "\033[32m"
+    yellow = "\033[33m"
+    cyan = "\033[36m"
+    red = "\033[31m"
+    reset = "\033[0m"
+    
+    if is_tty:
+        if phase == "Pending":
+            phase_colored = f"{yellow}[Pending]{reset}"
+        elif phase == "Downloaded":
+            phase_colored = f"{green}[Downloaded]{reset}"
+        elif phase == "Failed":
+            phase_colored = f"{red}[Failed]{reset}"
+        elif phase == "Using Cache":
+            phase_colored = f"{green}[Using Cache]{reset}"
+        elif phase == "Resolving":
+            phase_colored = f"{cyan}[Resolving]{reset}"
+        else:
+            phase_colored = f"{cyan}[{phase}]{reset}"
+            
+        bar_colored = f"{green}{bar_text}{reset}" if bar_text else ""
+        
+        if "✓" in meta_text:
+            meta_text = meta_text.replace("✓", f"{green}✓{reset}")
+        if "✗" in meta_text:
+            meta_text = meta_text.replace("✗", f"{red}✗{reset}")
+            
+        parts = [phase_colored]
+        if bar_colored:
+            parts.append(bar_colored)
+        if meta_text:
+            parts.append(meta_text)
+            
+        return pkg_str + " ".join(parts)
+    else:
+        parts = [phase_text]
+        if bar_text:
+            parts.append(bar_text)
+        if meta_text:
+            parts.append(meta_text)
+        return pkg_str + " ".join(parts)
 
 def download_package(package, base_dest_dir, extra_args, progress_dict):
     safe_pkg_name = package.replace(">=", "_gt_").replace("<=", "_lt_").replace("==", "_eq_").replace(" ", "_")
@@ -33,7 +120,6 @@ def download_package(package, base_dest_dir, extra_args, progress_dict):
         stderr=subprocess.PIPE
     )
     
-    # Thread to read stdout in real-time
     def read_stdout(stream):
         buffer = b""
         while True:
@@ -54,17 +140,46 @@ def download_package(package, base_dest_dir, extra_args, progress_dict):
                 buffer = buffer[idx+1:]
                 if line:
                     cleaned = clean_line(line)
-                    if cleaned:
-                        progress_dict[package] = cleaned
+                    # Check if this is a progress bar line
+                    match = bar_pattern.search(cleaned)
+                    if match:
+                        bar = match.group(1)
+                        meta = cleaned[match.end():].strip()
+                        progress_dict[package] = {
+                            "phase": "Downloading",
+                            "bar": bar,
+                            "meta": meta
+                        }
+                    else:
+                        if "cached" in cleaned.lower():
+                            progress_dict[package] = {
+                                "phase": "Using Cache",
+                                "bar": "",
+                                "meta": cleaned
+                            }
+                        elif "downloading" in cleaned.lower():
+                            progress_dict[package] = {
+                                "phase": "Downloading",
+                                "bar": "",
+                                "meta": cleaned
+                            }
+                        else:
+                            progress_dict[package] = {
+                                "phase": "Resolving",
+                                "bar": "",
+                                "meta": cleaned
+                            }
                         
-    # Thread to read stderr in real-time
     def read_stderr(stream):
         for line in stream:
             line = line.decode("utf-8", errors="ignore").strip()
             if line:
                 if "error" in line.lower() or "warning" in line.lower():
-                    # Truncate warning/error lines so they fit nicely
-                    progress_dict[package] = f"Status: {line[:60]}..."
+                    progress_dict[package] = {
+                        "phase": "Warning/Error",
+                        "bar": "",
+                        "meta": line[:60]
+                    }
                     
     t1 = threading.Thread(target=read_stdout, args=(proc.stdout,))
     t2 = threading.Thread(target=read_stderr, args=(proc.stderr,))
@@ -131,7 +246,6 @@ def main():
     }
     
     num_lines = len(packages_to_download)
-    # Print initial spacing lines for moving cursor
     is_tty = sys.stdout.isatty()
     if is_tty:
         for _ in range(num_lines):
@@ -141,11 +255,18 @@ def main():
     last_print_time = 0.0
     
     while not all(f.done() for f in futures):
+        # Fetch current terminal dimensions
+        try:
+            cols = shutil.get_terminal_size().columns
+        except Exception:
+            cols = 80
+
         # Build progress status
         status_lines = []
         for pkg in packages_to_download:
             status = progress_dict.get(pkg, "Pending...")
-            status_lines.append(f"  - {pkg}: {status}")
+            formatted = format_status(pkg, status, is_tty, cols)
+            status_lines.append(formatted)
             
         current_output = "\n".join(status_lines)
         if current_output != last_output:
@@ -159,8 +280,10 @@ def main():
                 current_time = time.time()
                 if current_time - last_print_time >= 5.0:
                     print("\n--- Download Progress ---")
-                    for line in status_lines:
-                        print(line)
+                    for pkg in packages_to_download:
+                        status_obj = progress_dict.get(pkg, "Pending...")
+                        formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
+                        print(formatted_plain)
                     print("-------------------------")
                     last_print_time = current_time
                     last_output = current_output
@@ -168,10 +291,16 @@ def main():
         time.sleep(0.5)
         
     # Final print status
+    try:
+        cols = shutil.get_terminal_size().columns
+    except Exception:
+        cols = 80
+
     status_lines = []
     for pkg in packages_to_download:
         status = progress_dict.get(pkg, "Downloaded and ready")
-        status_lines.append(f"  - {pkg}: {status}")
+        formatted = format_status(pkg, status, is_tty, cols)
+        status_lines.append(formatted)
     if is_tty:
         sys.stdout.write(f"\033[{num_lines}A")
         for line in status_lines:
@@ -179,8 +308,10 @@ def main():
         sys.stdout.flush()
     else:
         print("\n--- Final Download Status ---")
-        for line in status_lines:
-            print(line)
+        for pkg in packages_to_download:
+            status_obj = progress_dict.get(pkg, "Downloaded and ready")
+            formatted_plain = format_status(pkg, status_obj, is_tty=False, cols=80)
+            print(formatted_plain)
         print("-----------------------------")
         
     # Check execution results
