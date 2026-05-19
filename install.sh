@@ -62,6 +62,15 @@ EOF
     fi
     echo "[OK] Conda environment 'wildlife-analyzer' created."
 
+    echo "[INFO] Installing patched ultralytics-yolov5 and megadetector..."
+    eval "$(conda shell.bash hook)"
+    conda activate wildlife-analyzer
+    python3 install_dependencies.py --conda
+    if [[ $? -ne 0 ]]; then
+        echo "[ERROR] Failed to install dependencies."
+        exit 1
+    fi
+
     # Create run.sh for conda
     cat > run.sh << 'RUNEOF'
 #!/usr/bin/env bash
@@ -124,7 +133,7 @@ EOF
     export ORIGINAL_PYTHONPATH="$PYTHONPATH"
     export PYTHONPATH="temp_ssl_patch:$PYTHONPATH"
 
-    pip install --no-cache-dir -r requirements.txt
+    python3 install_dependencies.py
     PIP_ERR=$?
 
     # Clean up SSL patch

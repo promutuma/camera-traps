@@ -48,6 +48,15 @@ if !CONDA_ERR! neq 0 (
 )
 echo [OK] Conda environment 'wildlife-analyzer' created.
 
+echo [INFO] Installing patched ultralytics-yolov5 and megadetector...
+call conda activate wildlife-analyzer
+python install_dependencies.py --conda --trusted-host pypi.org --trusted-host files.pythonhosted.org
+if errorlevel 1 (
+    echo [ERROR] Failed to install dependencies.
+    pause
+    exit /b 1
+)
+
 echo @echo off > run.bat
 echo call conda activate wildlife-analyzer >> run.bat
 echo echo Starting Wildlife Camera Trap Auto-Analyzer... >> run.bat
@@ -120,7 +129,7 @@ mkdir "!SSL_PATCH_DIR!"
 set PYTHONPATH=!SSL_PATCH_DIR!;!PYTHONPATH!
 
 echo [INFO] Installing dependencies (10-20 min on first run)...
-pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
+python install_dependencies.py --trusted-host pypi.org --trusted-host files.pythonhosted.org
 set PIP_ERR=!errorlevel!
 
 REM --- Clean up SSL patch ---
