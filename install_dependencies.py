@@ -32,6 +32,18 @@ def extract_pkg_name(line):
     return None
 
 def detect_tty():
+    # On Windows, we must set ENABLE_VIRTUAL_TERMINAL_PROCESSING first so that cmd/powershell natively support ANSI escapes.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            hStdout = kernel32.GetStdHandle(-11)
+            mode = ctypes.c_ulong()
+            if kernel32.GetConsoleMode(hStdout, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(hStdout, mode.value | 0x0004)
+        except Exception:
+            pass
+
     if sys.stdout.isatty():
         return True
         
@@ -44,18 +56,6 @@ def detect_tty():
         
     if "BASH_VERSION" in os.environ or "SHELL" in os.environ:
         return True
-        
-    if sys.platform == "win32":
-        try:
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            hStdout = kernel32.GetStdHandle(-11)
-            mode = ctypes.c_ulong()
-            if kernel32.GetConsoleMode(hStdout, ctypes.byref(mode)):
-                if kernel32.SetConsoleMode(hStdout, mode.value | 0x0004):
-                    return True
-        except Exception:
-            pass
             
     return False
 
@@ -240,7 +240,7 @@ def download_package(package, base_dest_dir, extra_args, progress_dict, tracked_
                                     "bar": "",
                                     "meta": cleaned
                                 }
-                            elif "downloading" in cleaned.lower():
+                            elif "download" in cleaned.lower() or "resuming" in cleaned.lower():
                                 progress_dict[active_item] = {
                                     "phase": "Downloading",
                                     "bar": "",
