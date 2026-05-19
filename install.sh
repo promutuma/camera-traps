@@ -65,12 +65,16 @@ RUNEOF
 else
     # ── venv path ─────────────────────────────────────────────────────────
     # Check Python
-    if command -v python3.11 &>/dev/null; then
+    if command -v python3.13 &>/dev/null; then
+        PYTHON=python3.13
+    elif command -v python3.12 &>/dev/null; then
+        PYTHON=python3.12
+    elif command -v python3.11 &>/dev/null; then
         PYTHON=python3.11
     elif command -v python3 &>/dev/null; then
         PYTHON=python3
     else
-        echo "[ERROR] Python 3 not found. Install Python 3.11 from https://www.python.org/downloads/"
+        echo "[ERROR] Python 3 not found. Install Python 3.12 from https://www.python.org/downloads/"
         exit 1
     fi
 
