@@ -23,6 +23,7 @@ REM ================================================================
 :conda_setup
 echo.
 echo [INFO] Setting up Conda environment from environment.yml...
+set PYTHONHTTPSVERIFY=0
 conda env create -f environment.yml --force
 if errorlevel 1 (
     echo [ERROR] Conda environment creation failed.
@@ -78,12 +79,37 @@ if exist "venv\" (
 
 call venv\Scripts\activate.bat
 echo [INFO] Upgrading pip...
-python -m pip install --upgrade pip --quiet
+python -m pip install --upgrade pip --quiet --trusted-host pypi.org --trusted-host files.pythonhosted.org
+
+REM --- Fix SSL certificate issues on corporate/managed networks ---
+REM     Some packages (e.g. ultralytics-yolov5) make HTTPS requests inside
+REM     their setup.py during build. On machines with SSL inspection (corporate
+REM     proxies, antivirus MITM) this fails with CERTIFICATE_VERIFY_FAILED.
+REM     pip-system-certs patches pip to use the Windows certificate store.
+echo [INFO] Installing SSL certificate helper for corporate networks...
+python -m pip install pip-system-certs --quiet --trusted-host pypi.org --trusted-host files.pythonhosted.org
+
+REM     Also set PYTHONHTTPSVERIFY=0 so that setup.py subprocesses (which use
+REM     urllib directly, bypassing pip's cert store) also skip verification.
+REM     This only applies for the duration of this installer session.
+set PYTHONHTTPSVERIFY=0
+set PYTHONWARNINGS=ignore::UserWarning
 
 echo [INFO] Installing dependencies (10-20 min on first run)...
-pip install --no-cache-dir -r requirements.txt
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
 if errorlevel 1 (
-    echo [ERROR] Dependency installation failed. Check internet connection and retry.
+    echo.
+    echo [ERROR] Dependency installation failed.
+    echo.
+    echo  Common causes on Windows:
+    echo   1. Corporate proxy / SSL inspection  ^(most common^)
+    echo      Run this command manually, then retry install.bat:
+    echo        set PYTHONHTTPSVERIFY=0
+    echo   2. No internet access
+    echo      Check your connection and proxy settings.
+    echo   3. Python version mismatch
+    echo      Use Python 3.11, 3.12, or 3.13 from python.org
+    echo.
     pause
     exit /b 1
 )

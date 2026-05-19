@@ -374,6 +374,54 @@ All module-not-found errors across every file will disappear immediately.
 
 ---
 
+## Troubleshooting: Windows Installation — SSL Certificate Error
+
+If `install.bat` fails with an error like:
+
+```
+ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]
+certificate verify failed: unable to get local issuer certificate
+ERROR: Failed to build 'ultralytics-yolov5'
+```
+
+this is a **corporate network / SSL inspection issue**, not a bug in the app. Managed Windows machines (schools, offices, government) often run a proxy that intercepts HTTPS traffic using a custom root certificate. Python does not trust that certificate by default, so any HTTPS call from inside a package's build script fails.
+
+The updated `install.bat` handles this automatically. If you are running an older version:
+
+### Option 1 — Re-run install.bat (recommended)
+
+Pull the latest version of the repository and re-run `install.bat`. The installer now:
+- Installs `pip-system-certs`, which tells pip to use the Windows certificate store (where your organisation's root CA is already trusted).
+- Sets `PYTHONHTTPSVERIFY=0` for the duration of the install session so that `setup.py` subprocesses (which bypass pip's cert store and use Python's `urllib` directly) also succeed.
+
+### Option 2 — Run manually if install.bat still fails
+
+Open **Command Prompt** in the project folder and run:
+
+```bat
+set PYTHONHTTPSVERIFY=0
+venv\Scripts\activate.bat
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
+```
+
+The `set PYTHONHTTPSVERIFY=0` line only applies to the current Command Prompt window and does not change any system settings.
+
+### Option 3 — Ask IT to add a certificate exception
+
+If your organisation's IT policy blocks `PYTHONHTTPSVERIFY=0`, ask them to export the corporate root CA certificate (`.cer` or `.pem`) and then run:
+
+```bat
+set REQUESTS_CA_BUNDLE=C:\path\to\corporate-ca.pem
+set SSL_CERT_FILE=C:\path\to\corporate-ca.pem
+pip install --no-cache-dir -r requirements.txt
+```
+
+### Why does `ultralytics-yolov5` trigger this?
+
+Unlike standard packages, `ultralytics-yolov5` makes an HTTPS download request **inside its `setup.py`** during the build step (before pip even installs it). This means pip's own certificate configuration doesn't protect it — the request goes directly through Python's `urllib`, which only trusts the certificates bundled with Python itself. On a machine with SSL inspection, that verification fails.
+
+---
+
 ## Troubleshooting: No Animals Detected
 
 If the pipeline returns `Empty` or `Unknown` for all images, work through the checks below in order.
