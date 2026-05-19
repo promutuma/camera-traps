@@ -39,7 +39,27 @@ fi
 if [[ "$USE_CONDA" == true ]]; then
     # ── Conda path ────────────────────────────────────────────────────────
     echo "[INFO] Setting up Conda environment from environment.yml..."
+    
+    # Create temporary SSL patch
+    mkdir -p temp_ssl_patch
+    cat > temp_ssl_patch/sitecustomize.py << 'EOF'
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+EOF
+    export ORIGINAL_PYTHONPATH="$PYTHONPATH"
+    export PYTHONPATH="temp_ssl_patch:$PYTHONPATH"
+
     conda env create -f environment.yml --force
+    CONDA_ERR=$?
+
+    # Clean up SSL patch
+    export PYTHONPATH="$ORIGINAL_PYTHONPATH"
+    rm -rf temp_ssl_patch
+
+    if [[ $CONDA_ERR -ne 0 ]]; then
+        echo "[ERROR] Conda environment creation failed."
+        exit 1
+    fi
     echo "[OK] Conda environment 'wildlife-analyzer' created."
 
     # Create run.sh for conda
@@ -94,7 +114,27 @@ else
     pip install --upgrade pip --quiet
 
     echo "[INFO] Installing dependencies (10–20 min on first run)..."
+    
+    # Create temporary SSL patch
+    mkdir -p temp_ssl_patch
+    cat > temp_ssl_patch/sitecustomize.py << 'EOF'
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+EOF
+    export ORIGINAL_PYTHONPATH="$PYTHONPATH"
+    export PYTHONPATH="temp_ssl_patch:$PYTHONPATH"
+
     pip install --no-cache-dir -r requirements.txt
+    PIP_ERR=$?
+
+    # Clean up SSL patch
+    export PYTHONPATH="$ORIGINAL_PYTHONPATH"
+    rm -rf temp_ssl_patch
+
+    if [[ $PIP_ERR -ne 0 ]]; then
+        echo "[ERROR] Dependency installation failed."
+        exit 1
+    fi
     echo "[OK] Dependencies installed."
 
     echo "[INFO] Pre-downloading AI models (~1.5 GB). This only happens once..."

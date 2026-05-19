@@ -25,7 +25,7 @@ def test_pipeline():
     
     try:
         md = MegaDetectorWrapper(confidence_threshold=0.1)
-        bio = BioClipClassifier()
+        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
         ocr = OCRProcessor()
         dn = DayNightClassifier()
         

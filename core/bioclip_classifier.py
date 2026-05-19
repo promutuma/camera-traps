@@ -82,7 +82,7 @@ class BioClipClassifier:
         Classify the image against the species list.
         Returns (Top Species Name, Confidence Score)
         """
-        if not self.model or not self.text_features is not None:
+        if not self.model or self.text_features is None:
             return ("Unknown", 0.0)
             
         try:
@@ -115,7 +115,7 @@ class BioClipClassifier:
         """
         Return list of (species, confidence) tuples above threshold.
         """
-        if not self.model or not self.text_features is not None:
+        if not self.model or self.text_features is None:
              return []
              
         try:

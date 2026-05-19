@@ -24,8 +24,21 @@ REM ================================================================
 echo.
 echo [INFO] Setting up Conda environment from environment.yml...
 set PYTHONHTTPSVERIFY=0
+
+REM --- Create temporary SSL patch directory and sitecustomize.py ---
+mkdir temp_ssl_patch
+echo import ssl > temp_ssl_patch\sitecustomize.py
+echo ssl._create_default_https_context = ssl._create_unverified_context >> temp_ssl_patch\sitecustomize.py
+set PYTHONPATH=temp_ssl_patch;!PYTHONPATH!
+
 conda env create -f environment.yml --force
-if errorlevel 1 (
+set CONDA_ERR=!errorlevel!
+
+REM --- Clean up SSL patch ---
+set PYTHONPATH=
+rd /s /q temp_ssl_patch
+
+if !CONDA_ERR! neq 0 (
     echo [ERROR] Conda environment creation failed.
     pause
     exit /b 1
@@ -95,9 +108,21 @@ REM     This only applies for the duration of this installer session.
 set PYTHONHTTPSVERIFY=0
 set PYTHONWARNINGS=ignore::UserWarning
 
+REM --- Create temporary SSL patch directory and sitecustomize.py ---
+mkdir temp_ssl_patch
+echo import ssl > temp_ssl_patch\sitecustomize.py
+echo ssl._create_default_https_context = ssl._create_unverified_context >> temp_ssl_patch\sitecustomize.py
+set PYTHONPATH=temp_ssl_patch;!PYTHONPATH!
+
 echo [INFO] Installing dependencies (10-20 min on first run)...
 pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
-if errorlevel 1 (
+set PIP_ERR=!errorlevel!
+
+REM --- Clean up SSL patch ---
+set PYTHONPATH=
+rd /s /q temp_ssl_patch
+
+if !PIP_ERR! neq 0 (
     echo.
     echo [ERROR] Dependency installation failed.
     echo.

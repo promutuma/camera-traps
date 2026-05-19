@@ -110,7 +110,7 @@ def test_models_and_pipeline():
             return
 
         logger.info("Loading BioClip...")
-        bio = BioClipClassifier()
+        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
         
         logger.info("Initializing AnimalDetector...")
         detector = AnimalDetector(md, bio)
