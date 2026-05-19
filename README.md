@@ -8,7 +8,7 @@ The system handles the full pipeline from raw images to publication-ready output
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)
 ![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
 ![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
-![Python](https://img.shields.io/badge/Python-3.11-blue)
+![Python](https://img.shields.io/badge/Python-3.11--3.13-blue)
 
 ---
 
@@ -83,7 +83,7 @@ Choose the environment that matches your setup:
 
 ### Option A — Windows (one-click installer)
 
-**Requirements:** Python 3.11 from [python.org](https://www.python.org/downloads/) — check **"Add Python to PATH"** during installation. Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for Conda support.
+**Requirements:** Python 3.11 - 3.13 from [python.org](https://www.python.org/downloads/) — check **"Add Python to PATH"** during installation. Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for Conda support.
 
 ```bat
 REM 1. Clone the repository
@@ -103,7 +103,7 @@ The installer detects Conda if installed and asks which environment manager you 
 
 ### Option B — macOS (one-click installer)
 
-**Requirements:** Python 3.11 (`brew install python@3.11`) or [python.org](https://www.python.org/downloads/). Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html).
+**Requirements:** Python 3.11 - 3.13 (`brew install python@3.12` or `python@3.11`) or [python.org](https://www.python.org/downloads/). Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html).
 
 ```bash
 # 1. Clone the repository
@@ -122,7 +122,7 @@ chmod +x install.sh
 
 ### Option C — Linux (one-click installer)
 
-**Requirements:** Python 3.11, `python3-venv`. On Debian/Ubuntu the installer handles system dependencies automatically via `sudo apt-get`.
+**Requirements:** Python 3.11 - 3.13, `python3-venv`. On Debian/Ubuntu the installer handles system dependencies automatically via `sudo apt-get`.
 
 ```bash
 # 1. Clone the repository
