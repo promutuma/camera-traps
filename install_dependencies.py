@@ -368,7 +368,7 @@ def main():
     # 1. Determine packages
     packages_to_download = []
     if is_conda:
-        packages_to_download = ["megadetector>=5.0.0"]
+        packages_to_download = ["megadetector"]
     else:
         if os.path.exists(requirements_file):
             with open(requirements_file, "r") as f:

@@ -6,14 +6,36 @@ A Streamlit application for processing camera trap images.
 import os
 import sys
 
-# Fix Windows console encoding issues
-# Set environment variable and reconfigure streams
 if sys.platform == 'win32':
+    # Fix Windows console encoding
     os.environ['PYTHONIOENCODING'] = 'utf-8'
-    # Reconfigure stdout/stderr encoding without wrapping
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+    # Prevent the most common Windows PyTorch crash: multiple OpenMP runtimes
+    # (libiomp5md.dll from PyTorch/MKL + vcomp*.dll from OpenCV) deadlocking.
+    # Must be set before cv2, torch, or easyocr are imported.
+    os.environ.setdefault('OMP_NUM_THREADS', '1')
+    os.environ.setdefault('MKL_NUM_THREADS', '1')
+    os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+    os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
+    # Allow duplicate OpenMP libs rather than hard-crashing when the constraint
+    # above is not enough (e.g. third-party YOLO wheels ship their own copy).
+    os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
+
+    # Block CUDA/GPU driver access entirely on Windows.
+    # torch.cuda.is_available() opens a CUDA context even when gpu=False is set.
+    # On Windows, this GPU driver probe can TDR-crash the driver hard enough
+    # that Windows reboots instantly with no BSOD (common with Optimus/hybrid
+    # GPU laptops or outdated drivers).  Setting this before any torch import
+    # makes CUDA see zero devices so the driver is never touched.
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+
+    # Required on Windows so that libraries using multiprocessing (EasyOCR, YOLO)
+    # can spawn worker processes safely when the entry point is not __main__.
+    import multiprocessing as _mp
+    _mp.freeze_support()
 
 import streamlit as st
 import pandas as pd
@@ -117,14 +139,17 @@ def load_models_v2(low_spec: bool = False):
     with contextlib.redirect_stdout(redirector), contextlib.redirect_stderr(redirector):
         print(f"Starting Model Loading (Low-Spec Mode: {low_spec})...")
         
-        # Apply thread count limits if low_spec is enabled
-        if low_spec:
-            try:
-                import torch
+        # On Windows, always cap PyTorch threads to 1 to prevent the
+        # thread-stack exhaustion crash that occurs when EasyOCR + YOLO +
+        # BioClip each spin up cpu_count threads simultaneously.
+        # On Linux/Mac, only apply the cap in low-spec mode.
+        try:
+            import torch
+            if sys.platform == 'win32' or low_spec:
                 torch.set_num_threads(1)
-                print("Setting PyTorch threads to 1 for low-spec mode.")
-            except Exception as t_err:
-                print(f"Could not set thread limit: {t_err}")
+                print(f"PyTorch threads set to 1 ({'Windows' if sys.platform == 'win32' else 'low-spec'} mode).")
+        except Exception as t_err:
+            print(f"Could not set thread limit: {t_err}")
                 
         ocr = OCRProcessor(low_spec=low_spec)
         
@@ -467,6 +492,26 @@ with st.sidebar:
     st.divider()
     st.info("**Tip:** You can manually edit the detected animal names in the results table below.")
     st.info("**Night Vision Support:** The system automatically detects infrared/grayscale images and classifies them as 'Night' regardless of brightness.")
+
+# Dependency health check — shown once at startup so users know what to install
+import importlib.util as _ilu
+_missing_deps = []
+if _ilu.find_spec("megadetector") is None:
+    _missing_deps.append("**MegaDetector** (`megadetector` package not found)")
+if _ilu.find_spec("open_clip") is None:
+    _missing_deps.append("**BioClip** (`open_clip_torch` package not found)")
+
+if _missing_deps:
+    import sys as _sys
+    _installer = "install.bat" if _sys.platform == "win32" else "./install.sh"
+    st.error(
+        "**AI models could not be loaded — animal detection is disabled.**\n\n"
+        "Missing packages:\n" + "\n".join(f"- {d}" for d in _missing_deps) + "\n\n"
+        f"**Fix:** Re-run the installer from your project folder:\n"
+        f"```\n{_installer}\n```\n"
+        "Or, if your virtual environment is already activated, install manually:\n"
+        "```\npip install megadetector open_clip_torch\npython force_download.py\n```"
+    )
 
 # Main content area
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15 = st.tabs([

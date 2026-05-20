@@ -11,6 +11,7 @@ dependencies:
     - easyocr>=1.7.0
     - torch>=2.0.0
     - torchvision>=0.15.0
+    - megadetector
     - open_clip_torch>=2.24.0
     - pillow>=10.2.0
     - pandas>=2.1.0

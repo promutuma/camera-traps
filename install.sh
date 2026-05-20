@@ -71,6 +71,10 @@ EOF
         exit 1
     fi
 
+    echo "[INFO] Pre-downloading AI models (~1.5 GB). This only happens once..."
+    python3 force_download.py
+    echo "[OK] Models ready."
+
     # Create run.sh for conda
     cat > run.sh << 'RUNEOF'
 #!/usr/bin/env bash

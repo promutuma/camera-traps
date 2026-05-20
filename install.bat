@@ -57,6 +57,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [INFO] Pre-downloading AI models (~1.5 GB). This only happens once...
+python force_download.py
+echo [OK] Models ready.
+
 echo @echo off > run.bat
 echo call conda activate wildlife-analyzer >> run.bat
 echo echo Starting Wildlife Camera Trap Auto-Analyzer... >> run.bat
