@@ -13,14 +13,14 @@ if sys.platform == 'win32':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-    # Thread limits: OMP_NUM_THREADS=1 prevents the OpenCV/EasyOCR OpenMP
-    # deadlock (each ships its own OpenMP DLL). MKL_NUM_THREADS is set
-    # dynamically to half the CPU cores so PyTorch gets good parallelism
-    # without starving the OS. KMP_DUPLICATE_LIB_OK lets duplicate runtimes
-    # coexist instead of hard-crashing (belt-and-suspenders with the above).
-    _half_cores = str(max(1, (os.cpu_count() or 2) // 2))
+    # Keep all multi-lib thread counts at 1 on Windows.
+    # OMP/MKL/OPENBLAS are global and affect every library that loads them
+    # (PyTorch, OpenCV, EasyOCR). Raising any of these causes the three models
+    # to compete for threads simultaneously, which hits Windows stack limits and
+    # triggers OpenMP deadlocks. KMP_DUPLICATE_LIB_OK lets the duplicate
+    # OpenMP runtimes coexist without a hard crash.
     os.environ.setdefault('OMP_NUM_THREADS', '1')
-    os.environ.setdefault('MKL_NUM_THREADS', _half_cores)
+    os.environ.setdefault('MKL_NUM_THREADS', '1')
     os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
     os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
     os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
@@ -138,33 +138,25 @@ class StreamlitLogRedirector:
         pass
 
 @st.cache_resource(show_spinner="Loading AI Models...")
-def load_models_v2(low_spec: bool = False):
+def load_models_v2(low_spec: bool = False, cpu_threads: int = 1):
     """Load and cache heavy AI models, with optional low-spec optimization."""
-    
+
     # Create a place for logs
     log_expander = st.expander("Show Model Loading Logs", expanded=True)
     with log_expander:
         log_placeholder = st.empty()
-        
+
     redirector = StreamlitLogRedirector(log_placeholder)
-    
+
     # Capture stdio
     with contextlib.redirect_stdout(redirector), contextlib.redirect_stderr(redirector):
-        print(f"Starting Model Loading (Low-Spec Mode: {low_spec})...")
-        
-        # On Windows, always cap PyTorch threads to 1 to prevent the
-        # thread-stack exhaustion crash that occurs when EasyOCR + YOLO +
-        # BioClip each spin up cpu_count threads simultaneously.
-        # On Linux/Mac, only apply the cap in low-spec mode.
+        print(f"Starting Model Loading (Low-Spec: {low_spec}, CPU Threads: {cpu_threads})...")
+
         try:
             import torch
-            if low_spec:
-                torch.set_num_threads(1)
-                print("PyTorch threads set to 1 (low-spec mode).")
-            elif sys.platform == 'win32':
-                _n = max(1, (os.cpu_count() or 2) // 2)
-                torch.set_num_threads(_n)
-                print(f"PyTorch threads set to {_n} of {os.cpu_count()} cores (Windows mode).")
+            _threads = 1 if low_spec else cpu_threads
+            torch.set_num_threads(_threads)
+            print(f"PyTorch threads set to {_threads}.")
         except Exception as t_err:
             print(f"Could not set thread limit: {t_err}")
                 
@@ -435,6 +427,23 @@ with st.sidebar:
         value=False,
         help="Enables dynamic PyTorch INT8 model quantization and reduces thread usage. Recommended for computers with < 8 GB RAM."
     )
+
+    if sys.platform == 'win32':
+        _max_cores = os.cpu_count() or 4
+        cpu_threads = st.slider(
+            "CPU Threads (Windows)",
+            min_value=1,
+            max_value=_max_cores,
+            value=1,
+            step=1,
+            help=(
+                f"PyTorch intra-op threads. Default 1 is the safest setting. "
+                f"On powerful machines (16 GB+ RAM, 8+ cores) you can increase this for faster CPU inference. "
+                f"If the app crashes or freezes after changing this, reload and set it back to 1."
+            )
+        )
+    else:
+        cpu_threads = os.cpu_count() or 4
     
     # Detection mode selector
     # Professional Pipeline (Fixed Mode)
@@ -569,7 +578,7 @@ with tab1:
                         st.info("**Loading AI Models...**\n\n*Note: The first time you run this, it will download ~1.5 GB of AI models. This may take several minutes depending on your internet connection.*")
                         
                         # Load Cached Models
-                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec, cpu_threads)
                         
                         # Apply Runtime Settings
                         md_model.set_confidence_threshold(detection_confidence)
@@ -893,7 +902,7 @@ with tab2:
                     st.info("Auto-linking data to image content (First run for this file)...")
                     # Auto-run analysis
                     with st.spinner("Analyzing high-resolution details..."):
-                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
+                        ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec, cpu_threads)
                         md_model.set_confidence_threshold(detection_confidence)
                         dn_model.brightness_threshold = brightness_threshold
                         animal_detector = AnimalDetector(md_model, bio_model, confidence_threshold=detection_confidence)
@@ -1265,7 +1274,7 @@ with tab5:
             if st.button("Run Deep Inspection", type="primary"):
                 with st.spinner("Analyzing internals..."):
                     # Init specific debug processor
-                    ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec)
+                    ocr_model, md_model, bio_model, dn_model = load_models_v2(enable_low_spec, cpu_threads)
                     
                     # Ensure debug settings
                     # md_model.set_confidence_threshold(0.0) # Debug often wants low threshold, but detect_all handles this independently

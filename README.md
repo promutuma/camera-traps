@@ -311,7 +311,8 @@ Best for sharing with collaborators without hosting infrastructure.
 | Trap Nights (fallback) | Used for RAI when no deployment records exist. |
 | Review Confidence Threshold | Images below this score enter the HITL review queue. |
 | Reviewer ID | Name/ID logged against review actions. |
-| Reload AI Models | Clears the cached models and reloads from disk. Use this after installing or updating packages without restarting the app. |
+| CPU Threads (Windows only) | Number of PyTorch intra-op threads. Default 1 is the safest. On powerful machines (16 GB+ RAM, 8+ cores) you can increase this for faster CPU inference. If the app crashes after changing it, set it back to 1 and click **Reload AI Models**. |
+| Reload AI Models | Clears the cached models and reloads from disk. Use this after installing or updating packages, or after changing the CPU Threads setting. |
 
 ---
 
@@ -473,9 +474,8 @@ if sys.platform == 'win32':
 | Fix | What it prevents |
 |-----|-----------------|
 | `nvidia-smi` GPU probe + conditional `CUDA_VISIBLE_DEVICES=-1` | GPU driver TDR crash on machines without a healthy NVIDIA GPU; CUDA enabled automatically when a working GPU is detected |
-| `OMP_NUM_THREADS=1` + `KMP_DUPLICATE_LIB_OK=TRUE` | Deadlock from multiple OpenMP runtimes (PyTorch + OpenCV + EasyOCR each load their own) |
-| `MKL_NUM_THREADS` = half of CPU cores (dynamic) | PyTorch gets good parallelism without starving the OS or competing with OpenCV/EasyOCR |
-| `torch.set_num_threads(cpu_count // 2)` on Windows | Balances inference speed across available cores; low-spec mode still caps at 1 |
+| `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` | Deadlock from multiple OpenMP runtimes (PyTorch + OpenCV + EasyOCR each load their own DLL); raising these causes the three models to compete for threads and hit Windows stack limits |
+| `torch.set_num_threads(1)` on Windows | Prevents thread stack exhaustion; all three models share the same process and raising this causes crashes even with few images |
 | `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes using Windows' `spawn` start method |
 
 ---
@@ -621,9 +621,8 @@ Be aware of two gaps in the current Diagnostics tab output:
 - `install.bat` now uses the **Windows Python Launcher** (`py`) to prefer Python 3.12 → 3.11 → 3.13 before falling back to whatever `python` resolves to in PATH. The venv is created with whichever compatible version is found first.
 - If only Python 3.14+ is available on the machine, a clear warning is shown directing the user to install Python 3.12 from python.org. Both versions can coexist — no uninstall needed.
 
-**Windows GPU auto-detection and dynamic thread allocation**
+**Windows GPU auto-detection**
 - Replaced the blanket `CUDA_VISIBLE_DEVICES=-1` (which disabled GPU on all Windows machines) with an `nvidia-smi` probe at startup. `nvidia-smi` queries the GPU driver as a separate subprocess without opening a CUDA context, so it cannot cause a TDR crash. If it reports a healthy NVIDIA GPU, CUDA is automatically enabled. AMD and Intel GPUs are not CUDA-capable on Windows and continue to use CPU.
-- Thread allocation is now dynamic: PyTorch (`MKL_NUM_THREADS`) and `torch.set_num_threads()` are set to half the available CPU cores instead of a hardcoded 1. On a 4-core machine this gives 2 threads; on an 8-core machine, 4 threads — meaningfully faster for CPU-only inference. `OMP_NUM_THREADS` remains at 1 to prevent the OpenCV/EasyOCR OpenMP conflict. Low-spec mode still caps everything at 1 thread.
 
 **megadetector version pinned to 5.x**
 - Without a version constraint, pip now resolves `megadetector` to version 10.x (a new major release). The app was built against the 5.x API (`from megadetector.detection import run_detector`, `model.generate_detections_one_image()`). Version 10.x may have breaking API changes.
