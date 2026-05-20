@@ -311,7 +311,7 @@ Best for sharing with collaborators without hosting infrastructure.
 | Trap Nights (fallback) | Used for RAI when no deployment records exist. |
 | Review Confidence Threshold | Images below this score enter the HITL review queue. |
 | Reviewer ID | Name/ID logged against review actions. |
-| CPU Threads (Windows only) | Number of PyTorch intra-op threads. Default 1 is the safest. On powerful machines (16 GB+ RAM, 8+ cores) you can increase this for faster CPU inference. If the app crashes after changing it, set it back to 1 and click **Reload AI Models**. |
+| CPU Threads (Windows only) | Number of PyTorch intra-op threads. Defaults to ¼ of your CPU core count — empirically the stable sweet spot on Windows (above half tends to crash). Increase for faster inference on powerful machines; if the app crashes, reduce it and click **Reload AI Models**. |
 | Reload AI Models | Clears the cached models and reloads from disk. Use this after installing or updating packages, or after changing the CPU Threads setting. |
 
 ---

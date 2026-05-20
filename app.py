@@ -430,16 +430,17 @@ with st.sidebar:
 
     if sys.platform == 'win32':
         _max_cores = os.cpu_count() or 4
+        _default_threads = max(1, _max_cores // 4)
         cpu_threads = st.slider(
             "CPU Threads (Windows)",
             min_value=1,
             max_value=_max_cores,
-            value=1,
+            value=_default_threads,
             step=1,
             help=(
-                f"PyTorch intra-op threads. Default 1 is the safest setting. "
-                f"On powerful machines (16 GB+ RAM, 8+ cores) you can increase this for faster CPU inference. "
-                f"If the app crashes or freezes after changing this, reload and set it back to 1."
+                f"PyTorch intra-op threads (default = ¼ of your {_max_cores} cores). "
+                f"¼ core count is the stable sweet spot on Windows — above half tends to crash. "
+                f"If the app crashes or freezes, reduce this and click Reload AI Models."
             )
         )
     else:
