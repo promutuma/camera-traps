@@ -40,18 +40,54 @@ if "!FRESH!"=="true" (
 )
 
 REM ============================================================
-REM  STEP 1 — Check Python
+REM  STEP 1 — Find a compatible Python (3.11 or 3.12 preferred)
+REM    megadetector and yolov5 have no pre-built wheels for
+REM    Python 3.14+. Using the Windows Python Launcher (py) to
+REM    prefer 3.12 or 3.11 avoids source-build failures on MSVC.
 REM ============================================================
-python --version >nul 2>&1
-if errorlevel 1 (
+set PYTHON=
+
+REM Try specific versions via the Windows Python Launcher first
+for %%V in (3.12 3.11 3.13) do (
+    if "!PYTHON!"=="" (
+        py -%%V --version >nul 2>&1
+        if not errorlevel 1 (
+            set PYTHON=py -%%V
+        )
+    )
+)
+
+REM Fall back to whatever 'python' resolves to
+if "!PYTHON!"=="" (
+    python --version >nul 2>&1
+    if not errorlevel 1 (
+        set PYTHON=python
+    )
+)
+
+if "!PYTHON!"=="" (
     echo [ERROR] Python not found.
-    echo         Install Python 3.11-3.13 from https://www.python.org/downloads/
+    echo         Install Python 3.12 from https://www.python.org/downloads/
     echo         Make sure to check "Add Python to PATH" during installation.
     pause
     exit /b 1
 )
-for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PYVER=%%v
-echo [OK] Python !PYVER! found.
+
+for /f "tokens=2" %%v in ('!PYTHON! --version 2^>^&1') do set PYVER=%%v
+echo [OK] Python !PYVER! found  ^(!PYTHON!^).
+
+REM Warn if Python 3.14+ is the only option — some wheels may be missing
+for /f "tokens=1,2 delims=." %%a in ("!PYVER!") do (
+    if %%b GEQ 14 (
+        echo.
+        echo [WARN] Python !PYVER! is very new. Some packages ^(megadetector,
+        echo        yolov5^) may not have pre-built wheels yet and could fail
+        echo        to compile from source. If installation fails, install
+        echo        Python 3.12 from https://www.python.org/downloads/ and
+        echo        re-run this installer.
+        echo.
+    )
+)
 
 REM ============================================================
 REM  STEP 2 — Create virtual environment
@@ -59,8 +95,8 @@ REM ============================================================
 if exist "venv\" (
     echo [INFO] Virtual environment already exists.
 ) else (
-    echo [INFO] Creating virtual environment...
-    python -m venv venv
+    echo [INFO] Creating virtual environment with !PYTHON!...
+    !PYTHON! -m venv venv
     if errorlevel 1 (
         echo [ERROR] Failed to create virtual environment.
         pause
