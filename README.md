@@ -371,7 +371,7 @@ Once loaded, models are cached in memory (`@st.cache_resource`) so reruns are fa
 | Disk | 5 GB free | 10 GB free |
 | OS | Windows 10 / macOS 12 / Ubuntu 20.04 | — |
 
-> **Windows GPU note:** GPU acceleration is intentionally disabled on Windows. PyTorch's CUDA initialisation probes the GPU driver on startup, which on Windows (especially laptops with Optimus / hybrid graphics or older drivers) can cause an **instant machine restart with no BSOD** — a GPU driver TDR failure. All three models run on CPU on Windows, which is sufficient for camera trap batch processing.
+> **Windows GPU note:** GPU acceleration is **auto-detected** on Windows. At startup the app runs `nvidia-smi` (a lightweight NVIDIA CLI) to check whether a healthy NVIDIA GPU and driver are present — without opening a CUDA context, so there is no risk of a TDR crash. If `nvidia-smi` reports a GPU, CUDA is enabled; otherwise all models run on CPU. AMD and Intel GPUs are not CUDA-capable on Windows and will always use CPU. On Linux and macOS, PyTorch detects CUDA automatically.
 
 ### Running on a low-RAM machine
 
@@ -472,9 +472,10 @@ if sys.platform == 'win32':
 
 | Fix | What it prevents |
 |-----|-----------------|
-| `CUDA_VISIBLE_DEVICES=-1` | GPU driver TDR crash / instant machine restart |
+| `nvidia-smi` GPU probe + conditional `CUDA_VISIBLE_DEVICES=-1` | GPU driver TDR crash on machines without a healthy NVIDIA GPU; CUDA enabled automatically when a working GPU is detected |
 | `OMP_NUM_THREADS=1` + `KMP_DUPLICATE_LIB_OK=TRUE` | Deadlock from multiple OpenMP runtimes (PyTorch + OpenCV + EasyOCR each load their own) |
-| `torch.set_num_threads(1)` on Windows | Thread stack exhaustion when 3 models each spawn `cpu_count` threads simultaneously |
+| `MKL_NUM_THREADS` = half of CPU cores (dynamic) | PyTorch gets good parallelism without starving the OS or competing with OpenCV/EasyOCR |
+| `torch.set_num_threads(cpu_count // 2)` on Windows | Balances inference speed across available cores; low-spec mode still caps at 1 |
 | `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes using Windows' `spawn` start method |
 
 ---
@@ -619,6 +620,10 @@ Be aware of two gaps in the current Diagnostics tab output:
 - `megadetector` and its dependency `yolov5` have no pre-built wheels for Python 3.14+. Pip attempts to compile from source, which requires MSVC C++ Build Tools (not normally installed on end-user machines). The result is a silent install failure — megadetector appears to install but the package is never actually present.
 - `install.bat` now uses the **Windows Python Launcher** (`py`) to prefer Python 3.12 → 3.11 → 3.13 before falling back to whatever `python` resolves to in PATH. The venv is created with whichever compatible version is found first.
 - If only Python 3.14+ is available on the machine, a clear warning is shown directing the user to install Python 3.12 from python.org. Both versions can coexist — no uninstall needed.
+
+**Windows GPU auto-detection and dynamic thread allocation**
+- Replaced the blanket `CUDA_VISIBLE_DEVICES=-1` (which disabled GPU on all Windows machines) with an `nvidia-smi` probe at startup. `nvidia-smi` queries the GPU driver as a separate subprocess without opening a CUDA context, so it cannot cause a TDR crash. If it reports a healthy NVIDIA GPU, CUDA is automatically enabled. AMD and Intel GPUs are not CUDA-capable on Windows and continue to use CPU.
+- Thread allocation is now dynamic: PyTorch (`MKL_NUM_THREADS`) and `torch.set_num_threads()` are set to half the available CPU cores instead of a hardcoded 1. On a 4-core machine this gives 2 threads; on an 8-core machine, 4 threads — meaningfully faster for CPU-only inference. `OMP_NUM_THREADS` remains at 1 to prevent the OpenCV/EasyOCR OpenMP conflict. Low-spec mode still caps everything at 1 thread.
 
 **megadetector version pinned to 5.x**
 - Without a version constraint, pip now resolves `megadetector` to version 10.x (a new major release). The app was built against the 5.x API (`from megadetector.detection import run_detector`, `model.generate_detections_one_image()`). Version 10.x may have breaking API changes.

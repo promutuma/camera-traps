@@ -13,24 +13,37 @@ if sys.platform == 'win32':
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
         sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 
-    # Prevent the most common Windows PyTorch crash: multiple OpenMP runtimes
-    # (libiomp5md.dll from PyTorch/MKL + vcomp*.dll from OpenCV) deadlocking.
-    # Must be set before cv2, torch, or easyocr are imported.
+    # Thread limits: OMP_NUM_THREADS=1 prevents the OpenCV/EasyOCR OpenMP
+    # deadlock (each ships its own OpenMP DLL). MKL_NUM_THREADS is set
+    # dynamically to half the CPU cores so PyTorch gets good parallelism
+    # without starving the OS. KMP_DUPLICATE_LIB_OK lets duplicate runtimes
+    # coexist instead of hard-crashing (belt-and-suspenders with the above).
+    _half_cores = str(max(1, (os.cpu_count() or 2) // 2))
     os.environ.setdefault('OMP_NUM_THREADS', '1')
-    os.environ.setdefault('MKL_NUM_THREADS', '1')
+    os.environ.setdefault('MKL_NUM_THREADS', _half_cores)
     os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
     os.environ.setdefault('NUMEXPR_NUM_THREADS', '1')
-    # Allow duplicate OpenMP libs rather than hard-crashing when the constraint
-    # above is not enough (e.g. third-party YOLO wheels ship their own copy).
     os.environ.setdefault('KMP_DUPLICATE_LIB_OK', 'TRUE')
 
-    # Block CUDA/GPU driver access entirely on Windows.
-    # torch.cuda.is_available() opens a CUDA context even when gpu=False is set.
-    # On Windows, this GPU driver probe can TDR-crash the driver hard enough
-    # that Windows reboots instantly with no BSOD (common with Optimus/hybrid
-    # GPU laptops or outdated drivers).  Setting this before any torch import
-    # makes CUDA see zero devices so the driver is never touched.
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+    # GPU auto-detection via nvidia-smi before any torch import.
+    # nvidia-smi is a lightweight NVIDIA CLI that queries the driver without
+    # opening a CUDA context, so it cannot trigger a TDR crash. If it reports
+    # a GPU, CUDA is enabled. If not found (no NVIDIA GPU, AMD, Intel, or
+    # missing driver), CUDA is blocked. AMD and Intel GPUs are not CUDA-capable
+    # on Windows and will automatically use CPU through PyTorch.
+    import subprocess as _sp
+    _nvidia_gpu = False
+    try:
+        _smi = _sp.run(
+            ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+            capture_output=True, timeout=5, text=True
+        )
+        _nvidia_gpu = _smi.returncode == 0 and bool(_smi.stdout.strip())
+    except Exception:
+        pass
+
+    if not _nvidia_gpu:
+        os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
 
     # Required on Windows so that libraries using multiprocessing (EasyOCR, YOLO)
     # can spawn worker processes safely when the entry point is not __main__.
@@ -145,9 +158,13 @@ def load_models_v2(low_spec: bool = False):
         # On Linux/Mac, only apply the cap in low-spec mode.
         try:
             import torch
-            if sys.platform == 'win32' or low_spec:
+            if low_spec:
                 torch.set_num_threads(1)
-                print(f"PyTorch threads set to 1 ({'Windows' if sys.platform == 'win32' else 'low-spec'} mode).")
+                print("PyTorch threads set to 1 (low-spec mode).")
+            elif sys.platform == 'win32':
+                _n = max(1, (os.cpu_count() or 2) // 2)
+                torch.set_num_threads(_n)
+                print(f"PyTorch threads set to {_n} of {os.cpu_count()} cores (Windows mode).")
         except Exception as t_err:
             print(f"Could not set thread limit: {t_err}")
                 
