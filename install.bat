@@ -8,6 +8,41 @@ echo  Wildlife Camera Trap Auto-Analyzer - Windows Setup
 echo ============================================================
 echo.
 
+REM --- Fresh install: check flag OR ask interactively if no args given ---
+set FRESH=false
+for %%A in (%*) do (
+    if "%%A"=="--fresh" set FRESH=true
+)
+
+if "!FRESH!"=="false" (
+    if exist "venv\" (
+        echo An existing installation was found.
+        echo.
+        echo   1^) Update / repair  - keep the current environment, install missing packages
+        echo   2^) Fresh install     - wipe everything and start clean
+        echo.
+        set /p INSTALL_TYPE="Enter 1 or 2 [default: 1]: "
+        if "!INSTALL_TYPE!"=="2" set FRESH=true
+    )
+)
+
+if "!FRESH!"=="true" (
+    echo.
+    echo [INFO] Fresh install: removing existing environment and download cache...
+    if exist "venv\" (
+        rd /s /q "venv"
+        echo [OK] Removed venv.
+    )
+    if exist "temp_packages_download\" (
+        rd /s /q "temp_packages_download"
+        echo [OK] Removed temp_packages_download.
+    )
+    if exist "run.bat" del /f /q "run.bat"
+    conda env remove -n wildlife-analyzer --yes >nul 2>&1
+    echo [OK] Clean slate ready.
+    echo.
+)
+
 REM --- Check for Conda ---
 conda --version >nul 2>&1
 if not errorlevel 1 (

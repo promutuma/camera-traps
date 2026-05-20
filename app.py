@@ -493,6 +493,10 @@ with st.sidebar:
     st.info("**Tip:** You can manually edit the detected animal names in the results table below.")
     st.info("**Night Vision Support:** The system automatically detects infrared/grayscale images and classifies them as 'Night' regardless of brightness.")
 
+    if st.button("Reload AI Models", help="Clears the cached models and reloads them from disk. Use this after installing or updating packages."):
+        load_models_v2.clear()
+        st.rerun()
+
 # Dependency health check — shown once at startup so users know what to install
 import importlib.util as _ilu
 _missing_deps = []
@@ -510,8 +514,12 @@ if _missing_deps:
         f"**Fix:** Re-run the installer from your project folder:\n"
         f"```\n{_installer}\n```\n"
         "Or, if your virtual environment is already activated, install manually:\n"
-        "```\npip install megadetector open_clip_torch\npython force_download.py\n```"
+        "```\npip install megadetector open_clip_torch\npython force_download.py\n```\n\n"
+        "After installing, click **Reload Models** below."
     )
+    if st.button("Reload Models", type="primary"):
+        load_models_v2.clear()
+        st.rerun()
 
 # Main content area
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11, tab12, tab13, tab14, tab15 = st.tabs([

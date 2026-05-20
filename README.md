@@ -99,6 +99,19 @@ run.bat
 
 The installer detects Conda if installed and asks which environment manager you prefer.
 
+**If an existing installation is found**, `install.bat` will ask:
+```
+An existing installation was found.
+
+  1) Update / repair  - keep the current environment, install missing packages
+  2) Fresh install    - wipe everything and start clean
+```
+
+To force a fresh install from the command line:
+```bat
+install.bat --fresh
+```
+
 ---
 
 ### Option B — macOS (one-click installer)
@@ -118,6 +131,11 @@ chmod +x install.sh
 ./run.sh
 ```
 
+To force a fresh install (wipes the existing venv and re-downloads everything):
+```bash
+./install.sh --fresh
+```
+
 ---
 
 ### Option C — Linux (one-click installer)
@@ -135,6 +153,11 @@ chmod +x install.sh
 
 # 3. Start the app (every subsequent run)
 ./run.sh
+```
+
+To force a fresh install:
+```bash
+./install.sh --fresh
 ```
 
 ---
@@ -285,6 +308,7 @@ Best for sharing with collaborators without hosting infrastructure.
 | Trap Nights (fallback) | Used for RAI when no deployment records exist. |
 | Review Confidence Threshold | Images below this score enter the HITL review queue. |
 | Reviewer ID | Name/ID logged against review actions. |
+| Reload AI Models | Clears the cached models and reloads from disk. Use this after installing or updating packages without restarting the app. |
 
 ---
 
@@ -340,18 +364,17 @@ Once loaded, models are cached in memory (`@st.cache_resource`) so reruns are fa
 |----------|---------|-------------|
 | RAM | 8 GB | 16 GB |
 | CPU | Any modern dual-core | 4+ cores |
-| GPU | Not required | CUDA GPU speeds up BioClip |
+| GPU | Not required (CPU-only on Windows) | CUDA GPU speeds up BioClip on Linux/Mac |
 | Disk | 5 GB free | 10 GB free |
 | OS | Windows 10 / macOS 12 / Ubuntu 20.04 | — |
 
+> **Windows GPU note:** GPU acceleration is intentionally disabled on Windows. PyTorch's CUDA initialisation probes the GPU driver on startup, which on Windows (especially laptops with Optimus / hybrid graphics or older drivers) can cause an **instant machine restart with no BSOD** — a GPU driver TDR failure. All three models run on CPU on Windows, which is sufficient for camera trap batch processing.
+
 ### Running on a low-RAM machine
 
-If you have less than 8 GB RAM, you have two options:
+If you have less than 8 GB RAM, enable **Low-Spec / Low-Memory Mode** in the sidebar. This applies INT8 dynamic quantization to all three models, roughly halving their memory footprint. Detection accuracy may decrease slightly on borderline images.
 
-**Option 1 — Disable BioClip (MegaDetector only)**  
-BioClip is the heaviest model. Edit the sidebar and set **Confidence Threshold** high (> 0.9) to reduce detections, or contact the team about a `--no-bioclip` flag.
-
-**Option 2 — Run models on a server, view on laptop**  
+**Option 2 — Run models on a server, view on laptop**
 Deploy the Docker image on a cloud VM (e.g. AWS EC2 `t3.xlarge`, ~16 GB RAM) and access `http://<server-ip>:8501` from any browser. The laptop only runs the browser — all heavy processing happens on the server.
 
 ### About Streamlit vs other frameworks
@@ -371,6 +394,79 @@ If VS Code shows "Cannot find module" errors for `streamlit`, `cv2`, `torch` etc
 2. Choose `./venv/bin/python` (venv) or the `wildlife-analyzer` conda env
 
 All module-not-found errors across every file will disappear immediately.
+
+---
+
+## Troubleshooting: AI Models Not Loading
+
+If the app shows a red banner — **"AI models could not be loaded — animal detection is disabled"** — one or both of the required packages (`megadetector`, `open_clip_torch`) are not installed in the active Python environment.
+
+### Fix
+
+Install the missing packages in your activated environment and re-download the model weights:
+
+```bash
+pip install megadetector open_clip_torch
+python force_download.py
+```
+
+Then click the **Reload Models** button on the banner (or **Reload AI Models** in the sidebar). This clears the cached broken state and reloads the models without restarting the app.
+
+If the packages install but the banner keeps appearing, the app is likely running from a different Python than the one you installed into. Check which Python Streamlit is using:
+
+```bash
+# In the terminal where you run the app
+python -m streamlit run app.py
+```
+
+Make sure you have activated your `venv` (`source venv/bin/activate` / `venv\Scripts\activate.bat`) or conda environment (`conda activate wildlife-analyzer`) first.
+
+### Why this can happen after a successful-looking install
+
+The `megadetector` package uses calendar-based version numbers (e.g. `1.0.0.20240430`). Older versions of `requirements.txt` in this project specified `megadetector>=5.0.0`, which is an unsatisfiable constraint — pip would silently skip the package rather than error. This has been corrected; `requirements.txt` now pins only `megadetector` with no version constraint. Re-running the installer picks up the fix automatically.
+
+---
+
+## Troubleshooting: Windows Machine Restarts Instantly When Processing Images
+
+If the Windows machine reboots with **no Blue Screen of Death (BSOD)** as soon as image processing begins, this is a **GPU driver TDR (Timeout Detection and Recovery) failure** — not a RAM or software crash.
+
+### Why it happens
+
+Even though all models run on CPU, PyTorch calls `torch.cuda.is_available()` during initialisation. On Windows, this call opens a CUDA context against the GPU driver. On machines with:
+- Hybrid/Optimus graphics (integrated + discrete GPU)
+- Outdated GPU drivers
+- Certain NVIDIA driver versions with known TDR bugs
+
+...this driver probe can fail hard enough that Windows cannot recover the GPU driver and reboots instantly instead of showing a BSOD.
+
+This has been fixed in the current version. The app now sets `CUDA_VISIBLE_DEVICES=-1` at startup on Windows, which tells CUDA there are no GPUs — the driver is never touched.
+
+### If you are still seeing restarts on an older version
+
+Update to the latest version of the repository and re-run the installer:
+
+```bat
+git pull
+install.bat
+```
+
+Or apply the fix manually by adding this line to the top of `app.py`, **before any other imports**:
+
+```python
+import os, sys
+if sys.platform == 'win32':
+    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+```
+
+### Other Windows-specific stability fixes included in the current version
+
+| Fix | What it prevents |
+|-----|-----------------|
+| `CUDA_VISIBLE_DEVICES=-1` | GPU driver TDR crash / instant machine restart |
+| `OMP_NUM_THREADS=1` + `KMP_DUPLICATE_LIB_OK=TRUE` | Deadlock from multiple OpenMP runtimes (PyTorch + OpenCV + EasyOCR each load their own) |
+| `torch.set_num_threads(1)` on Windows | Thread stack exhaustion when 3 models each spawn `cpu_count` threads simultaneously |
+| `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes using Windows' `spawn` start method |
 
 ---
 
@@ -426,15 +522,19 @@ Unlike standard packages, `ultralytics-yolov5` makes an HTTPS download request *
 
 If the pipeline returns `Empty` or `Unknown` for all images, work through the checks below in order.
 
-### Step 1 — Check the Diagnostics Tab
+### Step 1 — Check the startup banner
+
+If a red banner appears at the top of the app saying **"AI models could not be loaded"**, animal detection is completely disabled. Follow the [AI Models Not Loading](#troubleshooting-ai-models-not-loading) section above before continuing.
+
+### Step 2 — Check the Diagnostics Tab
 
 Open the **Diagnostics** tab, upload one of the failing images, and click **Run Deep Inspection**. This bypasses the confidence threshold and shows raw model output.
 
 - **MegaDetector status** — must show `MegaDetector Loaded Successfully`. If it shows a load error, the model file is missing or corrupt. Re-run `python force_download.py` and restart the app.
-- **Raw candidates table** — lists every detection MegaDetector found, including those below the threshold. If the table is empty, MegaDetector found nothing in the image (see Step 3). If rows are present but all have low confidence, see Step 2.
-- **BioClip predictions** — lists the top-20 species scores for the image. If this section is blank or shows a warning, BioClip did not initialise correctly (see Step 4).
+- **Raw candidates table** — lists every detection MegaDetector found, including those below the threshold. If the table is empty, MegaDetector found nothing in the image (see Step 4). If rows are present but all have low confidence, see Step 3.
+- **BioClip predictions** — lists the top-20 species scores for the image. If this section is blank or shows a warning, BioClip did not initialise correctly (see Step 5).
 
-### Step 2 — Lower the Confidence Threshold
+### Step 3 — Lower the Confidence Threshold
 
 The sidebar **Detection Confidence Threshold** defaults to **0.35**. Camera trap images (especially night/IR shots, distant animals, or dense vegetation) often produce MegaDetector scores of 0.15–0.30.
 
@@ -442,7 +542,7 @@ The sidebar **Detection Confidence Threshold** defaults to **0.35**. Camera trap
 - BioClip reuses the same threshold for species scoring. With 20 wildlife classes in the list, softmax probabilities are spread across all classes; the top species may only score 0.15–0.25 even on a clear image.
 - If lowering the threshold produces too many false positives, raise the **Review Queue Threshold** instead so genuine detections surface in the queue for manual review.
 
-### Step 3 — Check Image Quality
+### Step 4 — Check Image Quality
 
 MegaDetector may return zero detections if:
 
@@ -456,7 +556,7 @@ MegaDetector may return zero detections if:
 
 The **Diagnostics** raw candidate table shows detections at **all** confidence levels (including below 0.01), so even a poor-quality image should contain some rows if the animal is partially visible.
 
-### Step 4 — Verify BioClip Initialised Correctly
+### Step 5 — Verify BioClip Initialised Correctly
 
 BioClip requires two things to classify species: the model weights and pre-computed text embeddings for the species list. If either is missing, it silently returns nothing.
 
@@ -470,18 +570,18 @@ BioClip: Updated text features for 20 species.
 
 If you see `Error loading BioClip` or `Error updating species list`, the model download is incomplete. Run `python force_download.py` and restart.
 
-### Step 5 — Disable Low-Spec Mode
+### Step 6 — Disable Low-Spec Mode
 
 The **Low-Spec / Low-Memory Mode** checkbox applies INT8 dynamic quantization to MegaDetector and BioClip. On some hardware this degrades detection confidence enough that borderline detections (scores near 0.20–0.35) drop below the threshold.
 
 If Low-Spec mode is enabled:
 1. Uncheck it in the sidebar.
-2. Re-load models (click **Load & Process** again).
+2. Click **Reload AI Models** in the sidebar.
 3. Re-run the failing images.
 
 Only use Low-Spec mode if the app crashes due to out-of-memory errors.
 
-### Step 6 — Known Diagnostics Limitations (Current Version)
+### Step 7 — Known Diagnostics Limitations (Current Version)
 
 Be aware of two gaps in the current Diagnostics tab output:
 
@@ -500,14 +600,40 @@ Be aware of two gaps in the current Diagnostics tab output:
 - **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes; originals are never modified.
 - **SQLite** (`wildlife_data.db`) — All persistent data (stations, IDEs, review actions, community observations, project config, ArcGIS sync log) is stored in a single local database.
 
+---
+
 ## Recent Changes
 
-- **Dependency & Platform Compatibility Updates (May 2026)**
-  - Changed `megadetector` constraint from `>=10.0.0` to `>=5.0.0` to match official PyPI releases.
-  - Removed upper-bound limit (`<2.0.0`) on `numpy` to allow installing pre-compiled Numpy 2.x wheels on systems using newer Python runtimes (e.g. Python 3.14).
-  - Enhanced the macOS/Linux setup installer (`install.sh`) to automatically detect compatibility-friendly Python installations (`python3.13` and `python3.12`) before falling back to default `python3`.
-  - Fixed a `TypeError` in Excel report generation (`create_excel_report`) caused by `apply(len)` encountering null/missing float values on newer Pandas/Arrow string backends.
-  - Added a **Low-Spec / Low-Memory Mode** toggle to the sidebar, enabling INT8 dynamic quantization for PyTorch (used by BioClip, MegaDetector, and EasyOCR) and restricting CPU thread count to 1 to prevent memory issues on systems with less than 8 GB RAM.
+### Platform & Stability Fixes (May 2026)
+
+**Windows crash fix — instant machine restart during image processing**
+- Added `CUDA_VISIBLE_DEVICES=-1` on Windows startup (before any torch import) to prevent PyTorch's CUDA initialisation from probing the GPU driver. On Windows with hybrid/Optimus graphics or certain driver versions, this probe causes a GPU TDR failure that reboots the machine instantly with no BSOD.
+- Added `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `KMP_DUPLICATE_LIB_OK=TRUE` to prevent deadlocks from multiple OpenMP runtimes (PyTorch/MKL + OpenCV + EasyOCR each ship their own).
+- Added `torch.set_num_threads(1)` unconditionally on Windows (previously only in Low-Spec mode) to prevent thread-stack exhaustion.
+- Added `multiprocessing.freeze_support()` on Windows to prevent crashes when EasyOCR or YOLO spawn worker processes.
+
+**MegaDetector & BioClip not loading**
+- Fixed `megadetector>=5.0.0` version constraint in `requirements.txt` — the package uses calendar versioning (`1.0.0.YYYYMMDD`) so `>=5.0.0` was unsatisfiable; pip silently skipped the package. Changed to unpinned `megadetector`.
+- Added `megadetector` to `environment.yml` — it was missing entirely, so conda users never had it installed.
+- Fixed conda install path in both `install.sh` and `install.bat` — `force_download.py` (BioClip model, ~599 MB) was never called for conda users.
+
+**Installer improvements**
+- Added `--fresh` flag to `install.sh` and `install.bat` for a clean-slate reinstall (`./install.sh --fresh` / `install.bat --fresh`).
+- When `install.bat` is double-clicked and an existing `venv\` is found, an interactive prompt now asks whether to update/repair or do a fresh install — no terminal required.
+
+**In-app recovery**
+- Added a dependency health check banner at startup that shows exactly which packages are missing and the commands to install them.
+- Added a **Reload Models** button on the error banner and a **Reload AI Models** button in the sidebar — both clear `@st.cache_resource` and reload models without restarting the app or terminal.
+
+### Earlier Changes
+
+- **Dependency & Platform Compatibility (May 2026)**
+  - Removed upper-bound limit (`<2.0.0`) on `numpy` to allow installing pre-compiled NumPy 2.x wheels on Python 3.14.
+  - Enhanced `install.sh` to detect `python3.13` and `python3.12` before falling back to `python3`.
+  - Fixed a `TypeError` in Excel report generation (`create_excel_report`) caused by `apply(len)` on null float values on newer Pandas/Arrow string backends.
+  - Added **Low-Spec / Low-Memory Mode** sidebar toggle for INT8 quantization and single-thread CPU mode on machines with < 8 GB RAM.
+
+---
 
 ## License
 

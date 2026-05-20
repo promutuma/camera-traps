@@ -6,6 +6,24 @@ echo " Wildlife Camera Trap Auto-Analyzer - Mac/Linux Installer"
 echo "============================================================"
 echo ""
 
+# --- Handle --fresh flag ---
+FRESH=false
+for arg in "$@"; do
+    if [[ "$arg" == "--fresh" ]]; then
+        FRESH=true
+    fi
+done
+
+if [[ "$FRESH" == true ]]; then
+    echo "[INFO] --fresh: removing existing environment and download cache..."
+    rm -rf venv temp_packages_download run.sh
+    if command -v conda &>/dev/null; then
+        conda env remove -n wildlife-analyzer --yes 2>/dev/null || true
+    fi
+    echo "[OK] Clean slate ready."
+    echo ""
+fi
+
 # --- Detect OS ---
 OS="$(uname -s)"
 echo "[INFO] Detected OS: $OS"
