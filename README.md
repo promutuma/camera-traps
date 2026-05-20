@@ -9,6 +9,7 @@ The system handles the full pipeline from raw images to publication-ready output
 ![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
 ![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
 ![Python](https://img.shields.io/badge/Python-3.11--3.13-blue)
+![Recommended Python](https://img.shields.io/badge/Recommended-Python%203.12-brightgreen)
 
 ---
 
@@ -83,7 +84,9 @@ Choose the environment that matches your setup:
 
 ### Option A — Windows (one-click installer)
 
-**Requirements:** Python 3.11 - 3.13 from [python.org](https://www.python.org/downloads/) — check **"Add Python to PATH"** during installation. Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for Conda support.
+**Requirements:** **Python 3.12 is strongly recommended** — install it from [python.org](https://www.python.org/downloads/) and check **"Add Python to PATH"** during installation. Python 3.11 and 3.13 also work. Python 3.14+ is not yet supported: key packages (`megadetector`, `yolov5`) have no pre-built wheels for 3.14 and will fail to compile. Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for Conda support.
+
+> **Tip:** If you already have Python 3.14 installed, you do **not** need to uninstall it. Install Python 3.12 alongside it — `install.bat` uses the Windows Python Launcher (`py -3.12`) to automatically pick the right version.
 
 ```bat
 REM 1. Clone the repository
@@ -423,7 +426,13 @@ Make sure you have activated your `venv` (`source venv/bin/activate` / `venv\Scr
 
 ### Why this can happen after a successful-looking install
 
-The `megadetector` package uses calendar-based version numbers (e.g. `1.0.0.20240430`). Older versions of `requirements.txt` in this project specified `megadetector>=5.0.0`, which is an unsatisfiable constraint — pip would silently skip the package rather than error. This has been corrected; `requirements.txt` now pins only `megadetector` with no version constraint. Re-running the installer picks up the fix automatically.
+Two known causes:
+
+**1. Wrong Python version (most common on Windows)**
+`megadetector` and its dependency `yolov5` have no pre-built wheels for Python 3.14+. When pip can't find a wheel it tries to compile from source, which requires the MSVC C++ Build Tools (not normally installed). The build silently fails and the package is skipped. The fix is to use Python 3.12 — `install.bat` now selects it automatically via the Windows Python Launcher.
+
+**2. Package installed into the wrong environment**
+If `streamlit run app.py` is run from a terminal where the venv is not activated, it uses the system Python, which doesn't have `megadetector` installed. Always launch via `run.bat` (Windows) or `./run.sh` (Mac/Linux), which activates the venv before starting Streamlit.
 
 ---
 
@@ -604,6 +613,19 @@ Be aware of two gaps in the current Diagnostics tab output:
 
 ## Recent Changes
 
+### Windows Installer & Dependency Fixes (May 2026)
+
+**Python 3.14 compatibility — `install.bat` now picks the right Python automatically**
+- `megadetector` and its dependency `yolov5` have no pre-built wheels for Python 3.14+. Pip attempts to compile from source, which requires MSVC C++ Build Tools (not normally installed on end-user machines). The result is a silent install failure — megadetector appears to install but the package is never actually present.
+- `install.bat` now uses the **Windows Python Launcher** (`py`) to prefer Python 3.12 → 3.11 → 3.13 before falling back to whatever `python` resolves to in PATH. The venv is created with whichever compatible version is found first.
+- If only Python 3.14+ is available on the machine, a clear warning is shown directing the user to install Python 3.12 from python.org. Both versions can coexist — no uninstall needed.
+
+**megadetector version pinned to 5.x**
+- Without a version constraint, pip now resolves `megadetector` to version 10.x (a new major release). The app was built against the 5.x API (`from megadetector.detection import run_detector`, `model.generate_detections_one_image()`). Version 10.x may have breaking API changes.
+- `requirements.txt` now pins `megadetector>=5.0.0,<6.0.0` to ensure the app always installs a compatible version. If you already have 10.x installed, run `install.bat` (choose **Fresh install**) to rebuild the venv with the correct version.
+
+---
+
 ### Platform & Stability Fixes (May 2026)
 
 **Windows crash fix — instant machine restart during image processing**
@@ -613,7 +635,7 @@ Be aware of two gaps in the current Diagnostics tab output:
 - Added `multiprocessing.freeze_support()` on Windows to prevent crashes when EasyOCR or YOLO spawn worker processes.
 
 **MegaDetector & BioClip not loading**
-- Fixed `megadetector>=5.0.0` version constraint in `requirements.txt` — the package uses calendar versioning (`1.0.0.YYYYMMDD`) so `>=5.0.0` was unsatisfiable; pip silently skipped the package. Changed to unpinned `megadetector`.
+- Fixed `megadetector>=5.0.0` version constraint in `requirements.txt` — on Python 3.14, no wheels exist for this package or its dependencies, causing silent install failure. Constraint changed to `megadetector>=5.0.0,<6.0.0` (later tightened to avoid the 10.x API break — see above).
 - Added `megadetector` to `environment.yml` — it was missing entirely, so conda users never had it installed.
 - Fixed conda install path in both `install.sh` and `install.bat` — `force_download.py` (BioClip model, ~599 MB) was never called for conda users.
 
