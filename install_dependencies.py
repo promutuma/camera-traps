@@ -313,26 +313,29 @@ def main():
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir, exist_ok=True)
     
-    # Pre-download, patch and compile ultralytics-yolov5 wheel synchronously first.
-    # This prevents pip download from executing unpatched setup.py metadata code online.
-    print("[INFO] Pre-downloading and patching ultralytics-yolov5...")
+    # Attempt to pre-download, patch, and compile the ultralytics-yolov5 wheel.
+    # This was required for older megadetector versions whose setup.py made a
+    # live HTTPS request that failed on corporate SSL-inspecting networks.
+    # megadetector >=5.0.x uses the 'yolov5' package instead, so this step is
+    # now optional — we warn and continue rather than aborting the whole install.
+    print("[INFO] Attempting to pre-build patched ultralytics-yolov5 (optional)...")
     yolo_url = "https://files.pythonhosted.org/packages/96/30/75569405437893eaa6ca177f2b8493d6d54318a62b45cf693463e51ef572/ultralytics-yolov5-0.1.1.tar.gz"
     yolo_archive = os.path.join(temp_dir, "ultralytics-yolov5-0.1.1.tar.gz")
     try:
         import urllib.request
         urllib.request.urlretrieve(yolo_url, yolo_archive)
-        
+
         yolo_extract = os.path.join(temp_dir, "extracted_yolo")
         with tarfile.open(yolo_archive, "r:gz") as tar:
             tar.extractall(path=yolo_extract)
-            
+
         setup_files = glob.glob(os.path.join(yolo_extract, "*", "setup.py"))
         if setup_files:
             setup_path = setup_files[0]
             pkg_dir = os.path.dirname(setup_path)
             with open(setup_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            
+
             target = "README = request.urlopen('https://raw.githubusercontent.com/ultralytics/yolov5/master/README.md').read().decode('utf-8')"
             replacement = "README = 'ultralytics-yolov5 description'"
             if target in content:
@@ -346,7 +349,7 @@ def main():
                 )
             with open(setup_path, "w", encoding="utf-8") as f:
                 f.write(content)
-                
+
             print("[INFO] Pre-building patched ultralytics-yolov5 wheel...")
             wheel_cmd = [
                 sys.executable, "-m", "pip", "wheel",
@@ -355,15 +358,16 @@ def main():
                 pkg_dir
             ] + extra_args
             subprocess.run(wheel_cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            
+
         if os.path.exists(yolo_archive):
             os.remove(yolo_archive)
         if os.path.exists(yolo_extract):
             shutil.rmtree(yolo_extract)
-            
+
+        print("[OK] ultralytics-yolov5 pre-build complete.")
+
     except Exception as e:
-        print(f"[ERROR] Failed to pre-build patched ultralytics-yolov5: {e}")
-        sys.exit(1)
+        print(f"[WARNING] Could not pre-build ultralytics-yolov5 ({e}). Continuing — this is only needed for megadetector <5.0.")
         
     # 1. Determine packages
     packages_to_download = []
@@ -557,25 +561,24 @@ def main():
             except OSError:
                 pass
                 
-    # 4. Verify ultralytics-yolov5 wheel exists
+    # 4. Note if ultralytics-yolov5 wheel was pre-built (optional, for older megadetector)
     wheels = glob.glob(os.path.join(temp_dir, "ultralytics_yolov5-*.whl"))
-    if not wheels:
-        print("[ERROR] Could not find pre-built ultralytics-yolov5 wheel.")
-        sys.exit(1)
-        
-    # 5. Offline install
-    print("[INFO] Installing packages offline from local cache...")
+    if wheels:
+        print(f"[INFO] ultralytics-yolov5 wheel available: {os.path.basename(wheels[0])}")
+    else:
+        print("[INFO] No ultralytics-yolov5 wheel found — not required for megadetector >=5.0.")
+
+    # 5. Install — prefer locally cached wheels, fall back to PyPI for anything missing
+    print("[INFO] Installing packages from local cache (with PyPI fallback)...")
     if is_conda:
         install_cmd = [
             sys.executable, "-m", "pip", "install",
-            "--no-index",
             "--find-links", temp_dir,
-            "megadetector>=5.0.0"
+            "megadetector"
         ] + extra_args
     else:
         install_cmd = [
             sys.executable, "-m", "pip", "install",
-            "--no-index",
             "--find-links", temp_dir,
             "-r", requirements_file
         ] + extra_args
