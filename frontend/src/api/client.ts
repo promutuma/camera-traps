@@ -1,0 +1,143 @@
+import axios from "axios";
+
+const api = axios.create({ baseURL: "/api" });
+
+export default api;
+
+// ── Config ──────────────────────────────────────────────────────────────────
+export const getConfig = () => api.get("/config").then((r) => r.data);
+export const updateConfig = (patch: Record<string, unknown>) =>
+  api.patch("/config", patch).then((r) => r.data);
+export const getModelStatus = () =>
+  api.get("/config/status").then((r) => r.data);
+
+// ── Images / Jobs ────────────────────────────────────────────────────────────
+export const uploadImages = (files: File[]) => {
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  return api.post("/images/upload", form).then((r) => r.data);
+};
+export const startProcessing = (jobId: string) =>
+  api.post(`/images/process/${jobId}`).then((r) => r.data);
+export const pollJob = (jobId: string) =>
+  api.get(`/images/job/${jobId}`).then((r) => r.data);
+export const getJobResults = (jobId: string) =>
+  api.get(`/images/results/${jobId}`).then((r) => r.data);
+export const imageFileUrl = (jobId: string, filename: string) =>
+  `/api/images/file/${jobId}/${encodeURIComponent(filename)}`;
+export const storedImageUrl = (filename: string) =>
+  `/api/images/stored/${encodeURIComponent(filename)}`;
+
+// ── Results ──────────────────────────────────────────────────────────────────
+export const getResults = (params?: Record<string, string | number>) =>
+  api.get("/results", { params }).then((r) => r.data);
+export const updateResult = (imageId: number, patch: Record<string, unknown>) =>
+  api.patch(`/results/${imageId}`, patch).then((r) => r.data);
+export const exportExcel = () => `/api/results/export/excel`;
+export const exportCsv = () => `/api/results/export/csv`;
+
+// ── Statistics ───────────────────────────────────────────────────────────────
+export const getStats = () => api.get("/stats/summary").then((r) => r.data);
+
+// ── History ──────────────────────────────────────────────────────────────────
+export const getHistory = () => api.get("/history").then((r) => r.data);
+export const clearHistory = () => api.delete("/history").then((r) => r.data);
+
+// ── Diagnostics ──────────────────────────────────────────────────────────────
+export const inspectImage = (file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post("/diagnostics/inspect", form).then((r) => r.data);
+};
+
+// ── Ecological ───────────────────────────────────────────────────────────────
+export const getIDE = () => api.get("/ecological/ide").then((r) => r.data);
+export const getRAI = (trap_nights: number) =>
+  api.get("/ecological/rai", { params: { trap_nights } }).then((r) => r.data);
+export const getTimeline = () =>
+  api.get("/ecological/timeline").then((r) => r.data);
+export const getRichness = () =>
+  api.get("/ecological/richness").then((r) => r.data);
+export const getAccumulation = () =>
+  api.get("/ecological/accumulation").then((r) => r.data);
+export const getGroupSize = () =>
+  api.get("/ecological/group-size").then((r) => r.data);
+export const getVisitation = (trap_nights: number) =>
+  api.get("/ecological/visitation", { params: { trap_nights } }).then((r) => r.data);
+
+// ── QC ───────────────────────────────────────────────────────────────────────
+export const getQCFlags = () => api.get("/qc/flags").then((r) => r.data);
+export const getQCSummary = () => api.get("/qc/summary").then((r) => r.data);
+
+// ── Stations ─────────────────────────────────────────────────────────────────
+export const getStations = () => api.get("/stations").then((r) => r.data);
+export const addStation = (body: Record<string, unknown>) =>
+  api.post("/stations", body).then((r) => r.data);
+export const updateStation = (id: string, body: Record<string, unknown>) =>
+  api.patch(`/stations/${id}`, body).then((r) => r.data);
+export const deleteStation = (id: string) =>
+  api.delete(`/stations/${id}`).then((r) => r.data);
+export const getDeployments = () =>
+  api.get("/stations/deployments").then((r) => r.data);
+export const addDeployment = (body: Record<string, unknown>) =>
+  api.post("/stations/deployments", body).then((r) => r.data);
+export const getStationSummary = () =>
+  api.get("/stations/summary").then((r) => r.data);
+export const getStationMap = () =>
+  api.get("/stations/map").then((r) => r.data);
+
+// ── Review Queue ─────────────────────────────────────────────────────────────
+export const getReviewQueue = () =>
+  api.get("/review/queue").then((r) => r.data);
+export const confirmDetection = (id: number, body: Record<string, unknown>) =>
+  api.post(`/review/confirm/${id}`, body).then((r) => r.data);
+export const correctDetection = (id: number, body: Record<string, unknown>) =>
+  api.post(`/review/correct/${id}`, body).then((r) => r.data);
+export const flagDetection = (id: number, body: Record<string, unknown>) =>
+  api.post(`/review/flag/${id}`, body).then((r) => r.data);
+export const getReviewLog = () =>
+  api.get("/review/log").then((r) => r.data);
+export const getPrivacyAudit = () =>
+  api.get("/review/privacy-audit").then((r) => r.data);
+
+// ── Community ────────────────────────────────────────────────────────────────
+export const getObservations = () =>
+  api.get("/community/observations").then((r) => r.data);
+export const addObservation = (body: Record<string, unknown>) =>
+  api.post("/community/observations", body).then((r) => r.data);
+export const deleteObservation = (id: number) =>
+  api.delete(`/community/observations/${id}`).then((r) => r.data);
+export const getCrosscheck = () =>
+  api.get("/community/crosscheck").then((r) => r.data);
+
+// ── Spatial ──────────────────────────────────────────────────────────────────
+export const getSpatialGeoJSON = () =>
+  api.get("/spatial/geojson").then((r) => r.data);
+
+// ── Species ──────────────────────────────────────────────────────────────────
+export const getSpecies = () => api.get("/species").then((r) => r.data);
+export const lookupSpecies = (name: string) =>
+  api.get(`/species/lookup/${encodeURIComponent(name)}`).then((r) => r.data);
+export const resolveSynonym = (name: string) =>
+  api.get(`/species/synonyms/${encodeURIComponent(name)}`).then((r) => r.data);
+
+// ── Corridor ─────────────────────────────────────────────────────────────────
+export const getCorridorPairs = (max_km = 50) =>
+  api.get("/corridor/pairs", { params: { max_km } }).then((r) => r.data);
+export const getMovements = (max_km = 50) =>
+  api.get("/corridor/movements", { params: { max_km } }).then((r) => r.data);
+export const getBottlenecks = (max_km = 50) =>
+  api.get("/corridor/bottlenecks", { params: { max_km } }).then((r) => r.data);
+export const getUtilisation = (max_km = 50) =>
+  api.get("/corridor/utilisation", { params: { max_km } }).then((r) => r.data);
+
+// ── Project Config ───────────────────────────────────────────────────────────
+export const getProject = () => api.get("/project").then((r) => r.data);
+export const updateProject = (body: Record<string, unknown>) =>
+  api.patch("/project", body).then((r) => r.data);
+
+// ── ArcGIS ───────────────────────────────────────────────────────────────────
+export const pushArcGIS = (body: Record<string, unknown>) =>
+  api.post("/arcgis/push", body).then((r) => r.data);
+export const getArcGISStatus = () =>
+  api.get("/arcgis/status").then((r) => r.data);

@@ -1,10 +1,11 @@
 # Wildlife Camera Trap Auto-Analyzer
 
-A **Streamlit-based platform** for automated analysis of wildlife camera trap images, designed for the **Gambella Wetland Landscape Baseline Survey** and similar conservation programmes.
+A **FastAPI + React platform** for automated analysis of wildlife camera trap images, designed for the **Gambella Wetland Landscape Baseline Survey** and similar conservation programmes.
 
-The system handles the full pipeline from raw images to publication-ready outputs: OCR metadata extraction, AI animal detection (**MegaDetector V5a**), species identification (**BioClip**), independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a browser-based dashboard.
+The system handles the full pipeline from raw images to publication-ready outputs: OCR metadata extraction, AI animal detection (**MegaDetector V5a**), species identification (**BioClip**), independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard.
 
-![Streamlit](https://img.shields.io/badge/Streamlit-1.29.0-red)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green)
+![React](https://img.shields.io/badge/React-19-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)
 ![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
 ![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
@@ -17,203 +18,230 @@ The system handles the full pipeline from raw images to publication-ready output
 
 | Tab | Feature |
 |-----|---------|
-| Upload & Process | Batch upload, OCR, MegaDetector + BioClip pipeline |
-| Review Results | Gallery / Inspector view with bounding boxes and editable species labels |
-| Statistics | Per-species counts, confidence distributions, day/night breakdown |
-| History & Analytics | Long-term trends from the SQLite database |
-| Diagnostics | OCR strip debugger, raw model output viewer |
-| Ecological Analytics | IDE computation, RAI, species richness, accumulation curve, visitation rate |
-| QC Dashboard | 7 automated quality-control checks with colour-coded flags |
+| Upload & Process | Batch upload with real-time progress bar, OCR, MegaDetector + BioClip pipeline |
+| Review Results | Editable table with inline species/notes editing, Excel/CSV export |
+| Statistics | Per-species bar charts, day/night pie chart, confidence distribution |
+| History | Long-term trends from the SQLite database, CSV export |
+| Diagnostics | OCR strip debugger, raw model output viewer (MegaDetector + BioClip top-20) |
+| Ecological Analytics | IDE computation, RAI, species richness, accumulation curve, group size, visitation rate |
+| QC Dashboard | Automated quality-control checks with colour-coded severity flags |
 | Stations & Deployments | Camera registry, GPS coordinates, deployment history, trap-night calculator |
-| Review Queue | HITL expert review — accept / correct / reject with reviewer logging |
+| Review Queue | HITL expert review — confirm / correct / flag with reviewer logging and privacy audit |
 | Community Observer | Field observer sighting entry, cross-verification against camera data |
-| Spatial & Map | Interactive pydeck map, GeoJSON export, georeferenced CSV |
-| Species Library | 34 pre-loaded Gambella mammals, synonym resolver, IUCN status |
+| Spatial & Map | Interactive Leaflet map, GeoJSON / Shapefile / KML / CSV export |
+| Species Library | Pre-loaded mammal reference library, synonym resolver, quick lookup |
 | Corridor Analysis | Directional flow detection, passage frequency, bottleneck identification |
 | Project Config | Multi-project support, indicator thresholds, baseline locking, JSON export |
-| ArcGIS / Spatial Exports | Offline file exports (GeoJSON, Shapefile, KML) + live push to ArcGIS Online / Enterprise |
+| ArcGIS Sync | Offline file exports (GeoJSON, Shapefile, KML) + live push to ArcGIS Online / Enterprise |
 
 ---
 
-## Project Structure
+## Architecture
 
 ```
 camera-traps/
-├── app.py                        # Main Streamlit application (15 tabs)
-├── requirements.txt              # pip dependencies
-├── environment.yml               # Conda environment spec
-├── Dockerfile                    # Container definition
-├── docker-compose.yml            # Container orchestration
-├── install.bat                   # Windows one-click installer
-├── install.sh                    # Mac / Linux one-click installer
-├── run.bat                       # Windows launcher (after install)
-├── run.sh                        # Mac / Linux launcher (after install)
-├── force_download.py             # Pre-downloads AI models (~1.5 GB)
+├── backend/                      # FastAPI application
+│   ├── main.py                   # App factory, CORS, lifespan model loading
+│   ├── routers/                  # One router per feature tab (16 total)
+│   │   ├── config.py             # GET/PATCH /api/config
+│   │   ├── images.py             # Upload, background processing, job polling
+│   │   ├── results.py            # Review, edit, export
+│   │   ├── statistics.py         # Stats summary
+│   │   ├── history.py            # History, CSV export
+│   │   ├── diagnostics.py        # Deep inspection endpoint
+│   │   ├── ecological.py         # IDE, RAI, richness, accumulation, visitation
+│   │   ├── qc.py                 # QC flags and summary
+│   │   ├── stations.py           # Station registry and deployments
+│   │   ├── review.py             # Review queue, confirm/correct/flag
+│   │   ├── community.py          # Community observer data
+│   │   ├── spatial.py            # GeoJSON, Shapefile, KML, CSV
+│   │   ├── species.py            # Species library, synonym resolver
+│   │   ├── corridor.py           # Corridor movement analysis
+│   │   ├── project.py            # Project configuration
+│   │   └── arcgis.py             # ArcGIS push and exports
+│   ├── models/
+│   │   ├── state.py              # AppState + AppConfig dataclasses
+│   │   └── schemas.py            # Pydantic request/response models
+│   └── services/
+│       └── job_manager.py        # In-memory background job tracker
+│
+├── frontend/                     # React + TypeScript + Vite application
+│   ├── vite.config.ts            # Vite dev proxy: /api → localhost:8000
+│   ├── src/
+│   │   ├── App.tsx               # React Router with 15 routes
+│   │   ├── api/client.ts         # Typed API client (axios)
+│   │   ├── store/configStore.ts  # Zustand global config store
+│   │   ├── components/Layout/
+│   │   │   ├── Sidebar.tsx       # Live config sidebar (replaces st.sidebar)
+│   │   │   └── TabNav.tsx        # Top tab navigation
+│   │   └── pages/                # One page component per tab (15 total)
+│
+├── core/                         # UNCHANGED — all AI/ML business logic
+│   ├── animal_detector.py        # MegaDetector + BioClip ensemble
+│   ├── bioclip_classifier.py     # OpenCLIP species classifier
+│   ├── day_night_classifier.py   # Brightness-based day/night
+│   ├── ocr_processor.py          # EasyOCR metadata extraction
+│   ├── image_processor.py        # Unified processing pipeline
+│   ├── db_manager.py             # SQLite schema and persistence
+│   ├── independence_engine.py    # 30-min IDE grouping + RAI
+│   ├── qc_engine.py              # QC flag system
+│   ├── station_manager.py        # Station registry + deployments
+│   ├── privacy_scrubber.py       # Gaussian blur for Person/Vehicle
+│   ├── review_engine.py          # HITL accept/correct/reject queue
+│   ├── community_observer.py     # Field observer sighting store
+│   ├── spatial_exporter.py       # GeoJSON, Shapefile, KML export
+│   ├── species_library.py        # Species reference library
+│   ├── corridor_analyzer.py      # Directional corridor flow analysis
+│   ├── project_config.py         # Multi-project config + baselines
+│   └── arcgis_sync.py            # ArcGIS REST API sync
+│
+├── dev.sh                        # One command: starts both servers
 ├── wildlife_data.db              # SQLite database (auto-created on first run)
-├── .devcontainer/
-│   └── devcontainer.json         # VS Code Dev Container / GitHub Codespaces
-└── core/
-    ├── animal_detector.py        # MegaDetector + BioClip ensemble
-    ├── bioclip_classifier.py     # OpenCLIP species classifier
-    ├── day_night_classifier.py   # Brightness-based day/night
-    ├── ocr_processor.py          # EasyOCR metadata extraction
-    ├── image_processor.py        # Unified processing pipeline
-    ├── db_manager.py             # SQLite schema and persistence
-    ├── independence_engine.py    # 30-min IDE grouping + RAI
-    ├── qc_engine.py              # 7-check QC flag system
-    ├── station_manager.py        # Station registry + deployments
-    ├── privacy_scrubber.py       # Gaussian blur for Person/Vehicle
-    ├── review_engine.py          # HITL accept/correct/reject queue
-    ├── community_observer.py     # Field observer sighting store
-    ├── spatial_exporter.py       # GeoJSON, Shapefile, KML + pydeck layer data
-    ├── species_library.py        # 34-species reference library
-    ├── corridor_analyzer.py      # Directional corridor flow analysis
-    ├── project_config.py         # Multi-project config + baselines
-    └── arcgis_sync.py            # ArcGIS REST API sync
+├── requirements.txt              # Python ML dependencies
+├── Dockerfile                    # Multi-stage build (Node → React → Python)
+├── docker-compose.yml            # Container orchestration
+├── install.sh                    # Mac / Linux one-click installer (creates venv)
+├── install.bat                   # Windows one-click installer
+└── force_download.py             # Pre-downloads AI models (~1.5 GB)
 ```
 
 ---
 
-## Installation
+## Quick Start
 
-> **AI model note:** On first run the app downloads MegaDetector V5a and BioClip (~1.5 GB total). Run `python force_download.py` (or `python3 force_download.py`) **before** launching to do this once in the foreground. The script resumes automatically if interrupted.
+### Step 1 — Install Python dependencies
 
-Choose the environment that matches your setup:
+> **Python version:** Python 3.12 is strongly recommended. Python 3.14+ is **not supported** — key packages (`megadetector`, `yolov5`) have no pre-built wheels for 3.14 and will fail to compile.
 
----
+**Option A — Use the existing installer (recommended)**
 
-### Option A — Windows (one-click installer)
+The installer creates a `venv/` with all Python dependencies and pre-downloads the AI models:
 
-**Requirements:** **Python 3.12 is strongly recommended** — install it from [python.org](https://www.python.org/downloads/) and check **"Add Python to PATH"** during installation. Python 3.11 and 3.13 also work. Python 3.14+ is not yet supported: key packages (`megadetector`, `yolov5`) have no pre-built wheels for 3.14 and will fail to compile. Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html) for Conda support.
+```bash
+# macOS / Linux
+chmod +x install.sh
+./install.sh
 
-> **Tip:** If you already have Python 3.14 installed, you do **not** need to uninstall it. Install Python 3.12 alongside it — `install.bat` uses the Windows Python Launcher (`py -3.12`) to automatically pick the right version.
-
-```bat
-REM 1. Clone the repository
-git clone <repository-url>
-cd camera-traps
-
-REM 2. Run the installer (creates venv, installs deps, downloads models)
+# Windows
 install.bat
-
-REM 3. Start the app (every subsequent run)
-run.bat
 ```
 
-The installer detects Conda if installed and asks which environment manager you prefer.
+**Option B — Manual setup**
 
-**If an existing installation is found**, `install.bat` will ask:
+```bash
+# Create venv with Python 3.12
+python3.12 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate.bat
+
+# Install Python dependencies
+pip install -r requirements.txt
+pip install -r backend/requirements.txt
+
+# Pre-download AI models (one-time, ~1.5 GB)
+python force_download.py
 ```
-An existing installation was found.
 
-  1) Update / repair  - keep the current environment, install missing packages
-  2) Fresh install    - wipe everything and start clean
+### Step 2 — Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+cd ..
 ```
 
-To force a fresh install from the command line:
+### Step 3 — Run
+
+```bash
+bash dev.sh
+```
+
+Then open **http://localhost:5173** in your browser.
+
+- Frontend (React) → `http://localhost:5173`
+- API docs (Swagger) → `http://localhost:8000/docs`
+
+`dev.sh` automatically activates the `venv/` if it exists, then starts both the FastAPI backend (port 8000) and the Vite dev server (port 5173) together. Press `Ctrl+C` to stop both.
+
+---
+
+## Installation Options
+
+### Option A — macOS / Linux (one-click)
+
+```bash
+git clone <repository-url>
+cd camera-traps
+chmod +x install.sh
+./install.sh
+cd frontend && npm install && cd ..
+bash dev.sh
+```
+
+For a clean reinstall: `./install.sh --fresh`
+
+**What the Linux installer does automatically:**
+
+- Installs `python3.12-venv` via apt so the venv works even when the system default Python is newer (e.g. 3.14 on Ubuntu 25.04+).
+- Probes for an NVIDIA GPU via `nvidia-smi`. If none is found, installs the **CPU-only** PyTorch wheel (~300 MB) instead of the full CUDA build (~3 GB), saving both download time and disk space.
+- Downloads all other packages in parallel with live progress, speed, and ETA — with automatic retry (up to 3 attempts) on transient failures.
+
+---
+
+### Option B — Windows (one-click)
+
+**Requirements:** Python 3.12 from [python.org](https://www.python.org/downloads/) (check "Add Python to PATH"). Node.js from [nodejs.org](https://nodejs.org/).
+
 ```bat
-install.bat --fresh
+git clone <repository-url>
+cd camera-traps
+install.bat
+cd frontend && npm install && cd ..
+bash dev.sh
 ```
+
+> **Tip:** If you have Python 3.14 installed, you do **not** need to uninstall it. Install Python 3.12 alongside it — `install.bat` uses the Windows Python Launcher (`py -3.12`) to pick the right version automatically.
+
+For a clean reinstall: `install.bat --fresh`
 
 ---
 
-### Option B — macOS (one-click installer)
-
-**Requirements:** Python 3.11 - 3.13 (`brew install python@3.12` or `python@3.11`) or [python.org](https://www.python.org/downloads/). Optionally, [Miniconda](https://docs.conda.io/en/latest/miniconda.html).
+### Option C — Conda / Miniconda
 
 ```bash
-# 1. Clone the repository
 git clone <repository-url>
 cd camera-traps
-
-# 2. Run the installer
-chmod +x install.sh
-./install.sh
-
-# 3. Start the app (every subsequent run)
-./run.sh
-```
-
-To force a fresh install (wipes the existing venv and re-downloads everything):
-```bash
-./install.sh --fresh
-```
-
----
-
-### Option C — Linux (one-click installer)
-
-**Requirements:** Python 3.11 - 3.13, `python3-venv`. On Debian/Ubuntu the installer handles system dependencies automatically via `sudo apt-get`.
-
-```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd camera-traps
-
-# 2. Run the installer (installs libgl1, libglib2.0-0 etc. automatically)
-chmod +x install.sh
-./install.sh
-
-# 3. Start the app (every subsequent run)
-./run.sh
-```
-
-To force a fresh install:
-```bash
-./install.sh --fresh
-```
-
----
-
-### Option D — Conda / Miniconda (any platform)
-
-Use this if you prefer Conda for environment management. `environment.yml` is provided.
-
-```bash
-# 1. Clone the repository
-git clone <repository-url>
-cd camera-traps
-
-# 2. Create and activate the Conda environment
 conda env create -f environment.yml
 conda activate wildlife-analyzer
-
-# 3. Download AI models (one-time)
+pip install -r backend/requirements.txt
 python force_download.py
-
-# 4. Launch the app
-python -m streamlit run app.py
+cd frontend && npm install && cd ..
+bash dev.sh
 ```
 
-To update after a `git pull`:
+To update after `git pull`:
 ```bash
 conda env update -f environment.yml --prune
 ```
 
 ---
 
-### Option E — Docker (any platform)
+### Option D — Docker (production, single server)
 
-Best for reproducible environments and teams. Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/).
+In production the FastAPI backend serves the built React app as static files — one server, one port.
 
 ```bash
-# 1. Clone the repository
 git clone <repository-url>
 cd camera-traps
 
-# 2. Build and run with Docker Compose (recommended)
+# Build and run
 docker-compose up --build
-
-# OR using plain Docker
-docker build -t wildlife-analyzer .
-docker run -p 8501:8501 wildlife-analyzer
 ```
 
-Access the app at `http://localhost:8501`.
+Access the app at `http://localhost:8000`.
 
-**Persist the database and model cache between runs:**
+To persist the database between runs:
 ```bash
-docker run -p 8501:8501 \
+docker run -p 8000:8000 \
   -v $(pwd)/wildlife_data.db:/app/wildlife_data.db \
   -v ~/.cache/huggingface:/root/.cache/huggingface \
   wildlife-analyzer
@@ -221,146 +249,89 @@ docker run -p 8501:8501 \
 
 ---
 
-### Option F — VS Code Dev Container
+### Option E — VS Code Dev Container
 
-The repository includes a `.devcontainer/devcontainer.json` that configures a Python 3.11 container with all system dependencies pre-installed.
+The repository includes `.devcontainer/devcontainer.json` for a pre-configured container.
 
 1. Install the **Dev Containers** extension in VS Code.
-2. Open the repository folder in VS Code.
-3. When prompted, click **"Reopen in Container"** (or press `F1` → *Dev Containers: Reopen in Container*).
-4. VS Code builds the container, installs all dependencies, and auto-launches the app on port 8501.
-5. The app opens automatically in a browser preview tab.
-
-No manual `pip install` or model downloading required — the container handles everything.
+2. Open the repository folder and click **"Reopen in Container"** when prompted.
+3. The container installs all Python and Node dependencies automatically.
+4. Run `bash dev.sh` in the integrated terminal.
 
 ---
 
-### Option G — GitHub Codespaces
+## How the Dev Setup Works
 
-Run the app entirely in the cloud — no local installation needed.
+In development, two processes run simultaneously:
 
-1. On the GitHub repository page, click **Code → Codespaces → Create codespace on main**.
-2. Codespaces builds the dev container (same config as Option F).
-3. When the terminal appears, run the model pre-download:
-   ```bash
-   python force_download.py
-   ```
-4. The app starts automatically. Click the **"Open in Browser"** notification or go to the **Ports** tab and open port `8501`.
-
-> **Note:** Codespaces free tier provides 60 hours/month. Model downloads count against storage (up to 15 GB free).
-
----
-
-### Option H — Google Colab / Jupyter
-
-> **Note:** Streamlit is not natively supported in Colab's output iframe, but you can tunnel to it using `pyngrok`.
-
-```python
-# Cell 1 — Install dependencies
-!pip install -q streamlit pyngrok
-!pip install -q -r requirements.txt
-
-# Cell 2 — Download models
-!python force_download.py
-
-# Cell 3 — Launch with ngrok tunnel
-from pyngrok import ngrok
-import subprocess, threading
-
-def run_streamlit():
-    subprocess.run(["python", "-m", "streamlit", "run", "app.py",
-                    "--server.port=8501", "--server.headless=true"])
-
-thread = threading.Thread(target=run_streamlit, daemon=True)
-thread.start()
-
-# Expose via ngrok (sign up at https://ngrok.com for a free authtoken)
-ngrok.set_auth_token("YOUR_NGROK_AUTHTOKEN")
-public_url = ngrok.connect(8501)
-print(f"App running at: {public_url}")
+```
+Browser → http://localhost:5173  →  Vite dev server (React, HMR)
+                                         ↓ proxy /api/*
+                                    FastAPI  (http://localhost:8000)
+                                         ↓
+                                    core/ (AI models, SQLite)
 ```
 
----
-
-### Option I — Streamlit Community Cloud
-
-Best for sharing with collaborators without hosting infrastructure.
-
-1. Push the repository to GitHub (public or private).
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
-3. Click **"New app"**, select your repository, and set the main file to `app.py`.
-4. Click **Deploy** — Streamlit Cloud auto-installs from `requirements.txt`.
-
-> **Limitation:** Streamlit Cloud uses ephemeral storage. The SQLite database (`wildlife_data.db`) resets on each deployment. For persistent data, mount an external database or use Streamlit's `st.secrets` with a cloud database.
+Vite's proxy (`/api → localhost:8000`) means you only ever open one URL. All API calls from the frontend transparently reach FastAPI. In production (Docker), FastAPI serves the built React `dist/` directly — no Vite needed.
 
 ---
 
 ## Configuration
 
-### Sidebar Settings
+The left sidebar in the app exposes all runtime settings. Changes are sent to `PATCH /api/config` instantly and take effect on the next image processing run — no restart required.
 
 | Setting | Description |
 |---------|-------------|
-| Confidence Threshold | Detection score cutoff (default 0.35). Lower = more detections, higher = fewer false positives. |
-| Brightness Threshold | Day/Night classification sensitivity. |
-| OCR Strip Height | % of image bottom scanned for date/time text. Adjust to match your camera's metadata bar. |
-| Privacy Scrubbing | Enable Gaussian blur on Person/Vehicle detections. |
-| Blur Strength | Kernel size for privacy blur (odd numbers, 11–101). |
-| Independence Window | Minutes between detections of the same species at the same station to count as separate events (default 30 min). |
-| Default Station ID | Fallback station ID when filename doesn't encode one. |
-| Trap Nights (fallback) | Used for RAI when no deployment records exist. |
-| Review Confidence Threshold | Images below this score enter the HITL review queue. |
+| Detection Confidence | Score cutoff (default 0.35). Lower = more detections, higher = fewer false positives. |
+| Brightness Threshold | Day/Night classification sensitivity (0–255). |
+| Metadata Strip (%) | % of image bottom scanned for date/time text. |
+| Auto-Scrub Person/Vehicle | Apply Gaussian blur to privacy-sensitive detections. |
+| Blur Strength | Gaussian kernel size (11–101, odd numbers). |
+| Independence Window (min) | Same species + same station within this window = one IDE (default 30 min). |
+| Default Station ID | Fallback when filename doesn't encode a station. |
+| Default Trap Nights | Used for RAI when no deployment records exist. |
+| Review Queue Threshold | Images below this confidence appear in the Review Queue for expert review. |
 | Reviewer ID | Name/ID logged against review actions. |
-| CPU Threads (Windows only) | Number of PyTorch intra-op threads. Defaults to ¼ of your CPU core count — empirically the stable sweet spot on Windows (above half tends to crash). Increase for faster inference on powerful machines; if the app crashes, reduce it and click **Reload AI Models**. |
-| Reload AI Models | Clears the cached models and reloads from disk. Use this after installing or updating packages, or after changing the CPU Threads setting. |
+| Low-Spec Mode | INT8 dynamic quantization — halves model memory on machines with < 8 GB RAM. |
+| CPU Threads (Windows only) | PyTorch intra-op threads (default ¼ of core count — the stable sweet spot on Windows). |
 
 ---
 
 ## Spatial File Exports
 
-The **ArcGIS / Spatial Exports** tab provides three offline formats — no ArcGIS account required:
+The **Spatial & Map** and **ArcGIS Sync** tabs provide offline GIS formats — no ArcGIS account required:
 
 | Format | File | Best used with |
 |--------|------|----------------|
 | **GeoJSON** | `.geojson` | ArcGIS Online, QGIS, Mapbox, web apps |
-| **Shapefile** | `.zip` (contains `.shp`, `.dbf`, `.shx`, `.prj`) | ArcGIS Pro / Desktop, QGIS, any desktop GIS |
+| **Shapefile** | `.zip` (`.shp`, `.dbf`, `.shx`, `.prj`) | ArcGIS Pro / Desktop, QGIS, any desktop GIS |
 | **KML** | `.kml` | Google Earth, ArcGIS Earth, ArcGIS Pro |
-
-Both **Station Locations** and **Detection Events (IDEs)** can be exported in all three formats.
-
-> **Shapefile note:** Requires the `pyshp` package, included in `requirements.txt`. If you installed manually without `pyshp`, run `pip install pyshp`.
+| **CSV** | `.csv` | Excel, R, Python — georeferenced detections |
 
 ---
 
 ## ArcGIS Live Sync Setup
 
-For pushing data directly to a hosted feature layer (no file download needed):
+1. In ArcGIS Online, create a hosted **Feature Layer** (Point geometry) with fields: `station_id`, `species`, `detection_confidence`, `capture_date`, `day_night`.
+2. Copy the layer's REST endpoint URL from **Item Details → URL** (ends in `/FeatureServer/0`).
+3. In the **ArcGIS Sync** tab, enter the URL and your ArcGIS token, then click **Push to ArcGIS**.
 
-1. In ArcGIS Online, create two hosted **Feature Layers** (Point geometry):
-   - **Stations layer** — fields: `station_id`, `habitat_stratum`, `camera_model`, `trap_nights`, `functionality_pct`, `status`
-   - **Detections layer** — fields: `ide_id`, `station_id`, `species`, `image_count`, `max_confidence`, `first_detection`, `last_detection`, `duration_minutes`
-2. Copy each layer's REST endpoint URL from **Item Details → URL** (ends in `/FeatureServer/0`).
-3. In the app's **ArcGIS / Spatial Exports** tab, expand **Connection Settings**, enter your portal URL and credentials or API token, then click **Connect**.
-4. Paste the layer URLs and click **Push Stations** / **Push Detections**.
-
-For ArcGIS Enterprise, replace `https://www.arcgis.com` with your portal root (e.g. `https://gis.yourorg.com/portal`).
+For ArcGIS Enterprise, use your portal root URL (e.g. `https://gis.yourorg.com/portal`).
 
 ---
 
 ## Performance & System Requirements
 
-### Why does the app feel heavy?
+### Model memory footprint
 
-The **AI models are the bottleneck — not Streamlit itself**. Streamlit's web server uses roughly 100–200 MB of RAM. The heaviness comes from:
+AI models are loaded once at startup (FastAPI lifespan) and held in memory for the lifetime of the server — not reloaded per request.
 
 | Component | RAM | Disk |
 |-----------|-----|------|
 | PyTorch runtime | ~1.2 GB | ~2 GB |
 | MegaDetector V5a | ~600 MB | ~600 MB |
 | BioClip (OpenCLIP) | ~850 MB | ~850 MB |
-| **Total (first load)** | **~2.6 GB** | **~3.5 GB** |
-
-Once loaded, models are cached in memory (`@st.cache_resource`) so reruns are fast.
+| **Total** | **~2.6 GB** | **~3.5 GB** |
 
 ### Minimum recommended specs
 
@@ -368,236 +339,174 @@ Once loaded, models are cached in memory (`@st.cache_resource`) so reruns are fa
 |----------|---------|-------------|
 | RAM | 8 GB | 16 GB |
 | CPU | Any modern dual-core | 4+ cores |
-| GPU | Not required (CPU-only on Windows) | CUDA GPU speeds up BioClip on Linux/Mac |
+| GPU | Not required | CUDA GPU speeds up BioClip on Linux/Mac |
 | Disk | 5 GB free | 10 GB free |
 | OS | Windows 10 / macOS 12 / Ubuntu 20.04 | — |
 
-> **Windows GPU note:** GPU acceleration is **auto-detected** on Windows. At startup the app runs `nvidia-smi` (a lightweight NVIDIA CLI) to check whether a healthy NVIDIA GPU and driver are present — without opening a CUDA context, so there is no risk of a TDR crash. If `nvidia-smi` reports a GPU, CUDA is enabled; otherwise all models run on CPU. AMD and Intel GPUs are not CUDA-capable on Windows and will always use CPU. On Linux and macOS, PyTorch detects CUDA automatically.
+> **GPU detection:** On all platforms the installer probes for an NVIDIA GPU via `nvidia-smi`. If found, the full CUDA PyTorch build is used; if not, the CPU-only build is installed automatically. AMD and Intel GPUs are not CUDA-capable and always fall back to CPU.
 
 ### Running on a low-RAM machine
 
-If you have less than 8 GB RAM, enable **Low-Spec / Low-Memory Mode** in the sidebar. This applies INT8 dynamic quantization to all three models, roughly halving their memory footprint. Detection accuracy may decrease slightly on borderline images.
-
-**Option 2 — Run models on a server, view on laptop**
-Deploy the Docker image on a cloud VM (e.g. AWS EC2 `t3.xlarge`, ~16 GB RAM) and access `http://<server-ip>:8501` from any browser. The laptop only runs the browser — all heavy processing happens on the server.
-
-### About Streamlit vs other frameworks
-
-Streamlit is appropriate for this use case (field biologists, not web developers). If you need:
-- **Multi-user access with roles** → migrate to Dash (all `core/` modules are framework-agnostic)
-- **REST API access** → wrap `core/` modules with FastAPI
-- **Maximum performance** → the bottleneck is PyTorch, not the web framework; switching away from Streamlit won't measurably help
+Enable **Low-Spec / Low-Memory Mode** in the sidebar. This applies INT8 dynamic quantization to all models, roughly halving memory use. Detection accuracy may decrease slightly on borderline images.
 
 ---
 
 ## VS Code Interpreter Setup
 
-If VS Code shows "Cannot find module" errors for `streamlit`, `cv2`, `torch` etc., the editor is checking the wrong Python. Fix it once:
+If VS Code shows "Cannot find module" for `cv2`, `torch`, etc., it is checking the wrong Python:
 
 1. Press `Ctrl+Shift+P` → **Python: Select Interpreter**
 2. Choose `./venv/bin/python` (venv) or the `wildlife-analyzer` conda env
 
-All module-not-found errors across every file will disappear immediately.
+---
+
+## Troubleshooting: Linux — venv Creation Fails (`ensurepip` error)
+
+On Ubuntu 25.04+ the system default Python is 3.14, so `python3-venv` installs the venv module for 3.14 — not for Python 3.12 that the installer picks. The symptom is:
+
+```
+Error: Command '['.../python3.12', '-m', 'ensurepip', '--upgrade']' returned non-zero exit status 1.
+```
+
+The installer now handles this automatically by also installing `python3.12-venv`. If you hit this on an older installer version, fix it manually:
+
+```bash
+sudo apt-get install python3.12-venv
+rm -rf venv
+bash install.sh
+```
 
 ---
 
-## Troubleshooting: AI Models Not Loading
+## Troubleshooting: Linux — Disk Quota Exceeded During Install
 
-If the app shows a red banner — **"AI models could not be loaded — animal detection is disabled"** — one or both of the required packages (`megadetector`, `open_clip_torch`) are not installed in the active Python environment.
+By default, `pip download` fetches every wheel regardless of what is already installed in the venv. Without GPU auto-detection, this includes the full CUDA PyTorch build (~2.5 GB for torch alone) plus NVIDIA libraries (`nvidia_cublas`, `nvidia_cufft`, `triton`, etc.) even on CPU-only machines — easily exceeding per-user disk quotas.
 
-### Fix
+The current installer avoids this by:
+1. Detecting the GPU with `nvidia-smi` before the parallel download phase.
+2. Pre-installing the CPU-only PyTorch wheel if no GPU is found.
+3. Excluding `torch` and `torchvision` from the parallel download queue so the CUDA builds are never fetched.
 
-Install the missing packages in your activated environment and re-download the model weights:
+If you hit the quota error on an older version, upgrade and reinstall:
 
 ```bash
+git pull
+rm -rf venv temp_packages_download
+bash install.sh
+```
+
+---
+
+## Troubleshooting: Models Not Loading
+
+If the API returns `"models_loaded": false` at `GET /api/config/status`, the backend started but failed to import one or more packages. Check the uvicorn terminal output for the specific error.
+
+**Most common cause:** uvicorn is using the system Python, not the venv.
+
+```bash
+# Always activate the venv before running manually
+source venv/bin/activate          # Windows: venv\Scripts\activate.bat
+uvicorn backend.main:app --reload --port 8000
+```
+
+`bash dev.sh` handles this automatically — it activates `venv/` if present.
+
+**Missing packages:**
+```bash
+source venv/bin/activate
 pip install megadetector open_clip_torch
 python force_download.py
 ```
 
-Then click the **Reload Models** button on the banner (or **Reload AI Models** in the sidebar). This clears the cached broken state and reloads the models without restarting the app.
-
-If the packages install but the banner keeps appearing, the app is likely running from a different Python than the one you installed into. Check which Python Streamlit is using:
-
-```bash
-# In the terminal where you run the app
-python -m streamlit run app.py
-```
-
-Make sure you have activated your `venv` (`source venv/bin/activate` / `venv\Scripts\activate.bat`) or conda environment (`conda activate wildlife-analyzer`) first.
-
-### Why this can happen after a successful-looking install
-
-Two known causes:
-
-**1. Wrong Python version (most common on Windows)**
-`megadetector` and its dependency `yolov5` have no pre-built wheels for Python 3.14+. When pip can't find a wheel it tries to compile from source, which requires the MSVC C++ Build Tools (not normally installed). The build silently fails and the package is skipped. The fix is to use Python 3.12 — `install.bat` now selects it automatically via the Windows Python Launcher.
-
-**2. Package installed into the wrong environment**
-If `streamlit run app.py` is run from a terminal where the venv is not activated, it uses the system Python, which doesn't have `megadetector` installed. Always launch via `run.bat` (Windows) or `./run.sh` (Mac/Linux), which activates the venv before starting Streamlit.
+Then restart the backend. Models reload automatically on next startup.
 
 ---
 
-## Troubleshooting: Windows Machine Restarts Instantly When Processing Images
+## Troubleshooting: No Animals Detected
 
-If the Windows machine reboots with **no Blue Screen of Death (BSOD)** as soon as image processing begins, this is a **GPU driver TDR (Timeout Detection and Recovery) failure** — not a RAM or software crash.
+### Step 1 — Check model status
 
-### Why it happens
+```
+GET http://localhost:8000/api/config/status
+```
 
-Even though all models run on CPU, PyTorch calls `torch.cuda.is_available()` during initialisation. On Windows, this call opens a CUDA context against the GPU driver. On machines with:
-- Hybrid/Optimus graphics (integrated + discrete GPU)
-- Outdated GPU drivers
-- Certain NVIDIA driver versions with known TDR bugs
+Should return `{"models_loaded": true, "error": null}`. If `models_loaded` is `false`, fix the model loading issue first (see above).
 
-...this driver probe can fail hard enough that Windows cannot recover the GPU driver and reboots instantly instead of showing a BSOD.
+### Step 2 — Use the Diagnostics tab
 
-This has been fixed in the current version. The app now sets `CUDA_VISIBLE_DEVICES=-1` at startup on Windows, which tells CUDA there are no GPUs — the driver is never touched.
+Upload a failing image to the **Diagnostics** tab and click **Run Deep Inspection**. This shows:
+- Raw OCR extraction output
+- MegaDetector candidates at all confidence levels
+- BioClip top-20 species scores
 
-### If you are still seeing restarts on an older version
+If MegaDetector returns no candidates, the animal was not detected regardless of threshold.
 
-Update to the latest version of the repository and re-run the installer:
+### Step 3 — Lower the confidence threshold
+
+The sidebar **Detection Confidence** defaults to **0.35**. Night/IR shots and distant animals often score 0.15–0.25. Try **0.10–0.15** and reprocess.
+
+### Step 4 — Check image quality
+
+| Condition | Action |
+|-----------|--------|
+| Very dark / underexposed | Check camera flash settings |
+| Animal < 2% of frame | Reposition the camera closer to the path |
+| Heavy motion blur | Increase camera shutter speed |
+| Corrupted or zero-byte file | Re-export from SD card |
+
+### Step 5 — Disable Low-Spec mode
+
+INT8 quantization can drop borderline detections (scores 0.20–0.35) below the threshold. Uncheck **Low-Spec Mode** in the sidebar and restart the backend.
+
+---
+
+## Troubleshooting: Windows — Machine Restarts During Processing
+
+This is a GPU driver TDR failure, not a RAM crash.
+
+The app sets `CUDA_VISIBLE_DEVICES=-1` and probes for NVIDIA GPUs via `nvidia-smi` (a lightweight CLI that does not open a CUDA context). On machines without a healthy NVIDIA driver, CUDA is disabled entirely before any model loads.
+
+If you are on an older version and seeing restarts, update and restart:
 
 ```bat
 git pull
 install.bat
 ```
 
-Or apply the fix manually by adding this line to the top of `app.py`, **before any other imports**:
-
-```python
-import os, sys
-if sys.platform == 'win32':
-    os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
-```
-
-### Other Windows-specific stability fixes included in the current version
+### Windows stability fixes included in the current version
 
 | Fix | What it prevents |
 |-----|-----------------|
-| `nvidia-smi` GPU probe + conditional `CUDA_VISIBLE_DEVICES=-1` | GPU driver TDR crash on machines without a healthy NVIDIA GPU; CUDA enabled automatically when a working GPU is detected |
-| `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` | Deadlock from multiple OpenMP runtimes (PyTorch + OpenCV + EasyOCR each load their own DLL); raising these causes the three models to compete for threads and hit Windows stack limits |
-| `torch.set_num_threads(1)` on Windows | Prevents thread stack exhaustion; all three models share the same process and raising this causes crashes even with few images |
-| `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes using Windows' `spawn` start method |
+| `nvidia-smi` probe + conditional `CUDA_VISIBLE_DEVICES=-1` | GPU TDR crash on machines without a healthy NVIDIA GPU |
+| `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` | OpenMP deadlock from PyTorch + OpenCV + EasyOCR loading duplicate DLLs |
+| `torch.set_num_threads(¼ cores)` on Windows | Thread-stack exhaustion when all three models compete for threads |
+| `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes |
 
 ---
 
-## Troubleshooting: Windows Installation — SSL Certificate Error
+## Troubleshooting: Windows — SSL Certificate Error During Install
 
-If `install.bat` fails with an error like:
+If `install.bat` fails with `ssl.SSLCertVerificationError`, your network performs SSL inspection with a corporate root CA that Python does not trust.
 
+**Option 1 — Re-run the updated installer** (pulls the latest version which handles this):
+```bat
+git pull
+install.bat
 ```
-ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED]
-certificate verify failed: unable to get local issuer certificate
-ERROR: Failed to build 'ultralytics-yolov5'
-```
 
-this is a **corporate network / SSL inspection issue**, not a bug in the app. Managed Windows machines (schools, offices, government) often run a proxy that intercepts HTTPS traffic using a custom root certificate. Python does not trust that certificate by default, so any HTTPS call from inside a package's build script fails.
-
-The updated `install.bat` handles this automatically. If you are running an older version:
-
-### Option 1 — Re-run install.bat (recommended)
-
-Pull the latest version of the repository and re-run `install.bat`. The installer now:
-- Installs `pip-system-certs`, which tells pip to use the Windows certificate store (where your organisation's root CA is already trusted).
-- Sets `PYTHONHTTPSVERIFY=0` for the duration of the install session so that `setup.py` subprocesses (which bypass pip's cert store and use Python's `urllib` directly) also succeed.
-
-### Option 2 — Run manually if install.bat still fails
-
-Open **Command Prompt** in the project folder and run:
-
+**Option 2 — Manual override:**
 ```bat
 set PYTHONHTTPSVERIFY=0
 venv\Scripts\activate.bat
 pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
 ```
 
-The `set PYTHONHTTPSVERIFY=0` line only applies to the current Command Prompt window and does not change any system settings.
-
-### Option 3 — Ask IT to add a certificate exception
-
-If your organisation's IT policy blocks `PYTHONHTTPSVERIFY=0`, ask them to export the corporate root CA certificate (`.cer` or `.pem`) and then run:
-
+**Option 3 — Ask IT** to export the corporate root CA certificate and:
 ```bat
 set REQUESTS_CA_BUNDLE=C:\path\to\corporate-ca.pem
 set SSL_CERT_FILE=C:\path\to\corporate-ca.pem
 pip install --no-cache-dir -r requirements.txt
 ```
-
-### Why does `ultralytics-yolov5` trigger this?
-
-Unlike standard packages, `ultralytics-yolov5` makes an HTTPS download request **inside its `setup.py`** during the build step (before pip even installs it). This means pip's own certificate configuration doesn't protect it — the request goes directly through Python's `urllib`, which only trusts the certificates bundled with Python itself. On a machine with SSL inspection, that verification fails.
-
----
-
-## Troubleshooting: No Animals Detected
-
-If the pipeline returns `Empty` or `Unknown` for all images, work through the checks below in order.
-
-### Step 1 — Check the startup banner
-
-If a red banner appears at the top of the app saying **"AI models could not be loaded"**, animal detection is completely disabled. Follow the [AI Models Not Loading](#troubleshooting-ai-models-not-loading) section above before continuing.
-
-### Step 2 — Check the Diagnostics Tab
-
-Open the **Diagnostics** tab, upload one of the failing images, and click **Run Deep Inspection**. This bypasses the confidence threshold and shows raw model output.
-
-- **MegaDetector status** — must show `MegaDetector Loaded Successfully`. If it shows a load error, the model file is missing or corrupt. Re-run `python force_download.py` and restart the app.
-- **Raw candidates table** — lists every detection MegaDetector found, including those below the threshold. If the table is empty, MegaDetector found nothing in the image (see Step 4). If rows are present but all have low confidence, see Step 3.
-- **BioClip predictions** — lists the top-20 species scores for the image. If this section is blank or shows a warning, BioClip did not initialise correctly (see Step 5).
-
-### Step 3 — Lower the Confidence Threshold
-
-The sidebar **Detection Confidence Threshold** defaults to **0.35**. Camera trap images (especially night/IR shots, distant animals, or dense vegetation) often produce MegaDetector scores of 0.15–0.30.
-
-- Try **0.10–0.15** first, re-process, and check whether detections appear.
-- BioClip reuses the same threshold for species scoring. With 20 wildlife classes in the list, softmax probabilities are spread across all classes; the top species may only score 0.15–0.25 even on a clear image.
-- If lowering the threshold produces too many false positives, raise the **Review Queue Threshold** instead so genuine detections surface in the queue for manual review.
-
-### Step 4 — Check Image Quality
-
-MegaDetector may return zero detections if:
-
-| Condition | What to do |
-|-----------|-----------|
-| Very dark / underexposed night image | Increase camera flash range; check if Day/Night classification is correct |
-| Animal occupies < 2% of frame | Camera trap is too far from the path; reposition |
-| Heavy motion blur | Increase shutter speed on camera settings |
-| Image is grayscale or RGBA instead of RGB | Convert to standard JPEG/RGB before uploading |
-| Corrupted or zero-byte file | Re-export from the SD card |
-
-The **Diagnostics** raw candidate table shows detections at **all** confidence levels (including below 0.01), so even a poor-quality image should contain some rows if the animal is partially visible.
-
-### Step 5 — Verify BioClip Initialised Correctly
-
-BioClip requires two things to classify species: the model weights and pre-computed text embeddings for the species list. If either is missing, it silently returns nothing.
-
-Check the app startup logs (terminal window where you ran `streamlit run app.py`) for:
-
-```
-Loading BioClip on cpu (Low-Spec: False)...
-BioClip loaded successfully.
-BioClip: Updated text features for 20 species.
-```
-
-If you see `Error loading BioClip` or `Error updating species list`, the model download is incomplete. Run `python force_download.py` and restart.
-
-### Step 6 — Disable Low-Spec Mode
-
-The **Low-Spec / Low-Memory Mode** checkbox applies INT8 dynamic quantization to MegaDetector and BioClip. On some hardware this degrades detection confidence enough that borderline detections (scores near 0.20–0.35) drop below the threshold.
-
-If Low-Spec mode is enabled:
-1. Uncheck it in the sidebar.
-2. Click **Reload AI Models** in the sidebar.
-3. Re-run the failing images.
-
-Only use Low-Spec mode if the app crashes due to out-of-memory errors.
-
-### Step 7 — Known Diagnostics Limitations (Current Version)
-
-Be aware of two gaps in the current Diagnostics tab output:
-
-1. **BioClip runs on the full image in the Diagnostics tab**, not on the cropped bounding box that the real pipeline uses. A score of `Zebra 0.03` in the Diagnostics view does not mean the real pipeline scored 0.03 — cropping to the animal region typically produces much higher scores. Use the raw candidate table to confirm MegaDetector found the animal first; if it did, BioClip is likely classifying it correctly in the main pipeline.
-
-2. **The Diagnostics tab always uses a 0.2 threshold internally**, regardless of the sidebar slider. If your slider is set to 0.35, the Diagnostics view may show detections that the main pipeline would filter out. Compare the raw confidence values in the candidate table directly against your slider value.
 
 ---
 
@@ -607,57 +516,49 @@ Be aware of two gaps in the current Diagnostics tab output:
 - **BioClip (OpenCLIP)** — Imageomics foundation model for fine-grained species classification from cropped detections.
 - **EasyOCR** — Reads date, time, and temperature from camera metadata strips via regex.
 - **Independence rule** — Same species + same station + detections within the window → one IDE. RAI = IDEs / trap nights.
-- **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes; originals are never modified.
-- **SQLite** (`wildlife_data.db`) — All persistent data (stations, IDEs, review actions, community observations, project config, ArcGIS sync log) is stored in a single local database.
+- **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes. Originals are never modified.
+- **Background jobs** — Image processing runs in a `ThreadPoolExecutor` background task. The frontend polls `GET /api/images/job/{id}` every 1.5 s and updates the progress bar in real time.
+- **SQLite** (`wildlife_data.db`) — All persistent data (stations, IDEs, review actions, community observations, project config, ArcGIS sync log) stored in a single local database.
 
 ---
 
 ## Recent Changes
 
+### FastAPI + React Migration (May 2026)
+
+- Replaced the Streamlit monolith (`app.py`) with a **FastAPI REST backend** (`backend/`) and a **React + TypeScript frontend** (`frontend/`).
+- All `core/` modules are unchanged — they are called directly by FastAPI route handlers.
+- AI models now load once at server startup via FastAPI's lifespan context (replaces `@st.cache_resource`).
+- Image processing moved to background tasks with a polling API (`POST /process → GET /job/{id}`) giving real-time progress in the browser.
+- Config sidebar changes now call `PATCH /api/config` and take effect immediately without a page reload.
+- Added `dev.sh` — one command to start both servers with automatic venv activation.
+- Updated `Dockerfile` to a multi-stage build: Node stage builds the React app, Python stage serves everything via FastAPI on port 8000.
+- Interactive API documentation available at `http://localhost:8000/docs`.
+
+### Linux Installer & Download Engine (May 2026)
+
+- `install.sh` now installs `python3.12-venv` explicitly on Debian/Ubuntu, fixing venv creation failures on systems where the default Python is 3.14+ (e.g. Ubuntu 25.04).
+- Added NVIDIA GPU auto-detection via `nvidia-smi`: CPU-only PyTorch is installed when no GPU is present, reducing the download from ~3 GB to ~300 MB and preventing disk quota errors.
+- Rewrote the parallel download engine (`install_dependencies.py`):
+  - Live dashboard showing every package with phase badges: `[Queued]` → `[Resolving]` → `[Downloading]` → `[Done]`
+  - Real-time bytes downloaded / total, speed (MB/s), and ETA parsed from pip's output
+  - Automatic retry with exponential back-off — up to 3 attempts at 5 s → 15 s → 30 s delays
+  - Dynamic worker count scaled to `min(8, cpu_count ÷ 2)` instead of a hardcoded 5
+  - Install phase now streams pip output live (package-by-package) instead of running silently
+
 ### Windows Installer & Dependency Fixes (May 2026)
 
-**Python 3.14 compatibility — `install.bat` now picks the right Python automatically**
-- `megadetector` and its dependency `yolov5` have no pre-built wheels for Python 3.14+. Pip attempts to compile from source, which requires MSVC C++ Build Tools (not normally installed on end-user machines). The result is a silent install failure — megadetector appears to install but the package is never actually present.
-- `install.bat` now uses the **Windows Python Launcher** (`py`) to prefer Python 3.12 → 3.11 → 3.13 before falling back to whatever `python` resolves to in PATH. The venv is created with whichever compatible version is found first.
-- If only Python 3.14+ is available on the machine, a clear warning is shown directing the user to install Python 3.12 from python.org. Both versions can coexist — no uninstall needed.
+- `install.bat` now uses the Windows Python Launcher to prefer Python 3.12 → 3.11 → 3.13, avoiding the Python 3.14 wheel-compilation failure for `megadetector` and `yolov5`.
+- Replaced blanket `CUDA_VISIBLE_DEVICES=-1` with `nvidia-smi` GPU probe — CUDA is now automatically enabled on machines with a working NVIDIA GPU.
+- Pinned `megadetector>=5.0.0,<6.0.0` to avoid the breaking API changes in version 10.x.
+- Added `--fresh` flag to both `install.sh` and `install.bat` for clean-slate reinstalls.
 
-**Windows GPU auto-detection**
-- Replaced the blanket `CUDA_VISIBLE_DEVICES=-1` (which disabled GPU on all Windows machines) with an `nvidia-smi` probe at startup. `nvidia-smi` queries the GPU driver as a separate subprocess without opening a CUDA context, so it cannot cause a TDR crash. If it reports a healthy NVIDIA GPU, CUDA is automatically enabled. AMD and Intel GPUs are not CUDA-capable on Windows and continue to use CPU.
+### Earlier Changes (May 2026)
 
-**megadetector version pinned to 5.x**
-- Without a version constraint, pip now resolves `megadetector` to version 10.x (a new major release). The app was built against the 5.x API (`from megadetector.detection import run_detector`, `model.generate_detections_one_image()`). Version 10.x may have breaking API changes.
-- `requirements.txt` now pins `megadetector>=5.0.0,<6.0.0` to ensure the app always installs a compatible version. If you already have 10.x installed, run `install.bat` (choose **Fresh install**) to rebuild the venv with the correct version.
-
----
-
-### Platform & Stability Fixes (May 2026)
-
-**Windows crash fix — instant machine restart during image processing**
-- Added `CUDA_VISIBLE_DEVICES=-1` on Windows startup (before any torch import) to prevent PyTorch's CUDA initialisation from probing the GPU driver. On Windows with hybrid/Optimus graphics or certain driver versions, this probe causes a GPU TDR failure that reboots the machine instantly with no BSOD.
-- Added `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, and `KMP_DUPLICATE_LIB_OK=TRUE` to prevent deadlocks from multiple OpenMP runtimes (PyTorch/MKL + OpenCV + EasyOCR each ship their own).
-- Added `torch.set_num_threads(1)` unconditionally on Windows (previously only in Low-Spec mode) to prevent thread-stack exhaustion.
-- Added `multiprocessing.freeze_support()` on Windows to prevent crashes when EasyOCR or YOLO spawn worker processes.
-
-**MegaDetector & BioClip not loading**
-- Fixed `megadetector>=5.0.0` version constraint in `requirements.txt` — on Python 3.14, no wheels exist for this package or its dependencies, causing silent install failure. Constraint changed to `megadetector>=5.0.0,<6.0.0` (later tightened to avoid the 10.x API break — see above).
-- Added `megadetector` to `environment.yml` — it was missing entirely, so conda users never had it installed.
-- Fixed conda install path in both `install.sh` and `install.bat` — `force_download.py` (BioClip model, ~599 MB) was never called for conda users.
-
-**Installer improvements**
-- Added `--fresh` flag to `install.sh` and `install.bat` for a clean-slate reinstall (`./install.sh --fresh` / `install.bat --fresh`).
-- When `install.bat` is double-clicked and an existing `venv\` is found, an interactive prompt now asks whether to update/repair or do a fresh install — no terminal required.
-
-**In-app recovery**
-- Added a dependency health check banner at startup that shows exactly which packages are missing and the commands to install them.
-- Added a **Reload Models** button on the error banner and a **Reload AI Models** button in the sidebar — both clear `@st.cache_resource` and reload models without restarting the app or terminal.
-
-### Earlier Changes
-
-- **Dependency & Platform Compatibility (May 2026)**
-  - Removed upper-bound limit (`<2.0.0`) on `numpy` to allow installing pre-compiled NumPy 2.x wheels on Python 3.14.
-  - Enhanced `install.sh` to detect `python3.13` and `python3.12` before falling back to `python3`.
-  - Fixed a `TypeError` in Excel report generation (`create_excel_report`) caused by `apply(len)` on null float values on newer Pandas/Arrow string backends.
-  - Added **Low-Spec / Low-Memory Mode** sidebar toggle for INT8 quantization and single-thread CPU mode on machines with < 8 GB RAM.
+- Removed `numpy<2.0.0` upper-bound constraint to allow NumPy 2.x wheels on Python 3.14.
+- Fixed `TypeError` in Excel report generation on newer Pandas/Arrow string backends.
+- Added **Low-Spec / Low-Memory Mode** for INT8 quantization on machines with < 8 GB RAM.
+- Added `OMP_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` and `torch.set_num_threads(1)` on Windows to fix OpenMP deadlocks and thread-stack exhaustion.
 
 ---
 

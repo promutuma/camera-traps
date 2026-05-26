@@ -33,6 +33,7 @@ if [[ "$OS" == "Linux" ]]; then
     if command -v apt-get &>/dev/null; then
         echo "[INFO] Installing system dependencies (requires sudo)..."
         sudo apt-get update -qq
+        sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 curl python3-venv python3.12-venv 2>/dev/null || \
         sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 curl python3-venv
         echo "[OK] System dependencies installed."
     elif command -v dnf &>/dev/null; then
@@ -144,6 +145,20 @@ else
     echo "[INFO] Upgrading pip..."
     pip install --upgrade pip --quiet
 
+    # Install CPU-only PyTorch when no NVIDIA GPU is present, to avoid
+    # downloading ~3 GB of unused CUDA libraries.
+    INSTALL_DEPS_ARGS=""
+    if ! command -v nvidia-smi &>/dev/null; then
+        echo "[INFO] No NVIDIA GPU detected. Installing CPU-only PyTorch..."
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu --quiet
+        echo "[OK] CPU-only PyTorch installed."
+        # Exclude torch/torchvision from the parallel download phase — they're
+        # already installed above and pip download ignores the venv, so without
+        # this filter it re-downloads the huge CUDA wheels and hits disk quota.
+        grep -vE '^torch(vision)?' requirements.txt > /tmp/requirements_cpu_filtered.txt
+        INSTALL_DEPS_ARGS="--requirements=/tmp/requirements_cpu_filtered.txt"
+    fi
+
     echo "[INFO] Installing dependencies (10–20 min on first run)..."
     
     # Create temporary SSL patch
@@ -155,7 +170,7 @@ EOF
     export ORIGINAL_PYTHONPATH="$PYTHONPATH"
     export PYTHONPATH="temp_ssl_patch:$PYTHONPATH"
 
-    python3 install_dependencies.py
+    python3 install_dependencies.py $INSTALL_DEPS_ARGS
     PIP_ERR=$?
 
     # Clean up SSL patch
@@ -168,29 +183,43 @@ EOF
     fi
     echo "[OK] Dependencies installed."
 
+    echo "[INFO] Installing FastAPI backend dependencies..."
+    pip install -r backend/requirements.txt --quiet
+    echo "[OK] Backend dependencies installed."
+
+    echo "[INFO] Installing frontend dependencies (npm install)..."
+    if command -v npm &>/dev/null; then
+        (cd frontend && npm install --silent)
+        echo "[OK] Frontend dependencies installed."
+    else
+        echo "[WARNING] npm not found — skipping frontend install."
+        echo "          Install Node.js from https://nodejs.org/ then run: cd frontend && npm install"
+    fi
+
     echo "[INFO] Pre-downloading AI models (~1.5 GB). This only happens once..."
     python force_download.py
     echo "[OK] Models ready."
 
-    # Create run.sh for venv
+    # Create run.sh that starts the FastAPI + React stack via dev.sh
     cat > run.sh << 'RUNEOF'
 #!/usr/bin/env bash
 set -e
-if [[ ! -d "venv" ]]; then
-    echo "[ERROR] venv not found. Please run ./install.sh first."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/dev.sh" ]]; then
+    echo "[ERROR] dev.sh not found. Please re-run ./install.sh."
     exit 1
 fi
-source venv/bin/activate
-echo "Starting Wildlife Camera Trap Auto-Analyzer..."
-echo "Access the app at: http://localhost:8501"
-python -m streamlit run app.py
+exec bash "$SCRIPT_DIR/dev.sh"
 RUNEOF
 
     echo ""
     echo "============================================================"
     echo " Installation complete!"
     echo " To start the app:"
-    echo "     ./run.sh"
+    echo "     ./run.sh        (or: bash dev.sh)"
+    echo ""
+    echo " Frontend  → http://localhost:5173"
+    echo " API docs  → http://localhost:8000/docs"
     echo "============================================================"
 fi
 

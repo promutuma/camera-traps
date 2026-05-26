@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
 set -e
-if [[ ! -d "venv" ]]; then
-    echo "[ERROR] Virtual environment not found. Please run ./install.sh first."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/dev.sh" ]]; then
+    echo "[ERROR] dev.sh not found. Please re-run ./install.sh."
     exit 1
 fi
-source venv/bin/activate
-echo "Starting Wildlife Camera Trap Auto-Analyzer..."
-echo "Access the app at: http://localhost:8501"
-python -m streamlit run app.py
+exec bash "$SCRIPT_DIR/dev.sh"

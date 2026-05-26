@@ -43,3 +43,6 @@ Thumbs.db
 # App specific
 temp/
 test_md_debug.jpg
+temp_packages_download/
+temp_ssl_patch/
+uploads/

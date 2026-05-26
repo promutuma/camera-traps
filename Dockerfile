@@ -1,15 +1,21 @@
-# Use Python 3.11 slim as the base image
+# ── Stage 1: Build React frontend ────────────────────────────────────────────
+FROM node:20-slim AS frontend-build
+
+WORKDIR /app/frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: Python backend + built frontend ──────────────────────────────────
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Set environment variables
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    streamlit_port=8501
+    PYTHONUNBUFFERED=1
 
-# Install system dependencies required for OpenCV and other tools
+# System deps for OpenCV / EasyOCR
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -19,23 +25,23 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-
-# Copy requirements file
+# Python deps — install core requirements first, then FastAPI extras
 COPY requirements.txt .
-
-# Install Python dependencies
-# Upgrade pip first
+COPY backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir -r backend/requirements.txt
 
-# Copy the rest of the application
-COPY . .
+# Copy source
+COPY core/ ./core/
+COPY backend/ ./backend/
+COPY wildlife_data.db* ./
 
-# Expose the Streamlit port
-EXPOSE 8501
+# Copy built React app where FastAPI will serve it
+COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
-# Healthcheck to ensure the app is running
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+EXPOSE 8000
 
-# Command to run the application
-ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+HEALTHCHECK CMD curl --fail http://localhost:8000/api/config/status || exit 1
+
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

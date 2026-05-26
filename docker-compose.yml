@@ -5,16 +5,12 @@ services:
     build: .
     container_name: wildlife-camera-traps
     ports:
-      - "8501:8501"
+      - "8000:8000"
     volumes:
-      # Persist the database
-      - wildlife_data:/app/data
-      # Mount the app directory for development (optional, remove for production)
-      # - ./:/app
+      - wildlife_data:/app/wildlife_data.db
     environment:
       - PYTHONUNBUFFERED=1
     restart: unless-stopped
-    # Ensure system resources (adjust as needed for ML models)
     deploy:
       resources:
         limits:

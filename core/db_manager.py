@@ -201,6 +201,29 @@ class DatabaseManager:
     # Read
     # ------------------------------------------------------------------
 
+    def update_detection(self, detection_id: int, fields: dict):
+        """Update a single detection row and/or its parent image row."""
+        det_fields = {k: v for k, v in fields.items() if k == "detected_animal"}
+        img_fields = {k: v for k, v in fields.items() if k in ("station_id", "user_notes")}
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            if det_fields:
+                sets = ", ".join(f"{k} = ?" for k in det_fields)
+                cursor.execute(f"UPDATE detections SET {sets} WHERE id = ?",
+                               list(det_fields.values()) + [detection_id])
+            if img_fields:
+                row = cursor.execute(
+                    "SELECT image_id FROM detections WHERE id = ?", [detection_id]
+                ).fetchone()
+                if row:
+                    sets = ", ".join(f"{k} = ?" for k in img_fields)
+                    cursor.execute(f"UPDATE images SET {sets} WHERE id = ?",
+                                   list(img_fields.values()) + [row[0]])
+            conn.commit()
+        finally:
+            conn.close()
+
     def get_history_df(self):
         """Retrieve full detection history as a flat DataFrame."""
         conn = self.get_connection()
@@ -209,6 +232,7 @@ class DatabaseManager:
                 i.id, i.filename, i.station_id, i.processed_at,
                 i.capture_date, i.capture_time, i.temperature,
                 i.day_night, i.brightness, i.user_notes,
+                d.id as detection_id,
                 d.detected_animal, d.confidence as detection_confidence,
                 d.method as detection_method, d.bbox, d.ide_id
             FROM images i
