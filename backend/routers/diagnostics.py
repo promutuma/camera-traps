@@ -31,12 +31,24 @@ async def inspect_image(file: UploadFile = File(...), state: AppState = Depends(
                 result["ocr"] = {"error": str(e)}
 
         # MegaDetector raw candidates
+        megadetector_candidates = []
         if state.md_model:
             try:
                 candidates = state.md_model.detect_all_candidates(tmp.name)
-                result["megadetector"] = candidates if isinstance(candidates, list) else [candidates]
+                for c in (candidates if isinstance(candidates, list) else [candidates]):
+                    c["model"] = "MDv5a"
+                    megadetector_candidates.append(c)
             except Exception as e:
-                result["megadetector"] = {"error": str(e)}
+                pass
+        if state.md_v1000_model:
+            try:
+                candidates = state.md_v1000_model.detect_all_candidates(tmp.name)
+                for c in (candidates if isinstance(candidates, list) else [candidates]):
+                    c["model"] = "MDv1000"
+                    megadetector_candidates.append(c)
+            except Exception as e:
+                pass
+        result["megadetector"] = megadetector_candidates
 
         # BioClip top-20
         if state.bio_model:

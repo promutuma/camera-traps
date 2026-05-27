@@ -133,6 +133,8 @@ If credentials are absent, SpeciesNet logs a warning at startup and the pipeline
 
 ### How the ensemble combines all four models
 
+The pipeline runs a two-stage ensemble architecture to combine outputs from the four underlying models:
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    STAGE 1: DETECTION                        │
@@ -168,12 +170,24 @@ If credentials are absent, SpeciesNet logs a warning at startup and the pipeline
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Agreement levels:**
-- **High** — both classifiers pick the same top species (or genus match). Confidence bonus applied.
-- **Medium** — classifiers share a keyword (e.g. "leopard" vs "African leopard"). Partial bonus.
-- **Low** — classifiers disagree. Result is the weighted average; image sent to Review Queue.
+#### Stage 1: Bounding Box Fusion (NMS)
+1. **Detections:** Bounding boxes from **MegaDetector v5a** and **MegaDetector v1000** are collected concurrently.
+2. **NMS Merge:** Non-Maximum Suppression (NMS) merges overlapping boxes referring to the same object using an Intersection-over-Union (`IoU >= 0.50`) threshold:
+   $$\text{IoU} = \frac{\text{Area of Intersection}}{\text{Area of Union}}$$
+3. **Geometry Selection:** If both models detect the same animal, the bounding box geometry with the higher confidence score is selected to represent the subject.
 
-**Low-Spec Mode** (sidebar toggle) disables MDv1000 and SpeciesNet, reverting to the original single-detector + BioClip pipeline to stay within ~2 GB RAM.
+#### Stage 2: Classifier Fusion (Weighted Average)
+For every merged box classified as `"Animal"`, the image crop (padded by 10% on all sides) is run through **BioClip** and **SpeciesNet**:
+
+1. **Weighted Average Calculation:**
+   Predictions from both classifiers are fused using a weighted average score:
+   $$\text{Fused Score} = (\text{BioClip Score} \times 0.45) + (\text{SpeciesNet Score} \times 0.55)$$
+   *SpeciesNet carries a slightly higher weight (0.55) because it was pre-trained specifically on camera-trap image datasets, whereas BioClip is a zero-shot general model.*
+
+2. **Agreement Confidence Boost:**
+   * **High Agreement (+0.08):** If both classifiers' top prediction matches exactly (or is a direct substring of each other), we add a confidence bonus of **`+0.08`** to the fused score (capped at `1.0`).
+   * **Medium Agreement (+0.04):** If the top predictions share a keyword longer than 3 characters, a partial agreement bonus of **`+0.04`** is added.
+   * **Low Agreement (+0.00):** If predictions disagree, no bonus is applied, and the item is queued for human verification in the **Review Queue**.
 
 ---
 

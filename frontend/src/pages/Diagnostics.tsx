@@ -1,8 +1,19 @@
 import { useRef, useState } from "react";
 import { inspectImage } from "../api/client";
 
+function parseBbox(raw: unknown): [number, number, number, number] | null {
+  if (!raw) return null;
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (Array.isArray(arr) && arr.length === 4) return arr as [number, number, number, number];
+  } catch {}
+  return null;
+}
+
 export default function Diagnostics() {
   const [file, setFile] = useState<File | null>(null);
+  const [imgSrc, setImgSrc] = useState<string | null>(null);
+  const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -28,7 +39,7 @@ export default function Diagnostics() {
       <div>
         <h1 className="text-2xl font-bold text-slate-800">Deep Inspection Tool</h1>
         <p className="text-slate-500 mt-1">
-          Run a single image through all three AI components and see raw outputs.
+          Run a single image through all AI components and visualize dual-model detections.
         </p>
       </div>
 
@@ -47,7 +58,15 @@ export default function Diagnostics() {
             type="file"
             accept=".jpg,.jpeg,.png"
             className="hidden"
-            onChange={(e) => e.target.files && setFile(e.target.files[0])}
+            onChange={(e) => {
+              if (e.target.files && e.target.files[0]) {
+                const selected = e.target.files[0];
+                setFile(selected);
+                setImgSrc(URL.createObjectURL(selected));
+                setResult(null);
+                setImgNatural(null);
+              }
+            }}
           />
         </div>
         <button
@@ -61,6 +80,76 @@ export default function Diagnostics() {
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+      )}
+
+      {imgSrc && (
+        <div className="bg-slate-900 rounded-xl overflow-hidden relative border border-slate-800 shadow-md">
+          {/* Bounding box Legend */}
+          <div className="absolute top-2 left-2 z-10 flex gap-2">
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/70 backdrop-blur-md text-[10px] font-semibold text-blue-400 border border-blue-500/30">
+              <span className="w-3 h-0.5 bg-blue-500 inline-block"></span>
+              MDv5a (Primary)
+            </span>
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/70 backdrop-blur-md text-[10px] font-semibold text-violet-400 border border-violet-500/30">
+              <span className="w-3 h-0.5 border-t border-dashed border-violet-500 inline-block"></span>
+              MDv1000 (Redwood)
+            </span>
+          </div>
+
+          <div className="relative w-full flex items-center justify-center bg-slate-950">
+            <div className="relative inline-block w-full">
+              <img
+                src={imgSrc}
+                alt="Inspection source"
+                className="w-full h-auto block select-none"
+                onLoad={(e) => {
+                  const img = e.currentTarget as HTMLImageElement;
+                  setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+                }}
+              />
+              {Array.isArray(result?.megadetector) && imgNatural && (
+                <svg
+                  className="absolute inset-0 w-full h-full pointer-events-none"
+                  viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
+                >
+                  {(result.megadetector as any[]).map((det, idx) => {
+                    const bbox = parseBbox(det.bbox);
+                    if (!bbox) return null;
+                    const isV1000 = det.model === "MDv1000";
+                    const color = isV1000 ? "#c084fc" : "#60a5fa"; // soft purple for v1000, soft blue for v5a
+                    const label = det.label || "Animal";
+                    const conf = Math.round((det.conf || 0) * 100);
+
+                    return (
+                      <g key={idx}>
+                        <rect
+                          x={bbox[0] * imgNatural.w}
+                          y={bbox[1] * imgNatural.h}
+                          width={bbox[2] * imgNatural.w}
+                          height={bbox[3] * imgNatural.h}
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={Math.max(3, imgNatural.w / 250)}
+                          strokeDasharray={isV1000 ? "6 4" : undefined}
+                        />
+                        <text
+                          x={bbox[0] * imgNatural.w + 6}
+                          y={bbox[1] * imgNatural.h - 8}
+                          fill={color}
+                          fontWeight="bold"
+                          fontSize={Math.max(14, imgNatural.w / 40)}
+                          style={{ filter: "drop-shadow(0 1px 3px #000)" }}
+                        >
+                          {label} {conf}% ({det.model})
+                        </text>
+                      </g>
+                    );
+                  })}
+                </svg>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {result && (

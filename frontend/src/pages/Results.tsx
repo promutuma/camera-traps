@@ -93,13 +93,18 @@ function ModelBreakdown({
   speciesnetConf,
   agreement,
   detected,
+  modelBreakdown,
+  onTaxonClick,
 }: {
   method: string;
   bioclipConf?: number;
   speciesnetConf?: number;
   agreement?: string | null;
   detected?: string;
+  modelBreakdown?: unknown;
+  onTaxonClick?: (taxon: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const models = method ? method.split(" + ").filter(Boolean) : [];
   const detectors = models.filter((m) => m.startsWith("MDv") || m === "MegaDetector");
   const isAnimal =
@@ -108,15 +113,169 @@ function ModelBreakdown({
 
   if (!detectors.length && !isAnimal) return null;
 
+  // Safely parse modelBreakdown
+  let parsedBreakdown: Record<string, any> | null = null;
+  try {
+    if (typeof modelBreakdown === "string") {
+      parsedBreakdown = JSON.parse(modelBreakdown);
+    } else if (modelBreakdown && typeof modelBreakdown === "object") {
+      parsedBreakdown = modelBreakdown as Record<string, any>;
+    }
+  } catch {}
+
+  const hasDetail = parsedBreakdown && Object.keys(parsedBreakdown).length > 0;
+
   return (
-    <div className="flex flex-wrap items-center gap-1">
-      {detectors.map((m) => <ModelPill key={m} name={m} />)}
-      {isAnimal && (
-        <>
-          {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
-          {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
-          <AgreementBadge level={agreement} />
-        </>
+    <div className="space-y-2 mt-1 w-full">
+      {/* Pills row */}
+      <div className="flex flex-wrap items-center justify-between gap-1 w-full">
+        <div className="flex flex-wrap items-center gap-1">
+          {detectors.map((m) => <ModelPill key={m} name={m} />)}
+          {isAnimal && (
+            <>
+              {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
+              {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
+              <AgreementBadge level={agreement} />
+            </>
+          )}
+        </div>
+        {hasDetail && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="text-[10px] text-emerald-600 hover:text-emerald-700 dark:text-emerald-450 dark:hover:text-emerald-350 font-bold tracking-wider uppercase cursor-pointer hover:underline inline-flex items-center gap-0.5 select-none"
+          >
+            {expanded ? "Hide Details" : "Show Details"}
+            <span className="material-symbols-outlined text-[12px] leading-none">
+              {expanded ? "keyboard_arrow_up" : "keyboard_arrow_down"}
+            </span>
+          </button>
+        )}
+      </div>
+
+      {/* Expanded details accordion */}
+      {expanded && parsedBreakdown && (
+        <div className="bg-slate-100/50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 text-[10px] space-y-2.5 shadow-inner w-full">
+          {/* Detectors Candidates */}
+          {(parsedBreakdown.MDv5a?.length > 0 || parsedBreakdown.MDv1000?.length > 0) && (
+            <div className="space-y-1">
+              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Object Detection</span>
+              <div className="space-y-0.5 font-medium pl-1">
+                {parsedBreakdown.MDv5a?.map((d: any, idx: number) => (
+                  <div key={`md5-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                    <span>MDv5a: {d.label}</span>
+                    <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
+                {parsedBreakdown.MDv1000?.map((d: any, idx: number) => (
+                  <div key={`md1000-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                    <span>MDv1000: {d.label}</span>
+                    <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* BioClip Top Detections */}
+          {parsedBreakdown.BioClip?.length > 0 && (
+            <div className="space-y-1">
+              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">BioClip Top Guesses</span>
+              <div className="space-y-0.5 font-medium pl-1">
+                {parsedBreakdown.BioClip.slice(0, 3).map(([s, c]: [string, number], idx: number) => (
+                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                    <span>{s}</span>
+                    <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* SpeciesNet Top Detections */}
+          {parsedBreakdown.SpeciesNet?.length > 0 && (
+            <div className="space-y-1">
+              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">SpeciesNet Taxonomy</span>
+              <div className="space-y-1 font-medium pl-1">
+                {parsedBreakdown.SpeciesNet.slice(0, 3).map(([s, c]: [string, number], idx: number) => {
+                  const isJson = s.startsWith("{") && s.endsWith("}");
+                  if (isJson) {
+                    try {
+                      const parsed = JSON.parse(s);
+                      return (
+                        <div key={`sn-${idx}`} className="border-b border-slate-200/40 dark:border-slate-800/40 pb-1.5 last:border-b-0 last:pb-0 space-y-0.5 text-slate-650 dark:text-slate-400">
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-slate-700 dark:text-slate-300">
+                              {onTaxonClick ? (
+                                <button
+                                  onClick={() => onTaxonClick(parsed.common_name)}
+                                  className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer font-bold text-left"
+                                >
+                                  {parsed.common_name}
+                                </button>
+                              ) : (
+                                parsed.common_name
+                              )}
+                            </span>
+                            <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                          </div>
+                          {parsed.scientific_name && (
+                            <div className="text-[9px] italic text-slate-450">
+                              {onTaxonClick ? (
+                                <button
+                                  onClick={() => onTaxonClick(parsed.scientific_name)}
+                                  className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer italic"
+                                >
+                                  {parsed.scientific_name}
+                                </button>
+                              ) : (
+                                parsed.scientific_name
+                              )}
+                            </div>
+                          )}
+                          {parsed.hierarchy && parsed.hierarchy.length > 0 && (
+                            <div className="text-[9px] text-slate-400 flex flex-wrap gap-1 items-center mt-0.5 select-none">
+                              <span className="material-symbols-outlined text-[10px] leading-none shrink-0">schema</span>
+                              {parsed.hierarchy.map((h: string, hIdx: number) => (
+                                <span key={hIdx} className="inline-flex items-center gap-1">
+                                  {onTaxonClick ? (
+                                    <button
+                                      onClick={() => onTaxonClick(h)}
+                                      className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer"
+                                    >
+                                      {h}
+                                    </button>
+                                  ) : (
+                                    <span>{h}</span>
+                                  )}
+                                  {hIdx < parsed.hierarchy.length - 1 && <span className="text-[8px] text-slate-350 dark:text-slate-800">&gt;</span>}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    } catch {}
+                  }
+                  return (
+                    <div key={`sn-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                      <span>{s}</span>
+                      <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Fusion agreement detail */}
+          {parsedBreakdown.Fusion && (
+            <div className="border-t border-slate-200/50 dark:border-slate-800/50 pt-1.5 flex justify-between items-center text-[9px] text-slate-450 dark:text-slate-500 font-semibold select-none">
+              <span>Agreement: {agreement}</span>
+              {agreement === "High" && <span className="text-emerald-500 font-bold">+0.08 Agreement Bonus</span>}
+              {agreement === "Medium" && <span className="text-amber-500 font-bold">+0.04 Agreement Bonus</span>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
@@ -130,12 +289,14 @@ function Lightbox({
   onClose,
   onNavigate,
   onSave,
+  onTaxonClick,
 }: {
   group: ImageGroup;
   groups: ImageGroup[];
   onClose: () => void;
   onNavigate: (g: ImageGroup) => void;
   onSave: (id: number, field: string, value: string) => Promise<void>;
+  onTaxonClick?: (taxon: string) => void;
 }) {
   const { filename, rows } = group;
   const imgUrl = storedImageUrl(filename);
@@ -457,6 +618,8 @@ function Lightbox({
                       speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
                       agreement={row.agreement as string | null}
                       detected={String(row.detected_animal ?? "")}
+                      modelBreakdown={row.model_breakdown}
+                      onTaxonClick={onTaxonClick}
                     />
                   )}
                 </div>
@@ -668,6 +831,7 @@ export default function Results() {
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [filter, setFilter] = useState({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" });
+  const [selectedTaxon, setSelectedTaxon] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ id: number; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
   const [lightbox, setLightbox] = useState<ImageGroup | null>(null);
@@ -693,7 +857,42 @@ export default function Results() {
 
   useEffect(() => { load(); }, []);
 
-  const sorted = [...rows].sort((a, b) => {
+  const filteredRows = useMemo(() => {
+    if (!selectedTaxon) return rows;
+    const taxonLower = selectedTaxon.toLowerCase();
+    return rows.filter((r) => {
+      let breakdown: any = null;
+      try {
+        if (typeof r.model_breakdown === "string") {
+          breakdown = JSON.parse(r.model_breakdown);
+        } else if (r.model_breakdown) {
+          breakdown = r.model_breakdown;
+        }
+      } catch {}
+      
+      const snetEvent = breakdown?.SpeciesNet;
+      const top5 = snetEvent?.top5 || [];
+      const hasTaxonInBreakdown = top5.some(([label]: [string, number]) => {
+        if (label.startsWith("{") && label.endsWith("}")) {
+          try {
+            const parsed = JSON.parse(label);
+            const inCommon = (parsed.common_name ?? "").toLowerCase().includes(taxonLower);
+            const inSci = (parsed.scientific_name ?? "").toLowerCase().includes(taxonLower);
+            const inHierarchy = (parsed.hierarchy ?? []).some((h: string) => h.toLowerCase() === taxonLower);
+            return inCommon || inSci || inHierarchy;
+          } catch {}
+        }
+        return label.toLowerCase().includes(taxonLower);
+      });
+
+      const inDetected = String(r.detected_animal ?? "").toLowerCase().includes(taxonLower);
+      const inSpeciesLabel = String(r.species_label ?? "").toLowerCase().includes(taxonLower);
+
+      return hasTaxonInBreakdown || inDetected || inSpeciesLabel;
+    });
+  }, [rows, selectedTaxon]);
+
+  const sorted = [...filteredRows].sort((a, b) => {
     if (!sort.col || !sort.dir) return 0;
     const va = a[sort.col] ?? "";
     const vb = b[sort.col] ?? "";
@@ -771,6 +970,7 @@ export default function Results() {
           onClose={() => setLightbox(null)}
           onNavigate={setLightbox}
           onSave={async (id, field, value) => { await saveEdit(id, field, value); }}
+          onTaxonClick={setSelectedTaxon}
         />
       )}
 
@@ -837,9 +1037,19 @@ export default function Results() {
             className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         </div>
         <button onClick={load} className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply</button>
-        {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station) && (
+        {selectedTaxon && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50 rounded-lg text-xs font-bold leading-none h-[34px] tracking-wide uppercase select-none">
+            <span>Taxon: {selectedTaxon}</span>
+            <button onClick={() => setSelectedTaxon(null)} className="hover:text-emerald-900 dark:hover:text-emerald-250 cursor-pointer text-sm font-semibold">✕</button>
+          </div>
+        )}
+        {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station || selectedTaxon) && (
           <button
-            onClick={() => { setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" }); setTimeout(load, 0); }}
+            onClick={() => {
+              setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" });
+              setSelectedTaxon(null);
+              setTimeout(load, 0);
+            }}
             className="px-3 py-1.5 text-slate-500 dark:text-slate-400 text-sm rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
           >Clear</button>
         )}

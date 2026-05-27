@@ -482,6 +482,11 @@ export default function ReviewQueue() {
   const [tab, setTab] = useState<Tab>("queue");
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [queuePage, setQueuePage] = useState(1);
+  const [filterDisagreement, setFilterDisagreement] = useState(false);
+
+  const displayedQueue = filterDisagreement
+    ? queue.filter((row) => row.agreement === "Low" || row.agreement === "Medium")
+    : queue;
 
   const load = async () => {
     setLoading(true);
@@ -496,13 +501,13 @@ export default function ReviewQueue() {
 
   // j/k keyboard navigation between cards
   useEffect(() => {
-    if (tab !== "queue" || queue.length === 0) return;
+    if (tab !== "queue" || displayedQueue.length === 0) return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
       if (e.key === "j" || e.key === "ArrowRight") {
         e.preventDefault();
-        setFocusedIdx((i) => Math.min(i + 1, queue.length - 1));
+        setFocusedIdx((i) => Math.min(i + 1, displayedQueue.length - 1));
       } else if (e.key === "k" || e.key === "ArrowLeft") {
         e.preventDefault();
         setFocusedIdx((i) => Math.max(i - 1, 0));
@@ -510,7 +515,7 @@ export default function ReviewQueue() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [tab, queue.length]);
+  }, [tab, displayedQueue.length]);
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "queue",   label: "Review Queue",   count: queue.length },
@@ -569,12 +574,51 @@ export default function ReviewQueue() {
             if (queue.length === 0) {
               return <EmptyState icon="✅" title="Queue is clear" sub="All detections are above the confidence threshold." />;
             }
-            const qTotalPages = Math.max(1, Math.ceil(queue.length / QUEUE_PAGE_SIZE));
-            const pagedQueue = queue.slice((queuePage - 1) * QUEUE_PAGE_SIZE, queuePage * QUEUE_PAGE_SIZE);
+            if (displayedQueue.length === 0) {
+              return (
+                <div className="space-y-4">
+                  <div className="flex justify-end">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm">
+                      <input
+                        type="checkbox"
+                        checked={filterDisagreement}
+                        onChange={(e) => {
+                          setFilterDisagreement(e.target.checked);
+                          setQueuePage(1);
+                          setFocusedIdx(0);
+                        }}
+                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
+                      />
+                      Classifier Disagreement Filter
+                    </label>
+                  </div>
+                  <EmptyState icon="⚖️" title="No classifier disagreements found" sub="All current queue items have high classifier agreement." />
+                </div>
+              );
+            }
+            const qTotalPages = Math.max(1, Math.ceil(displayedQueue.length / QUEUE_PAGE_SIZE));
+            const pagedQueue = displayedQueue.slice((queuePage - 1) * QUEUE_PAGE_SIZE, queuePage * QUEUE_PAGE_SIZE);
             const pageOffset = (queuePage - 1) * QUEUE_PAGE_SIZE;
             return (
               <div className="space-y-3">
-                <p className="text-xs text-slate-400 font-medium">{queue.length} item(s) pending review</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-xs text-slate-400 font-medium">
+                    {displayedQueue.length} item(s) pending review {filterDisagreement && "(disagreement filter active)"}
+                  </p>
+                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm">
+                    <input
+                      type="checkbox"
+                      checked={filterDisagreement}
+                      onChange={(e) => {
+                        setFilterDisagreement(e.target.checked);
+                        setQueuePage(1);
+                        setFocusedIdx(0);
+                      }}
+                      className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
+                    />
+                    Classifier Disagreement Filter
+                  </label>
+                </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {pagedQueue.map((row, i) => {
                     const absIdx = pageOffset + i;
