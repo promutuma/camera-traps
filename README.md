@@ -19,14 +19,14 @@ The system handles the full pipeline from raw images to publication-ready output
 | Tab | Feature |
 |-----|---------|
 | Upload & Process | Batch upload with real-time progress bar, OCR, MegaDetector + BioClip pipeline |
-| Review Results | Editable table with inline species/notes editing, Excel/CSV export |
+| Review Results | Table and gallery views; bounding box overlays; multi-animal grouping; sortable columns; inline per-detection species editing; confidence bars; Excel/CSV export |
 | Statistics | Per-species bar charts, day/night pie chart, confidence distribution |
 | History | Long-term trends from the SQLite database, CSV export |
 | Diagnostics | OCR strip debugger, raw model output viewer (MegaDetector + BioClip top-20) |
 | Ecological Analytics | IDE computation, RAI, species richness, accumulation curve, group size, visitation rate |
 | QC Dashboard | Automated quality-control checks with colour-coded severity flags |
 | Stations & Deployments | Camera registry, GPS coordinates, deployment history, trap-night calculator |
-| Review Queue | HITL expert review — confirm / correct / flag with reviewer logging and privacy audit |
+| Review Queue | Responsive grid of image cards with bounding boxes; confirm / correct / flag inline; reviewer logging and privacy audit |
 | Community Observer | Field observer sighting entry, cross-verification against camera data |
 | Spatial & Map | Interactive Leaflet map, GeoJSON / Shapefile / KML / CSV export |
 | Species Library | Pre-loaded mammal reference library, synonym resolver, quick lookup |
@@ -523,6 +523,34 @@ pip install --no-cache-dir -r requirements.txt
 ---
 
 ## Recent Changes
+
+### Review Results & Review Queue Overhaul (May 2026)
+
+**Review Results page:**
+- Added **Table ↔ Gallery view toggle** — gallery shows a 4-column image grid.
+- **Bounding box SVG overlays** on both gallery cards and the lightbox. Gallery uses `preserveAspectRatio="xMidYMid slice"` (matching CSS `object-cover`); lightbox uses `meet` (letterbox). Multi-animal images render each box in a distinct colour (green, blue, amber, red, purple, cyan).
+- **Multi-animal grouping** — when an image contains several detections (multiple rows in the `detections` table), the gallery shows a single card with all boxes overlaid. The lightbox lists every detection with its colour swatch and confidence chip.
+- **Per-detection inline editing** in the lightbox — click a species label to edit it; saves to the correct `detections` table row via `detection_id`. Shared fields (Station, Notes) write to the `images` table.
+- **Summary stats bar** — Total Images, Animals, Unique Species, Day/Night counts.
+- **Sortable columns** — click any column header to cycle ascending/descending/off.
+- **Confidence bars** with colour coding: green ≥ 70 %, amber ≥ 40 %, red < 40 %.
+- **Day/Night badges** (☀ / 🌙) throughout table, gallery, and lightbox.
+- Lightbox keyboard navigation (← → Esc) blocked while an edit input is active.
+
+**Review Queue page:**
+- Redesigned as a **responsive grid** (2 → 3 → 4 columns at md/lg breakpoints).
+- Each card shows a full-width image with a **bounding box SVG overlay**, day/night badge, station chip, confidence bar, and capture date.
+- Actions (Confirm / Correct / Flag) appear as a tab-bar footer on idle cards. Clicking one expands an inline coloured panel with a notes/reason field and a Save button — no modal, no page reload.
+- **Tab count badges** on the Queue, Correction Log, and Privacy Audit tabs.
+- Correction Log uses proper column labels and colour-coded action badges (green = accept, blue = correct, red = flag).
+
+**Backend fixes:**
+- `core/db_manager.py` — added missing `update_detection(detection_id, fields)` method. It routes `detected_animal` updates to the `detections` table and `station_id` / `user_notes` updates to the `images` table via the detection's `image_id`.
+- `get_history_df()` now includes `d.id as detection_id` so the frontend can target individual detection rows.
+- `PATCH /api/results/{detection_id}` — renamed parameter from `image_id` to `detection_id` to match the new routing semantics.
+- **SPA routing fix** in production — replaced the bare `StaticFiles(html=True)` mount with a `/assets` static mount plus a `GET /{full_path:path}` catch-all that returns `index.html`. Previously, direct navigation to any React route (e.g. `/results`, `/review-queue`) returned **404** in production.
+
+---
 
 ### FastAPI + React Migration (May 2026)
 

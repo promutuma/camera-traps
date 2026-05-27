@@ -196,7 +196,16 @@ def create_app() -> FastAPI:
     # Serve built React app in production
     dist_path = Path(__file__).parent.parent / "frontend" / "dist"
     if dist_path.exists():
-        application.mount("/", StaticFiles(directory=str(dist_path), html=True), name="static")
+        # Serve static assets (JS/CSS/images) directly
+        application.mount("/assets", StaticFiles(directory=str(dist_path / "assets")), name="assets")
+
+        # SPA catch-all: any non-API path returns index.html so React Router works
+        from fastapi.responses import FileResponse as _FileResponse
+
+        @application.get("/{full_path:path}", include_in_schema=False)
+        async def serve_spa(full_path: str):
+            index = dist_path / "index.html"
+            return _FileResponse(str(index))
 
     return application
 
