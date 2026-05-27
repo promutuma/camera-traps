@@ -399,16 +399,16 @@ function Lightbox({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
-        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-5xl w-full overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
+        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-[92vw] w-full overflow-hidden flex flex-col md:flex-row max-h-[92vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Image panel ── */}
         <div 
-          className="md:w-[65%] bg-slate-955 flex items-center justify-center relative min-h-[300px] md:min-h-[500px] overflow-hidden group/image select-none"
+          className="md:w-[68%] bg-slate-955 flex items-center justify-center relative min-h-[400px] md:min-h-[620px] overflow-hidden group/image select-none"
           onWheel={handleWheel}
         >
           {/* Zoom controls overlay */}
@@ -532,7 +532,7 @@ function Lightbox({
         </div>
 
         {/* ── Details panel ── */}
-        <div className="md:w-[35%] p-5 flex flex-col gap-4 overflow-y-auto dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+        <div className="md:w-[32%] p-5 flex flex-col gap-4 overflow-y-auto dark:bg-slate-900 text-slate-800 dark:text-slate-200">
           <div className="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
             <p className="font-bold text-slate-800 dark:text-slate-100 text-sm break-all leading-snug">{filename}</p>
             <button onClick={onClose} className="shrink-0 text-slate-450 hover:text-slate-700 dark:hover:text-slate-300 text-xl leading-none mt-0.5 cursor-pointer">✕</button>
