@@ -14,7 +14,7 @@ type JobState = {
 
 type ModelStatus = { models_loaded: boolean; error: string | null } | null;
 
-type Detection = { label: string; conf: number };
+type Detection = { label: string; conf: number; bbox?: number[] };
 
 type ModelEvent = {
   type: "model_event";
@@ -35,16 +35,47 @@ type ModelEvent = {
   all_candidates?: [string, number][];
 };
 
-// Group events by image name for display
 type ImageRow = {
   name: string;
   index: number;
   events: ModelEvent[];
 };
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fmtTime(secs: number) {
+  return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
+}
+
+function parseSnetLabel(raw: string): { display: string; tooltip: string } {
+  if (raw.startsWith("{")) {
+    try {
+      const p = JSON.parse(raw);
+      const display = p.common_name || p.display || raw;
+      const tooltip = [
+        p.common_name && `Common: ${p.common_name}`,
+        p.scientific_name && `Scientific: ${p.scientific_name}`,
+        p.hierarchy?.length && `Taxonomy: ${p.hierarchy.join(" › ")}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      return { display, tooltip };
+    } catch {}
+  }
+  return { display: raw.trim(), tooltip: "" };
+}
+
 // ── Small components ──────────────────────────────────────────────────────────
 
-function ThumbnailItem({ file, onRemove, disabled }: { file: File; onRemove: () => void; disabled: boolean }) {
+function ThumbnailItem({
+  file,
+  onRemove,
+  disabled,
+}: {
+  file: File;
+  onRemove: () => void;
+  disabled: boolean;
+}) {
   const [preview, setPreview] = useState<string>("");
 
   useEffect(() => {
@@ -68,10 +99,15 @@ function ThumbnailItem({ file, onRemove, disabled }: { file: File; onRemove: () 
           </div>
         )}
         <div className="overflow-hidden">
-          <p className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[140px]" title={file.name}>
+          <p
+            className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[140px]"
+            title={file.name}
+          >
             {file.name}
           </p>
-          <p className="text-[9px] text-slate-400 dark:text-slate-500">{(file.size / 1024).toFixed(0)} KB</p>
+          <p className="text-[9px] text-slate-400 dark:text-slate-500">
+            {(file.size / 1024).toFixed(0)} KB
+          </p>
         </div>
       </div>
       <button
@@ -95,7 +131,10 @@ function PipelineBadge({ status }: { status: ModelStatus }) {
     );
   if (status.error)
     return (
-      <div className="flex items-center gap-1.5 px-3 py-1 bg-red-50 dark:bg-red-950/30 rounded-full border border-red-200 dark:border-red-900/50" title={status.error}>
+      <div
+        className="flex items-center gap-1.5 px-3 py-1 bg-red-50 dark:bg-red-950/30 rounded-full border border-red-200 dark:border-red-900/50"
+        title={status.error}
+      >
         <span className="w-2 h-2 rounded-full bg-red-500" />
         <span className="text-xs font-semibold text-red-700 dark:text-red-400">Load Error</span>
       </div>
@@ -148,8 +187,108 @@ function ModelTag({ name }: { name: string }) {
   );
 }
 
+/** Crops the detection bounding box from the source file onto a canvas. */
+function DetectionCrop({ file, bbox }: { file?: File; bbox?: number[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!file || !canvasRef.current) return;
+    let alive = true;
+    const objUrl = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      if (!alive || !canvasRef.current) return;
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      const [bx, by, bw, bh] =
+        bbox && bbox.length >= 4 ? bbox : [0, 0, 1, 1];
+      const pad = 0.06;
+      const sx = Math.max(0, (bx - pad)) * img.naturalWidth;
+      const sy = Math.max(0, (by - pad)) * img.naturalHeight;
+      const sw = Math.min(img.naturalWidth - sx, (bw + pad * 2) * img.naturalWidth);
+      const sh = Math.min(img.naturalHeight - sy, (bh + pad * 2) * img.naturalHeight);
+
+      canvas.width = 80;
+      canvas.height = 60;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 80, 60);
+      if (alive) setReady(true);
+    };
+    img.src = objUrl;
+    return () => {
+      alive = false;
+      URL.revokeObjectURL(objUrl);
+    };
+  }, [file, bbox]);
+
+  if (!file) return null;
+
+  return (
+    <div className="shrink-0 relative" style={{ width: 80, height: 60 }}>
+      {!ready && (
+        <div className="absolute inset-0 rounded-lg bg-slate-100 dark:bg-slate-800 animate-pulse" />
+      )}
+      <canvas
+        ref={canvasRef}
+        className={`rounded-lg border border-slate-200 dark:border-slate-700 object-cover transition-opacity duration-300 ${
+          ready ? "opacity-100" : "opacity-0"
+        }`}
+        style={{ width: 80, height: 60 }}
+      />
+    </div>
+  );
+}
+
+/** Ranked species row with mini confidence bar. */
+function SpeciesRow({
+  label,
+  conf,
+  rank,
+}: {
+  label: string;
+  conf: number;
+  rank: number;
+}) {
+  const { display, tooltip } = parseSnetLabel(label);
+  const pct = Math.round(conf * 100);
+  return (
+    <div className="flex items-center gap-1.5 min-w-0">
+      <span className="text-[9px] text-slate-400 dark:text-slate-500 w-3 shrink-0 text-right">
+        {rank}.
+      </span>
+      <span
+        title={tooltip || undefined}
+        className={`text-[10px] text-slate-600 dark:text-slate-300 truncate flex-1 min-w-0 ${
+          tooltip ? "underline decoration-dotted underline-offset-2 decoration-slate-400/50 cursor-help" : ""
+        }`}
+      >
+        {display}
+      </span>
+      <div className="w-10 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden shrink-0">
+        <div
+          className="h-1.5 rounded-full bg-teal-400 dark:bg-teal-600"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-[9px] font-mono text-slate-400 shrink-0 w-6 text-right">{pct}%</span>
+    </div>
+  );
+}
+
 /** One processed-image card in the live panel */
-function ImageResultCard({ row }: { row: ImageRow }) {
+function ImageResultCard({
+  row,
+  file,
+  flagged,
+  onFlag,
+}: {
+  row: ImageRow;
+  file?: File;
+  flagged: boolean;
+  onFlag: () => void;
+}) {
   const detMDv5a = row.events.find((e) => e.model === "MDv5a");
   const detMDv1000 = row.events.find((e) => e.model === "MDv1000");
   const detFusion = row.events.find((e) => e.model === "Detection");
@@ -158,113 +297,150 @@ function ImageResultCard({ row }: { row: ImageRow }) {
   const evResult = row.events.find((e) => e.model === "Result");
 
   const isEmpty = !evResult || evResult.confidence === 0;
+  const isLowConf = !isEmpty && evResult && (evResult.confidence ?? 0) < 0.4;
+
+  // First bbox from merged detection or MDv5a
+  const firstBbox =
+    detFusion?.detections?.[0]?.bbox ??
+    detMDv5a?.detections?.[0]?.bbox ??
+    detMDv1000?.detections?.[0]?.bbox;
 
   return (
-    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60 overflow-hidden shadow-sm hover:shadow-md transition-shadow duration-200">
+    <div
+      className={`rounded-xl border overflow-hidden shadow-sm hover:shadow-md transition-shadow duration-200 ${
+        isLowConf
+          ? "border-amber-200 dark:border-amber-900/50 bg-amber-50/30 dark:bg-amber-950/10"
+          : "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/60"
+      }`}
+    >
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-100 dark:border-slate-850">
-        <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate max-w-[180px]">{row.name}</p>
-        {evResult && !isEmpty && (
-          <AgreementBadge level={evResult.agreement} />
-        )}
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-100 dark:border-slate-800">
+        <p className="text-[10px] font-bold text-slate-700 dark:text-slate-300 truncate max-w-[160px]">
+          {row.name}
+        </p>
+        <div className="flex items-center gap-1.5">
+          {isLowConf && (
+            <span
+              className="material-symbols-outlined text-amber-500 text-sm select-none"
+              title="Low confidence — verify manually"
+            >
+              warning
+            </span>
+          )}
+          {evResult && !isEmpty && <AgreementBadge level={evResult.agreement} />}
+          <button
+            onClick={onFlag}
+            title={flagged ? "Remove review flag" : "Flag for review"}
+            className={`p-0.5 rounded-full transition-colors cursor-pointer ${
+              flagged
+                ? "text-amber-500 hover:text-amber-600"
+                : "text-slate-300 dark:text-slate-600 hover:text-amber-500"
+            }`}
+          >
+            <span className="material-symbols-outlined text-sm select-none leading-none block">
+              {flagged ? "flag" : "outlined_flag"}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* Body */}
       <div className="p-3 space-y-2 text-[10px]">
-        {/* Detection row */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <ModelTag name="MDv5a" />
-          <span className="text-slate-600 dark:text-slate-400">
-            {detMDv5a?.detections?.length
-              ? detMDv5a.detections.map((d) => `${d.label} ${d.conf.toFixed(2)}`).join(", ")
-              : "—"}
-          </span>
-          {detMDv1000 && (
-            <>
-              <span className="text-slate-300 dark:text-slate-700">|</span>
-              <ModelTag name="MDv1000" />
+        {/* Detection crop + detector row */}
+        <div className="flex gap-2.5">
+          {!isEmpty && (
+            <DetectionCrop file={file} bbox={firstBbox} />
+          )}
+          <div className="flex-1 space-y-1.5 min-w-0">
+            {/* Detectors */}
+            <div className="flex flex-wrap items-center gap-1">
+              <ModelTag name="MDv5a" />
               <span className="text-slate-600 dark:text-slate-400">
-                {detMDv1000.detections?.length
-                  ? detMDv1000.detections.map((d) => `${d.label} ${d.conf.toFixed(2)}`).join(", ")
+                {detMDv5a?.detections?.length
+                  ? detMDv5a.detections
+                      .map((d) => `${d.label} ${d.conf.toFixed(2)}`)
+                      .join(", ")
                   : "—"}
               </span>
-            </>
-          )}
-          {detFusion && (
-            <span className="text-slate-400 dark:text-slate-550 italic">
-              → {detFusion.merged_count} merged
-            </span>
-          )}
-        </div>
-
-        {/* Classification row */}
-        {!isEmpty && (
-          <>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <ModelTag name="BioClip" />
-              <span className="text-slate-600 dark:text-slate-400">
-                {evBC?.top5?.length
-                  ? evBC.top5.slice(0, 3).map(([s, c]) => `${s} ${c.toFixed(2)}`).join(", ")
-                  : "—"}
-              </span>
-            </div>
-            <div className="flex flex-wrap items-center gap-1.5">
-              <ModelTag name="SpeciesNet" />
-              {evSN?.skipped ? (
-                <span className="text-slate-400 dark:text-slate-550 italic">not loaded</span>
-              ) : (
-                <span className="text-slate-600 dark:text-slate-400 flex flex-wrap gap-x-1 items-center">
-                  {evSN?.top5?.length ? (
-                    evSN.top5.slice(0, 3).map(([s, c], i, arr) => {
-                      const isJson = s.startsWith("{") && s.endsWith("}");
-                      let displayName = s;
-                      let tooltip = "";
-                      if (isJson) {
-                        try {
-                          const parsed = JSON.parse(s);
-                          displayName = parsed.common_name || parsed.display || s;
-                          tooltip = [
-                            `Common: ${parsed.common_name}`,
-                            parsed.scientific_name ? `Scientific: ${parsed.scientific_name}` : null,
-                            parsed.hierarchy && parsed.hierarchy.length ? `Taxonomy: ${parsed.hierarchy.join(" > ")}` : null,
-                            `ID: ${parsed.id}`
-                          ].filter(Boolean).join("\n");
-                        } catch {}
-                      }
-                      return (
-                        <span key={i} className="inline-flex items-center gap-0.5">
-                          {tooltip ? (
-                            <span title={tooltip} className="cursor-help underline decoration-dotted underline-offset-2 decoration-slate-450 dark:decoration-slate-500 font-semibold hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">
-                              {displayName}
-                            </span>
-                          ) : (
-                            <span>{displayName}</span>
-                          )}
-                          <span className="text-slate-400 font-normal">{(c as number).toFixed(2)}</span>
-                          {i < arr.length - 1 && <span className="text-slate-350 dark:text-slate-750 mr-1">,</span>}
-                        </span>
-                      );
-                    })
-                  ) : (
-                    "—"
-                  )}
-                </span>
+              {detMDv1000 && (
+                <>
+                  <span className="text-slate-300 dark:text-slate-700">|</span>
+                  <ModelTag name="MDv1000" />
+                  <span className="text-slate-600 dark:text-slate-400">
+                    {detMDv1000.detections?.length
+                      ? detMDv1000.detections
+                          .map((d) => `${d.label} ${d.conf.toFixed(2)}`)
+                          .join(", ")
+                      : "—"}
+                  </span>
+                </>
               )}
             </div>
+            {detFusion && (
+              <span className="text-slate-400 dark:text-slate-500 italic">
+                → {detFusion.merged_count ?? 1} detection(s) merged
+              </span>
+            )}
+
+            {/* BioCLIP top results */}
+            {!isEmpty && evBC?.top5?.length && (
+              <div className="flex flex-wrap items-center gap-1">
+                <ModelTag name="BioClip" />
+                <span className="text-slate-600 dark:text-slate-400">
+                  {evBC.top5
+                    .slice(0, 2)
+                    .map(([s, c]) => `${s} ${(c as number).toFixed(2)}`)
+                    .join(", ")}
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* SpeciesNet ranked list */}
+        {!isEmpty && (
+          <>
+            {evSN?.skipped ? (
+              <div className="flex items-center gap-1.5">
+                <ModelTag name="SpeciesNet" />
+                <span className="text-slate-400 dark:text-slate-500 italic">not loaded</span>
+              </div>
+            ) : evSN?.top5?.length ? (
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-1.5 mb-1">
+                  <ModelTag name="SpeciesNet" />
+                </div>
+                {evSN.top5.slice(0, 3).map(([s, c], i) => (
+                  <SpeciesRow key={i} label={s} conf={c as number} rank={i + 1} />
+                ))}
+              </div>
+            ) : null}
           </>
         )}
 
         {/* Final result */}
-        <div className={`flex items-center gap-2 pt-1 border-t border-slate-100 dark:border-slate-800 ${isEmpty ? "text-slate-400 dark:text-slate-500" : "text-slate-800 dark:text-slate-200"}`}>
+        <div
+          className={`flex items-center gap-2 pt-1.5 border-t border-slate-100 dark:border-slate-800 ${
+            isEmpty
+              ? "text-slate-400 dark:text-slate-500"
+              : isLowConf
+              ? "text-amber-700 dark:text-amber-400"
+              : "text-slate-800 dark:text-slate-200"
+          }`}
+        >
           <span className="material-symbols-outlined text-sm select-none">
-            {isEmpty ? "help_outline" : "check_circle"}
+            {isEmpty ? "help_outline" : isLowConf ? "warning" : "check_circle"}
           </span>
           {isEmpty ? (
             <span className="italic">No animal detected</span>
           ) : (
             <span className="font-bold">
               {evResult?.species}{" "}
-              <span className="font-normal text-slate-500 dark:text-slate-400">
+              <span
+                className={`font-normal ${
+                  isLowConf ? "text-amber-500" : "text-slate-500 dark:text-slate-400"
+                }`}
+              >
                 {((evResult?.confidence ?? 0) * 100).toFixed(0)}%
               </span>
             </span>
@@ -281,18 +457,19 @@ export default function Upload() {
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
 
-  // Upload phase: idle → uploading → ready (files on server, job_id known)
   type UploadPhase = "idle" | "uploading" | "ready" | "upload_error";
   const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
   const [uploadedJobId, setUploadedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  // Processing phase
   const [job, setJob] = useState<JobState | null>(null);
   const [modelStatus, setModelStatus] = useState<ModelStatus>(null);
-
-  // Live model output
   const [imageRows, setImageRows] = useState<ImageRow[]>([]);
+  const [flaggedImages, setFlaggedImages] = useState<Set<string>>(new Set());
+
+  // Timer for elapsed/ETA display
+  const startTimeRef = useRef<number | null>(null);
+  const [elapsed, setElapsed] = useState(0);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const sseRef = useRef<EventSource | null>(null);
@@ -314,11 +491,28 @@ export default function Upload() {
       }
     };
     check();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  // Cleanup SSE on unmount
-  useEffect(() => { return () => sseRef.current?.close(); }, []);
+  // Elapsed-time ticker while running
+  useEffect(() => {
+    if (job?.status === "running") {
+      startTimeRef.current = startTimeRef.current ?? Date.now();
+      const interval = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - (startTimeRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(interval);
+    } else {
+      if (job?.status !== "running") startTimeRef.current = null;
+      setElapsed(0);
+    }
+  }, [job?.status]);
+
+  useEffect(() => {
+    return () => sseRef.current?.close();
+  }, []);
 
   // ── Auto-upload whenever files change (debounced 400 ms) ─────────────────
 
@@ -338,26 +532,35 @@ export default function Upload() {
     }
   }, []);
 
-  const scheduleUpload = useCallback((updatedFiles: File[]) => {
-    if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
-    uploadTimerRef.current = setTimeout(() => doUpload(updatedFiles), 400);
-  }, [doUpload]);
+  const scheduleUpload = useCallback(
+    (updatedFiles: File[]) => {
+      if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+      uploadTimerRef.current = setTimeout(() => doUpload(updatedFiles), 400);
+    },
+    [doUpload]
+  );
 
-  const addFiles = useCallback((incoming: File[]) => {
-    const valid = incoming.filter((f) => /\.(jpe?g|png)$/i.test(f.name));
-    if (!valid.length) return;
-    setFiles((prev) => {
-      const merged = [...prev, ...valid];
-      scheduleUpload(merged);
-      return merged;
-    });
-  }, [scheduleUpload]);
+  const addFiles = useCallback(
+    (incoming: File[]) => {
+      const valid = incoming.filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+      if (!valid.length) return;
+      setFiles((prev) => {
+        const merged = [...prev, ...valid];
+        scheduleUpload(merged);
+        return merged;
+      });
+    },
+    [scheduleUpload]
+  );
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    addFiles(Array.from(e.dataTransfer.files));
-  }, [addFiles]);
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      addFiles(Array.from(e.dataTransfer.files));
+    },
+    [addFiles]
+  );
 
   const onFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) addFiles(Array.from(e.target.files));
@@ -378,8 +581,18 @@ export default function Upload() {
     setUploadError(null);
     setJob(null);
     setImageRows([]);
+    setFlaggedImages(new Set());
+    startTimeRef.current = null;
     if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
   };
+
+  const toggleFlag = useCallback((name: string) => {
+    setFlaggedImages((prev) => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+  }, []);
 
   // ── Start processing ──────────────────────────────────────────────────────
 
@@ -387,8 +600,10 @@ export default function Upload() {
     if (!uploadedJobId) return;
 
     sseRef.current?.close();
+    startTimeRef.current = Date.now();
     setJob({ jobId: uploadedJobId, status: "running", total: files.length, completed: 0 });
     setImageRows([]);
+    setFlaggedImages(new Set());
 
     try {
       await startProcessing(uploadedJobId);
@@ -400,13 +615,18 @@ export default function Upload() {
         const data = JSON.parse(e.data) as { type: string } & Record<string, unknown>;
 
         if (data.type === "progress") {
-          const prog = data as unknown as { status: string; total: number; completed: number; error?: string };
+          const prog = data as unknown as {
+            status: string;
+            total: number;
+            completed: number;
+            error?: string;
+          };
           setJob({ jobId: uploadedJobId, ...prog });
 
           if (prog.status === "done") {
             sse.close();
             getJobResults(uploadedJobId).then(() => {
-              setTimeout(() => navigate("/results"), 1200);
+              setTimeout(() => navigate("/results"), 2000);
             });
           } else if (prog.status === "error") {
             sse.close();
@@ -427,11 +647,13 @@ export default function Upload() {
 
       sse.onerror = () => {
         sse.close();
-        setJob((prev) => prev ? { ...prev, status: "error", error: "Stream connection lost." } : prev);
+        setJob((prev) =>
+          prev ? { ...prev, status: "error", error: "Stream connection lost." } : prev
+        );
       };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setJob((prev) => prev ? { ...prev, status: "error", error: msg } : prev);
+      setJob((prev) => (prev ? { ...prev, status: "error", error: msg } : prev));
     }
   };
 
@@ -439,6 +661,10 @@ export default function Upload() {
 
   const processing = job?.status === "running";
   const pct = job && job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+  const etaSecs =
+    processing && pct > 5 && elapsed > 0
+      ? Math.round((elapsed / pct) * (100 - pct))
+      : null;
 
   const uploadStatusLabel = () => {
     if (uploadPhase === "uploading") return "Uploading…";
@@ -453,6 +679,32 @@ export default function Upload() {
     !processing &&
     !!modelStatus?.models_loaded;
 
+  // Completion stats
+  const resultRows = imageRows.filter((r) => {
+    const res = r.events.find((e) => e.model === "Result");
+    return res && (res.confidence ?? 0) > 0;
+  });
+  const speciesSet = new Set(
+    resultRows.map((r) => r.events.find((e) => e.model === "Result")?.species)
+  );
+  const lowConfRows = resultRows.filter(
+    (r) => (r.events.find((e) => e.model === "Result")?.confidence ?? 1) < 0.4
+  );
+  const needsReviewCount = new Set([
+    ...lowConfRows.map((r) => r.name),
+    ...flaggedImages,
+  ]).size;
+
+  // Pipeline step detection
+  const allEvents = imageRows.flatMap((r) => r.events);
+  const latestModel = allEvents.length > 0 ? allEvents[allEvents.length - 1].model : null;
+  const atDetect =
+    latestModel === "MDv5a" ||
+    latestModel === "MDv1000" ||
+    latestModel === "Detection";
+  const atClassify = latestModel === "BioClip" || latestModel === "SpeciesNet";
+  const atFusion = latestModel === "Result";
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -460,7 +712,9 @@ export default function Upload() {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">Upload & Process</h1>
+          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white">
+            Upload & Process
+          </h1>
           <p className="text-slate-500 dark:text-slate-400 mt-1.5 text-sm">
             Images upload automatically on selection. Click Start when ready.
           </p>
@@ -473,7 +727,10 @@ export default function Upload() {
         <div className="lg:col-span-1 space-y-5">
           {/* Drop zone */}
           <div
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragging(true);
+            }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             onClick={() => inputRef.current?.click()}
@@ -485,12 +742,16 @@ export default function Upload() {
           >
             <span
               className={`material-symbols-outlined text-4xl mb-2 block select-none transition-transform duration-300 ${
-                dragging ? "scale-110 text-emerald-600 animate-bounce" : "text-slate-400 dark:text-slate-500 group-hover:text-emerald-500"
+                dragging
+                  ? "scale-110 text-emerald-600 animate-bounce"
+                  : "text-slate-400 dark:text-slate-500 group-hover:text-emerald-500"
               }`}
             >
               cloud_upload
             </span>
-            <p className="text-slate-700 dark:text-slate-300 font-semibold text-sm">Drop camera images here</p>
+            <p className="text-slate-700 dark:text-slate-300 font-semibold text-sm">
+              Drop camera images here
+            </p>
             <p className="text-slate-400 dark:text-slate-500 text-xs mt-1">JPG / JPEG / PNG</p>
             <button
               type="button"
@@ -498,23 +759,36 @@ export default function Upload() {
             >
               Browse Files
             </button>
-            <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png" multiple className="hidden" onChange={onFileInput} />
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".jpg,.jpeg,.png"
+              multiple
+              className="hidden"
+              onChange={onFileInput}
+            />
           </div>
 
           {/* Upload status badge */}
           {uploadPhase !== "idle" && (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold border ${
-              uploadPhase === "uploading"
-                ? "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-400"
-                : uploadPhase === "ready"
-                ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-400"
-                : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50 text-red-700 dark:text-red-400"
-            }`}>
+            <div
+              className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold border ${
+                uploadPhase === "uploading"
+                  ? "bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-400"
+                  : uploadPhase === "ready"
+                  ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-900/50 text-emerald-700 dark:text-emerald-400"
+                  : "bg-red-50 dark:bg-red-950/30 border-red-200 dark:border-red-900/50 text-red-700 dark:text-red-400"
+              }`}
+            >
               {uploadPhase === "uploading" && (
-                <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+                <span className="material-symbols-outlined text-base animate-spin select-none">
+                  sync
+                </span>
               )}
               {uploadPhase === "ready" && (
-                <span className="material-symbols-outlined text-base select-none">check_circle</span>
+                <span className="material-symbols-outlined text-base select-none">
+                  check_circle
+                </span>
               )}
               {uploadPhase === "upload_error" && (
                 <span className="material-symbols-outlined text-base select-none">error</span>
@@ -528,7 +802,9 @@ export default function Upload() {
             <div className="bg-white dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
               <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-105 flex justify-between items-center">
                 <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-base text-slate-500 dark:text-slate-400 select-none">photo_library</span>
+                  <span className="material-symbols-outlined text-base text-slate-500 dark:text-slate-400 select-none">
+                    photo_library
+                  </span>
                   {files.length} image(s)
                 </span>
                 <button
@@ -560,12 +836,16 @@ export default function Upload() {
           >
             {processing ? (
               <>
-                <span className="material-symbols-outlined text-lg select-none animate-spin">sync</span>
+                <span className="material-symbols-outlined text-lg select-none animate-spin">
+                  sync
+                </span>
                 Analysing…
               </>
             ) : !modelStatus?.models_loaded ? (
               <>
-                <span className="material-symbols-outlined text-lg select-none">hourglass_empty</span>
+                <span className="material-symbols-outlined text-lg select-none">
+                  hourglass_empty
+                </span>
                 {modelStatus?.error ? "Models failed to load" : "Waiting for models…"}
               </>
             ) : uploadPhase === "idle" || !files.length ? (
@@ -575,7 +855,9 @@ export default function Upload() {
               </>
             ) : uploadPhase === "uploading" ? (
               <>
-                <span className="material-symbols-outlined text-lg select-none animate-spin">sync</span>
+                <span className="material-symbols-outlined text-lg select-none animate-spin">
+                  sync
+                </span>
                 Uploading…
               </>
             ) : (
@@ -587,105 +869,193 @@ export default function Upload() {
           </button>
 
           {/* Progress widget */}
-          {job && (() => {
-            const lastEventModel = imageRows.length > 0 && imageRows[imageRows.length - 1].events.length > 0
-              ? imageRows[imageRows.length - 1].events[imageRows[imageRows.length - 1].events.length - 1]?.model
-              : null;
-
-            return (
-              <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-4 space-y-4 shadow-sm rounded-2xl">
-                <div className="flex justify-between items-center text-xs">
-                  <span className="font-bold text-slate-700 dark:text-slate-300">
-                    {job.status === "done" ? "Complete" : job.status === "error" ? "Failed" : "Running…"}
+          {job && (
+            <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-4 space-y-4 shadow-sm rounded-2xl">
+              <div className="flex justify-between items-center text-xs">
+                <span className="font-bold text-slate-700 dark:text-slate-300">
+                  {job.status === "done"
+                    ? "Complete"
+                    : job.status === "error"
+                    ? "Failed"
+                    : "Running…"}
+                </span>
+                <div className="flex items-center gap-2">
+                  {processing && elapsed > 0 && (
+                    <span className="font-mono text-slate-400">
+                      {fmtTime(elapsed)}
+                      {etaSecs != null && (
+                        <span className="text-slate-300 dark:text-slate-600">
+                          {" "}/ ~{fmtTime(etaSecs)} left
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-450">
+                    {pct}%
                   </span>
-                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-450">{pct}%</span>
                 </div>
-                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                  <div
-                    className={`h-1.5 rounded-full transition-all duration-300 ${
-                      job.status === "error" ? "bg-red-500" : "bg-emerald-500"
-                    }`}
-                    style={{ width: `${job.status === "done" ? 100 : pct}%` }}
-                  />
-                </div>
+              </div>
 
-                {/* Pipeline Stepper */}
-                {job.status === "running" && (
-                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
-                    <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider">Pipeline Progress</p>
-                    <div className="space-y-2">
-                      {[
-                        { id: "ocr", label: "OCR Date/Time Extraction" },
-                        { id: "detect", label: "MegaDetector Bounding Boxes" },
-                        { id: "classify", label: "BioClip & SpeciesNet Classifiers" },
-                        { id: "fusion", label: "Ensemble Fusion & Database Write" },
-                      ].map((step, sIdx) => {
-                        const isOcr = lastEventModel === "ocr";
-                        const isDetect = lastEventModel != null && (lastEventModel.startsWith("md") || lastEventModel === "megadetector" || lastEventModel === "MDv5a" || lastEventModel === "MDv1000" || lastEventModel === "MD1000-redwood" || lastEventModel === "redwood");
-                        const isClassify = lastEventModel === "bioclip" || lastEventModel === "speciesnet";
-                        const isFusion = lastEventModel === "fusion" || lastEventModel === "fused" || lastEventModel === "ensemble";
+              <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className={`h-1.5 rounded-full transition-all duration-300 ${
+                    job.status === "error" ? "bg-red-500" : "bg-emerald-500"
+                  }`}
+                  style={{ width: `${job.status === "done" ? 100 : pct}%` }}
+                />
+              </div>
 
-                        let active = false;
-                        let done = false;
+              {/* Pipeline Stepper */}
+              {job.status === "running" && (
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                  <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider">
+                    Pipeline Progress
+                  </p>
+                  <div className="space-y-2">
+                    {[
+                      { id: "ocr", label: "OCR Date/Time Extraction" },
+                      { id: "detect", label: "MegaDetector Bounding Boxes" },
+                      { id: "classify", label: "BioClip & SpeciesNet Classifiers" },
+                      { id: "fusion", label: "Ensemble Fusion & Database Write" },
+                    ].map((step, sIdx) => {
+                      let active = false;
+                      let done = false;
 
-                        if (job.status === "done") {
-                          done = true;
-                        } else {
-                          if (step.id === "ocr") {
-                            active = isOcr || !lastEventModel; // active by default at start
-                            done = isDetect || isClassify || isFusion;
-                          } else if (step.id === "detect") {
-                            active = isDetect;
-                            done = isClassify || isFusion;
-                          } else if (step.id === "classify") {
-                            active = isClassify;
-                            done = isFusion;
-                          } else if (step.id === "fusion") {
-                            active = isFusion;
-                          }
-                        }
+                      if (job.status === "done") {
+                        done = true;
+                      } else if (step.id === "ocr") {
+                        active = !latestModel;
+                        done = atDetect || atClassify || atFusion;
+                      } else if (step.id === "detect") {
+                        active = atDetect;
+                        done = atClassify || atFusion;
+                      } else if (step.id === "classify") {
+                        active = atClassify;
+                        done = atFusion;
+                      } else if (step.id === "fusion") {
+                        active = atFusion;
+                      }
 
-                        return (
-                          <div key={step.id} className="flex items-center gap-2 text-xs">
-                            <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition ${
+                      return (
+                        <div key={step.id} className="flex items-center gap-2 text-xs">
+                          <div
+                            className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition ${
                               done
                                 ? "bg-emerald-100 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-450"
                                 : active
                                 ? "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-300 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 animate-pulse"
                                 : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400"
-                            }`}>
-                              {done ? (
-                                <span className="material-symbols-outlined text-[10px] leading-none font-bold">check</span>
-                              ) : (
-                                <span className="text-[9px] font-bold">{sIdx + 1}</span>
-                              )}
-                            </div>
-                            <span className={`font-semibold ${
+                            }`}
+                          >
+                            {done ? (
+                              <span className="material-symbols-outlined text-[10px] leading-none font-bold">
+                                check
+                              </span>
+                            ) : (
+                              <span className="text-[9px] font-bold">{sIdx + 1}</span>
+                            )}
+                          </div>
+                          <span
+                            className={`font-semibold ${
                               done
                                 ? "text-slate-400 dark:text-slate-500 line-through decoration-slate-300/40"
                                 : active
-                                ? "text-indigo-600 dark:text-indigo-455 font-bold"
+                                ? "text-indigo-600 dark:text-indigo-400 font-bold"
                                 : "text-slate-400 dark:text-slate-500"
-                            }`}>
-                              {step.label}
+                            }`}
+                          >
+                            {step.label}
+                          </span>
+                          {active && (
+                            <span className="ml-auto shrink-0">
+                              <span className="inline-flex gap-0.5">
+                                {[0, 1, 2].map((i) => (
+                                  <span
+                                    key={i}
+                                    className="w-1 h-1 rounded-full bg-indigo-400 animate-bounce"
+                                    style={{ animationDelay: `${i * 0.15}s` }}
+                                  />
+                                ))}
+                              </span>
                             </span>
-                          </div>
-                        );
-                      })}
-                    </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                )}
-
-                <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-medium pt-1">
-                  <span>Total: {job.total}</span>
-                  <span>Done: {job.completed}</span>
                 </div>
-                {job.error && (
-                  <p className="text-[10px] text-red-600 font-medium break-all">{job.error}</p>
-                )}
+              )}
+
+              <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-medium pt-1">
+                <span>Total: {job.total}</span>
+                <span>Done: {job.completed}</span>
               </div>
-            );
-          })()}
+              {job.error && (
+                <p className="text-[10px] text-red-600 font-medium break-all">{job.error}</p>
+              )}
+            </div>
+          )}
+
+          {/* Completion summary */}
+          {job?.status === "done" && imageRows.length > 0 && (
+            <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 rounded-2xl p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-emerald-600 text-lg select-none">
+                  check_circle
+                </span>
+                <span className="font-bold text-emerald-700 dark:text-emerald-400 text-sm">
+                  Analysis complete
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-xl py-2">
+                  <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">
+                    {imageRows.length}
+                  </p>
+                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                    Images
+                  </p>
+                </div>
+                <div className="bg-white/60 dark:bg-slate-900/40 rounded-xl py-2">
+                  <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">
+                    {speciesSet.size}
+                  </p>
+                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                    Species
+                  </p>
+                </div>
+                <div
+                  className={`rounded-xl py-2 ${
+                    needsReviewCount > 0
+                      ? "bg-amber-100/80 dark:bg-amber-950/40"
+                      : "bg-white/60 dark:bg-slate-900/40"
+                  }`}
+                >
+                  <p
+                    className={`text-lg font-extrabold ${
+                      needsReviewCount > 0
+                        ? "text-amber-600 dark:text-amber-400"
+                        : "text-slate-800 dark:text-slate-100"
+                    }`}
+                  >
+                    {needsReviewCount}
+                  </p>
+                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                    Review
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => navigate("/results")}
+                className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                View Full Results
+                <span className="material-symbols-outlined text-sm select-none">
+                  arrow_forward
+                </span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ── Right: live model output panel ── */}
@@ -694,8 +1064,17 @@ export default function Upload() {
             {/* Panel header */}
             <div className="px-4 py-3 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-105 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-slate-500 dark:text-slate-400 select-none text-lg">model_training</span>
-                <span className="font-bold text-slate-700 dark:text-slate-300 text-sm">Live Model Output</span>
+                <span className="material-symbols-outlined text-slate-500 dark:text-slate-400 select-none text-lg">
+                  model_training
+                </span>
+                <span className="font-bold text-slate-700 dark:text-slate-300 text-sm">
+                  Live Model Output
+                </span>
+                {flaggedImages.size > 0 && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/30">
+                    {flaggedImages.size} flagged
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-3 text-[10px] font-semibold">
                 <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
@@ -737,9 +1116,18 @@ export default function Upload() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {imageRows.map((row) => (
-                    <ImageResultCard key={row.name} row={row} />
-                  ))}
+                  {imageRows.map((row) => {
+                    const file = files.find((f) => f.name === row.name);
+                    return (
+                      <ImageResultCard
+                        key={row.name}
+                        row={row}
+                        file={file}
+                        flagged={flaggedImages.has(row.name)}
+                        onFlag={() => toggleFlag(row.name)}
+                      />
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -748,9 +1136,23 @@ export default function Upload() {
             {imageRows.length > 0 && (
               <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-medium flex items-center justify-between">
                 <span>{imageRows.length} image(s) processed</span>
-                <span>
-                  {imageRows.filter((r) => r.events.find((e) => e.model === "Result" && e.confidence && e.confidence > 0)).length} animal(s) found
-                </span>
+                <div className="flex items-center gap-3">
+                  {lowConfRows.length > 0 && (
+                    <span className="flex items-center gap-1 text-amber-500 dark:text-amber-400">
+                      <span className="material-symbols-outlined text-xs select-none">warning</span>
+                      {lowConfRows.length} low confidence
+                    </span>
+                  )}
+                  {flaggedImages.size > 0 && (
+                    <span className="flex items-center gap-1 text-amber-500 dark:text-amber-400">
+                      <span className="material-symbols-outlined text-xs select-none">flag</span>
+                      {flaggedImages.size} flagged
+                    </span>
+                  )}
+                  <span>
+                    {resultRows.length} animal(s) found
+                  </span>
+                </div>
               </div>
             )}
           </div>
