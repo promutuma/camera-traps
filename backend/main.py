@@ -137,7 +137,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
         try:
             from core.animal_detector import MegaDetectorWrapper as _MDWrapper
             state.md_v1000_model = _MDWrapper(
-                model_version="MD1000-redwood",
+                model_version="redwood",
                 confidence_threshold=cfg.detection_confidence,
                 low_spec=False,
             )
