@@ -104,8 +104,7 @@ class SpeciesNetWrapper:
                 tmp_path = tmp.name
                 crop.save(tmp_path, format="JPEG", quality=92)
 
-            preprocessed = self.classifier.preprocess(tmp_path)
-            result = self.classifier.predict(tmp_path, preprocessed)
+            result = self.classifier.predict(tmp_path)
 
             classifications = result.get("classifications", {})
             classes: List[str] = classifications.get("classes", [])

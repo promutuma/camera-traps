@@ -9,7 +9,7 @@ type ImageGroup = { filename: string; rows: Row[] };
 const EDITABLE = new Set(["detected_animal", "user_notes", "station_id"]);
 const BOX_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function parseBbox(raw: unknown): [number, number, number, number] | null {
   if (!raw) return null;
@@ -30,11 +30,9 @@ function DayNightBadge({ value }: { value: unknown }) {
   const v = String(value ?? "");
   if (!v) return <span className="text-slate-300">—</span>;
   return (
-    <span
-      className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-        v === "Day" ? "bg-amber-50 text-amber-700" : "bg-indigo-50 text-indigo-700"
-      }`}
-    >
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
+      v === "Day" ? "bg-amber-50 text-amber-700" : "bg-indigo-50 text-indigo-700"
+    }`}>
       {v === "Day" ? "☀" : "🌙"} {v}
     </span>
   );
@@ -53,7 +51,78 @@ function ConfBar({ value }: { value: unknown }) {
   );
 }
 
-// ── Lightbox ─────────────────────────────────────────────────────────────────
+// ── Model breakdown shared component ─────────────────────────────────────────
+
+function ModelPill({ name, conf }: { name: string; conf?: number }) {
+  const base =
+    name === "MDv5a" || name === "MDv1000"
+      ? "bg-blue-100 text-blue-700 border-blue-200"
+      : name === "BioClip"
+      ? "bg-violet-100 text-violet-700 border-violet-200"
+      : name === "SpeciesNet"
+      ? "bg-teal-100 text-teal-700 border-teal-200"
+      : "bg-slate-100 text-slate-600 border-slate-200";
+  return (
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold border ${base}`}>
+      {name}
+      {conf !== undefined && conf > 0 && (
+        <span className="font-normal opacity-80 ml-0.5">{Math.round(conf * 100)}%</span>
+      )}
+    </span>
+  );
+}
+
+function AgreementBadge({ level }: { level?: string | null }) {
+  if (!level) return null;
+  const styles =
+    level === "High"
+      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+      : level === "Medium"
+      ? "bg-amber-100 text-amber-700 border-amber-200"
+      : "bg-red-100 text-red-700 border-red-200";
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border ${styles}`}>
+      {level}
+    </span>
+  );
+}
+
+function ModelBreakdown({
+  method,
+  bioclipConf,
+  speciesnetConf,
+  agreement,
+  detected,
+}: {
+  method: string;
+  bioclipConf?: number;
+  speciesnetConf?: number;
+  agreement?: string | null;
+  detected?: string;
+}) {
+  const models = method ? method.split(" + ").filter(Boolean) : [];
+  const detectors = models.filter((m) => m.startsWith("MDv") || m === "MegaDetector");
+  const isAnimal =
+    detected && detected !== "Empty" && detected !== "Unidentified" &&
+    detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
+
+  if (!detectors.length && !isAnimal) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {detectors.map((m) => <ModelPill key={m} name={m} />)}
+      {isAnimal && (
+        <>
+          {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
+          {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
+          <AgreementBadge level={agreement} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Lightbox ──────────────────────────────────────────────────────────────────
 
 function Lightbox({
   group,
@@ -70,13 +139,13 @@ function Lightbox({
 }) {
   const { filename, rows } = group;
   const imgUrl = storedImageUrl(filename);
-  const primary = rows[0]; // use first detection for shared fields (station, date, etc.)
+  const primary = rows[0];
 
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
-  const [editField, setEditField] = useState<string | null>(null);  // for shared image fields
+  const [editField, setEditField] = useState<string | null>(null);
   const [editVal, setEditVal] = useState("");
   const [saving, setSaving] = useState(false);
-  const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null); // per-detection species edit
+  const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
 
   const idx = groups.findIndex((g) => g.filename === filename);
   const hasPrev = idx > 0;
@@ -87,7 +156,6 @@ function Lightbox({
     setEditVal(String(primary[field] ?? ""));
   };
 
-  // Shared image fields (station_id, user_notes) — route through first detection's detection_id
   const commitEdit = async () => {
     if (!editField) return;
     setSaving(true);
@@ -97,7 +165,6 @@ function Lightbox({
     setEditField(null);
   };
 
-  // Per-detection species label edit
   const commitDetEdit = async () => {
     if (!detEdit) return;
     setSaving(true);
@@ -117,7 +184,7 @@ function Lightbox({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [idx, hasPrev, hasNext, editField, onClose, onNavigate, groups]);
+  }, [idx, hasPrev, hasNext, editField, onClose, onNavigate, groups, detEdit]);
 
   useEffect(() => { setImgNatural(null); setEditField(null); setDetEdit(null); }, [imgUrl]);
 
@@ -143,7 +210,6 @@ function Lightbox({
             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
           />
 
-          {/* All bounding boxes for this image */}
           {imgNatural && (
             <svg
               className="absolute inset-0 w-full h-full pointer-events-none"
@@ -179,22 +245,17 @@ function Lightbox({
             </svg>
           )}
 
-          {/* Prev / Next arrows */}
           {hasPrev && (
             <button
               onClick={() => onNavigate(groups[idx - 1])}
               className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-lg transition"
-            >
-              ‹
-            </button>
+            >‹</button>
           )}
           {hasNext && (
             <button
               onClick={() => onNavigate(groups[idx + 1])}
               className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-lg transition"
-            >
-              ›
-            </button>
+            >›</button>
           )}
 
           <div className="absolute bottom-2 right-3 text-xs text-white/60 font-mono">
@@ -203,17 +264,15 @@ function Lightbox({
         </div>
 
         {/* ── Details panel ── */}
-        <div className="md:w-[40%] p-6 flex flex-col gap-4 overflow-y-auto">
+        <div className="md:w-[40%] p-5 flex flex-col gap-4 overflow-y-auto">
           <div className="flex items-start justify-between gap-2">
             <p className="font-semibold text-slate-800 text-sm break-all leading-snug">{filename}</p>
-            <button onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-700 text-xl leading-none mt-0.5">
-              ✕
-            </button>
+            <button onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-700 text-xl leading-none mt-0.5">✕</button>
           </div>
 
-          {/* Detection list — each animal with its own color swatch and inline edit */}
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide">
+          {/* Detection list */}
+          <div className="space-y-2.5">
+            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
               Detections ({rows.length})
             </p>
             {rows.map((row, i) => {
@@ -223,78 +282,85 @@ function Lightbox({
                 : null;
               const isEditingDet = detEdit?.idx === i;
               return (
-                <div key={i} className="flex items-center gap-2 text-sm">
-                  <span className="w-3 h-3 rounded-sm shrink-0" style={{ background: color }} />
-                  {isEditingDet ? (
-                    <>
-                      <input
-                        autoFocus
-                        value={detEdit.val}
-                        onChange={(e) => setDetEdit({ idx: i, val: e.target.value })}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") commitDetEdit();
-                          if (e.key === "Escape") setDetEdit(null);
-                        }}
-                        className="flex-1 border border-green-400 rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-                      />
-                      <button onClick={commitDetEdit} disabled={saving}
-                        className="px-2 py-0.5 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50 shrink-0">
-                        {saving ? "…" : "✓"}
-                      </button>
-                      <button onClick={() => setDetEdit(null)}
-                        className="text-slate-300 hover:text-slate-600 shrink-0">✕</button>
-                    </>
-                  ) : (
-                    <>
-                      <span
-                        className="font-medium text-slate-800 flex-1 truncate cursor-pointer hover:text-green-700 hover:underline underline-offset-2"
-                        title="Click to edit species"
-                        onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
-                      >
-                        {String(row.detected_animal ?? "Unknown")}
-                      </span>
-                      {conf !== null && (
-                        <span className={`text-xs font-mono px-1.5 py-0.5 rounded-full text-white shrink-0 ${confColor(conf / 100)}`}>
-                          {conf}%
+                <div key={i} className="rounded-lg border border-slate-100 bg-slate-50/60 p-2.5 space-y-1.5">
+                  {/* Species row */}
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
+                    {isEditingDet ? (
+                      <>
+                        <input
+                          autoFocus
+                          value={detEdit.val}
+                          onChange={(e) => setDetEdit({ idx: i, val: e.target.value })}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") commitDetEdit();
+                            if (e.key === "Escape") setDetEdit(null);
+                          }}
+                          className="flex-1 border border-green-400 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-400"
+                        />
+                        <button onClick={commitDetEdit} disabled={saving}
+                          className="px-2 py-0.5 bg-green-600 text-white text-[10px] rounded hover:bg-green-700 disabled:opacity-50 shrink-0">
+                          {saving ? "…" : "✓"}
+                        </button>
+                        <button onClick={() => setDetEdit(null)}
+                          className="text-slate-300 hover:text-slate-600 shrink-0 text-sm">✕</button>
+                      </>
+                    ) : (
+                      <>
+                        <span
+                          className="font-semibold text-slate-800 text-sm flex-1 truncate cursor-pointer hover:text-green-700 hover:underline underline-offset-2"
+                          title="Click to edit species"
+                          onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
+                        >
+                          {String(row.detected_animal ?? "Unknown")}
                         </span>
-                      )}
-                    </>
+                        {conf !== null && (
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white shrink-0 ${confColor(conf / 100)}`}>
+                            {conf}%
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+
+                  {/* Model breakdown */}
+                  {!isEditingDet && (
+                    <ModelBreakdown
+                      method={String(row.detection_method ?? "")}
+                      bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
+                      speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
+                      agreement={row.agreement as string | null}
+                      detected={String(row.detected_animal ?? "")}
+                    />
                   )}
                 </div>
               );
             })}
           </div>
 
-          {/* Shared image fields (editable) */}
+          {/* Shared image fields */}
           <div className="space-y-3 flex-1">
             {([
-              ["Station", "station_id", true],
-              ["Day / Night", "day_night", false],
-              ["Capture date", "capture_date", false],
-              ["Temperature", "temperature", false],
-              ["Notes", "user_notes", true],
+              ["Station",      "station_id",   true ],
+              ["Day / Night",  "day_night",     false],
+              ["Capture date", "capture_date",  false],
+              ["Temperature",  "temperature",   false],
+              ["Notes",        "user_notes",    true ],
             ] as [string, string, boolean][]).map(([label, field, editable]) => {
               const isEditing = editField === field;
               const val = primary[field];
               return (
                 <div key={field}>
-                  <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5">{label}</p>
+                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{label}</p>
                   {isEditing ? (
                     <div className="flex gap-1.5">
                       {field === "user_notes" ? (
-                        <textarea
-                          autoFocus value={editVal}
-                          onChange={(e) => setEditVal(e.target.value)}
-                          rows={3}
-                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-green-400"
-                        />
+                        <textarea autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)} rows={3}
+                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-green-400" />
                       ) : (
-                        <input
-                          autoFocus value={editVal}
-                          onChange={(e) => setEditVal(e.target.value)}
+                        <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
                           onKeyDown={(e) => e.key === "Enter" && commitEdit()}
-                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-                        />
+                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
                       )}
                       <div className="flex flex-col gap-1">
                         <button onClick={commitEdit} disabled={saving}
@@ -302,9 +368,7 @@ function Lightbox({
                           {saving ? "…" : "✓"}
                         </button>
                         <button onClick={() => setEditField(null)}
-                          className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded hover:bg-slate-200">
-                          ✕
-                        </button>
+                          className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded hover:bg-slate-200">✕</button>
                       </div>
                     </div>
                   ) : (
@@ -337,7 +401,6 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
   const filename = String(primary.filename ?? "");
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
 
-  // best confidence across all detections for the chip
   const bestConf = rows.reduce((max, r) => {
     const v = typeof r.detection_confidence === "number"
       ? (r.detection_confidence as number)
@@ -345,6 +408,13 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
     return isNaN(v) ? max : Math.max(max, v);
   }, 0);
   const bestPct = Math.round(bestConf * 100);
+
+  // Pick the detection with highest confidence for model breakdown display
+  const bestRow = rows.reduce((best, r) => {
+    const v = typeof r.detection_confidence === "number" ? (r.detection_confidence as number) : 0;
+    const bv = typeof best.detection_confidence === "number" ? (best.detection_confidence as number) : 0;
+    return v > bv ? r : best;
+  }, rows[0]);
 
   return (
     <div
@@ -363,7 +433,6 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
           onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
         />
 
-        {/* All bounding boxes — preserveAspectRatio slice matches object-cover */}
         {imgNatural && (
           <svg
             className="absolute inset-0 w-full h-full pointer-events-none"
@@ -396,29 +465,34 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
           </svg>
         )}
 
-        {/* Day/night chip */}
         <div className="absolute top-2 left-2">
           <DayNightBadge value={primary.day_night} />
         </div>
-        {/* Animal count badge (only when >1) */}
         {rows.length > 1 && (
           <div className="absolute bottom-2 left-2 bg-black/60 text-white text-xs font-semibold px-2 py-0.5 rounded-full">
             {rows.length} animals
           </div>
         )}
-        {/* Best confidence chip */}
         <div className={`absolute top-2 right-2 text-xs font-mono text-white px-2 py-0.5 rounded-full ${confColor(bestConf)}`}>
           {bestPct}%
         </div>
       </div>
-      <div className="p-3">
+
+      <div className="p-3 space-y-1.5">
         <p className="font-semibold text-slate-800 text-sm truncate">
           {rows.map((r) => String(r.detected_animal ?? "Unknown")).join(", ")}
         </p>
-        <p className="text-xs text-slate-400 truncate mt-0.5">{filename}</p>
-        <p className="text-xs text-slate-500 mt-1">
+        <p className="text-[10px] text-slate-400 truncate">{filename}</p>
+        <p className="text-[10px] text-slate-500">
           {String(primary.station_id ?? "")} · {String(primary.capture_date ?? "")}
         </p>
+        <ModelBreakdown
+          method={String(bestRow.detection_method ?? "")}
+          bioclipConf={typeof bestRow.bioclip_confidence === "number" ? bestRow.bioclip_confidence as number : undefined}
+          speciesnetConf={typeof bestRow.speciesnet_confidence === "number" ? bestRow.speciesnet_confidence as number : undefined}
+          agreement={bestRow.agreement as string | null}
+          detected={String(bestRow.detected_animal ?? "")}
+        />
       </div>
     </div>
   );
@@ -434,41 +508,26 @@ function Pagination({ page, totalPages, total, onPage }: {
     <div className="flex items-center justify-between pt-1">
       <p className="text-xs text-slate-400">{total} total · page {page} of {totalPages}</p>
       <div className="flex gap-1">
-        <button
-          disabled={page === 1}
-          onClick={() => onPage(1)}
-          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
-        >«</button>
-        <button
-          disabled={page === 1}
-          onClick={() => onPage(page - 1)}
-          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
-        >‹ Prev</button>
+        <button disabled={page === 1} onClick={() => onPage(1)}
+          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">«</button>
+        <button disabled={page === 1} onClick={() => onPage(page - 1)}
+          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">‹ Prev</button>
         {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
           const start = Math.max(1, Math.min(page - 2, totalPages - 4));
           const p = start + i;
           return (
-            <button
-              key={p}
-              onClick={() => onPage(p)}
+            <button key={p} onClick={() => onPage(p)}
               className={`px-3 py-1 text-xs rounded border transition ${
                 p === page
                   ? "bg-green-600 text-white border-green-600"
                   : "border-slate-200 hover:bg-slate-50 text-slate-600"
-              }`}
-            >{p}</button>
+              }`}>{p}</button>
           );
         })}
-        <button
-          disabled={page === totalPages}
-          onClick={() => onPage(page + 1)}
-          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
-        >Next ›</button>
-        <button
-          disabled={page === totalPages}
-          onClick={() => onPage(totalPages)}
-          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
-        >»</button>
+        <button disabled={page === totalPages} onClick={() => onPage(page + 1)}
+          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">Next ›</button>
+        <button disabled={page === totalPages} onClick={() => onPage(totalPages)}
+          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">»</button>
       </div>
     </div>
   );
@@ -508,7 +567,6 @@ export default function Results() {
 
   useEffect(() => { load(); }, []);
 
-  // Sort rows client-side
   const sorted = [...rows].sort((a, b) => {
     if (!sort.col || !sort.dir) return 0;
     const va = a[sort.col] ?? "";
@@ -520,7 +578,6 @@ export default function Results() {
   const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
   const paginated = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-  // All groups (for lightbox prev/next)
   const galleryGroups = useMemo<ImageGroup[]>(() => {
     const map = new Map<string, Row[]>();
     for (const row of sorted) {
@@ -531,7 +588,6 @@ export default function Results() {
     return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
   }, [sorted]);
 
-  // Page slice for gallery
   const pagedGalleryGroups = useMemo<ImageGroup[]>(() => {
     const map = new Map<string, Row[]>();
     for (const row of paginated) {
@@ -564,25 +620,24 @@ export default function Results() {
     load();
   };
 
-  // Summary stats
   const totalAnimals = rows.filter((r) => String(r.primary_label ?? r.detected_animal ?? "").toLowerCase() !== "empty").length;
   const dayCount = rows.filter((r) => r.day_night === "Day").length;
   const nightCount = rows.filter((r) => r.day_night === "Night").length;
   const uniqueSpecies = new Set(rows.map((r) => r.detected_animal)).size;
 
   const COLS: { key: string; label: string; sortable: boolean }[] = [
-    { key: "filename",             label: "Filename",    sortable: true  },
-    { key: "station_id",           label: "Station",     sortable: true  },
-    { key: "detected_animal",      label: "Species",     sortable: true  },
-    { key: "detection_confidence", label: "Confidence",  sortable: true  },
-    { key: "day_night",            label: "Time",        sortable: true  },
-    { key: "capture_date",         label: "Date",        sortable: true  },
-    { key: "user_notes",           label: "Notes",       sortable: false },
+    { key: "filename",             label: "Filename",   sortable: true  },
+    { key: "station_id",           label: "Station",    sortable: true  },
+    { key: "detected_animal",      label: "Species",    sortable: true  },
+    { key: "detection_confidence", label: "Confidence", sortable: true  },
+    { key: "day_night",            label: "Time",       sortable: true  },
+    { key: "capture_date",         label: "Date",       sortable: true  },
+    { key: "detection_method",     label: "Models",     sortable: false },
+    { key: "user_notes",           label: "Notes",      sortable: false },
   ];
 
   return (
     <div className="space-y-4">
-      {/* Lightbox */}
       {lightbox && (
         <Lightbox
           group={lightbox}
@@ -596,28 +651,19 @@ export default function Results() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-slate-800">Review Results</h1>
-        <div className="flex gap-2">
-          {/* View toggle */}
+        <div className="flex gap-2 flex-wrap">
           <div className="flex rounded-lg border border-slate-200 overflow-hidden bg-white">
             <button
               onClick={() => setViewMode("table")}
               className={`px-3 py-1.5 text-sm font-medium transition ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
-            >
-              ☰ Table
-            </button>
+            >☰ Table</button>
             <button
               onClick={() => setViewMode("gallery")}
               className={`px-3 py-1.5 text-sm font-medium transition ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
-            >
-              ⊞ Gallery
-            </button>
+            >⊞ Gallery</button>
           </div>
-          <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">
-            Export Excel
-          </a>
-          <a href={exportCsv()} className="px-4 py-2 bg-slate-600 text-white text-sm rounded-lg hover:bg-slate-700">
-            Export CSV
-          </a>
+          <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Export Excel</a>
+          <a href={exportCsv()} className="px-4 py-2 bg-slate-600 text-white text-sm rounded-lg hover:bg-slate-700">Export CSV</a>
         </div>
       </div>
 
@@ -640,58 +686,36 @@ export default function Results() {
 
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-2 items-end">
-        <input
-          ref={speciesInputRef}
-          placeholder="Species…"
-          value={filter.species}
+        <input ref={speciesInputRef} placeholder="Species…" value={filter.species}
           onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
           onKeyDown={(e) => e.key === "Enter" && load()}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-        />
-        <input
-          placeholder="Station…"
-          value={filter.station}
+          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
+        <input placeholder="Station…" value={filter.station}
           onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
           onKeyDown={(e) => e.key === "Enter" && load()}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-        />
-        <select
-          value={filter.day_night}
+          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
+        <select value={filter.day_night}
           onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400"
-        >
+          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400">
           <option value="">All times</option>
           <option value="Day">☀ Day</option>
           <option value="Night">🌙 Night</option>
         </select>
         <div className="flex items-center gap-1">
-          <input
-            placeholder="Min conf"
-            value={filter.min_conf}
+          <input placeholder="Min conf" value={filter.min_conf}
             onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value }))}
-            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400"
-          />
+            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400" />
           <span className="text-slate-400 text-sm">–</span>
-          <input
-            placeholder="Max conf"
-            value={filter.max_conf}
+          <input placeholder="Max conf" value={filter.max_conf}
             onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value }))}
-            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400"
-          />
+            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400" />
         </div>
-        <button
-          onClick={load}
-          className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700"
-        >
-          Apply
-        </button>
+        <button onClick={load} className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Apply</button>
         {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station) && (
           <button
             onClick={() => { setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" }); setTimeout(load, 0); }}
             className="px-3 py-1.5 text-slate-500 text-sm rounded-lg hover:bg-slate-100"
-          >
-            Clear
-          </button>
+          >Clear</button>
         )}
       </div>
 
@@ -711,7 +735,6 @@ export default function Results() {
           <p className="text-sm">Process images in the Upload tab first.</p>
         </div>
       ) : viewMode === "gallery" ? (
-        // ── Gallery grid ──
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {pagedGalleryGroups.map((group) => (
@@ -721,7 +744,6 @@ export default function Results() {
           <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
         </>
       ) : (
-        // ── Table view ──
         <>
           <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
             <table className="w-full text-sm">
@@ -741,7 +763,7 @@ export default function Results() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {paginated.map((row, i) => {
-                  const id = Number(row.id ?? row.image_id ?? i);
+                  const id = Number(row.detection_id ?? row.id ?? i);
                   const filename = String(row.filename ?? "");
                   return (
                     <tr key={id} className="hover:bg-slate-50 group">
@@ -774,16 +796,13 @@ export default function Results() {
                         const val = row[key];
 
                         return (
-                          <td key={key} className="px-3 py-2 max-w-[180px]">
+                          <td key={key} className="px-3 py-2 max-w-[200px]">
                             {isEditing ? (
                               <div className="flex gap-1 items-center">
-                                <input
-                                  autoFocus
-                                  value={editVal}
+                                <input autoFocus value={editVal}
                                   onChange={(e) => setEditVal(e.target.value)}
                                   onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
-                                  className="border border-green-400 rounded px-2 py-0.5 text-sm w-full focus:outline-none"
-                                />
+                                  className="border border-green-400 rounded px-2 py-0.5 text-sm w-full focus:outline-none" />
                                 <button onClick={() => saveEdit(id)} className="text-green-600 font-bold shrink-0">✓</button>
                                 <button onClick={() => setEditing(null)} className="text-slate-300 shrink-0">✕</button>
                               </div>
@@ -791,6 +810,14 @@ export default function Results() {
                               <ConfBar value={val} />
                             ) : key === "day_night" ? (
                               <DayNightBadge value={val} />
+                            ) : key === "detection_method" ? (
+                              <ModelBreakdown
+                                method={String(val ?? "")}
+                                bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
+                                speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
+                                agreement={row.agreement as string | null}
+                                detected={String(row.detected_animal ?? "")}
+                              />
                             ) : (
                               <span
                                 className={`block truncate ${editable ? "cursor-pointer group-hover:text-green-700 hover:underline underline-offset-2" : "text-slate-700"}`}

@@ -46,6 +46,9 @@ class DatabaseManager:
                 method TEXT,
                 bbox TEXT,
                 ide_id TEXT,
+                bioclip_confidence REAL DEFAULT 0.0,
+                speciesnet_confidence REAL DEFAULT 0.0,
+                agreement TEXT,
                 FOREIGN KEY (image_id) REFERENCES images (id)
             )
         ''')
@@ -73,6 +76,9 @@ class DatabaseManager:
         ])
         self._migrate_columns(cursor, "detections", [
             ("ide_id", "TEXT"),
+            ("bioclip_confidence", "REAL DEFAULT 0.0"),
+            ("speciesnet_confidence", "REAL DEFAULT 0.0"),
+            ("agreement", "TEXT"),
         ])
 
         conn.commit()
@@ -127,8 +133,9 @@ class DatabaseManager:
 
                 cursor.execute('''
                     INSERT INTO detections (
-                        image_id, detected_animal, confidence, method, bbox, ide_id
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        image_id, detected_animal, confidence, method, bbox, ide_id,
+                        bioclip_confidence, speciesnet_confidence, agreement
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     image_id,
                     row['detected_animal'],
@@ -136,6 +143,9 @@ class DatabaseManager:
                     row.get('detection_method', 'Unknown'),
                     bbox_json,
                     row.get('ide_id'),
+                    row.get('bioclip_confidence', 0.0),
+                    row.get('speciesnet_confidence', 0.0),
+                    row.get('agreement'),
                 ))
 
                 count += 1
@@ -236,7 +246,8 @@ class DatabaseManager:
                 i.day_night, i.brightness, i.user_notes,
                 d.id as detection_id,
                 d.detected_animal, d.confidence as detection_confidence,
-                d.method as detection_method, d.bbox, d.ide_id
+                d.method as detection_method, d.bbox, d.ide_id,
+                d.bioclip_confidence, d.speciesnet_confidence, d.agreement
             FROM images i
             JOIN detections d ON i.id = d.image_id
             ORDER BY i.processed_at DESC

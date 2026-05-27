@@ -433,6 +433,7 @@ class AnimalDetector:
                     "all_candidates": fusion["all_candidates"],
                 }
 
+                carries_events = is_first
                 if is_first:
                     model_events += [ev_bc, ev_sn, ev_result]
                     is_first = False
@@ -480,7 +481,7 @@ class AnimalDetector:
                             "agreement": agreement,
                         },
                     },
-                    "_model_events": model_events if is_first else [],
+                    "_model_events": model_events if carries_events else [],
                 })
                 final_results.append(base)
 

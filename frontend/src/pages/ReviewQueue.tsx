@@ -22,6 +22,77 @@ function confColor(v: number) {
   return "bg-red-400";
 }
 
+// ── Model breakdown components ────────────────────────────────────────────────
+
+function ModelPill({ name, conf }: { name: string; conf?: number }) {
+  const base =
+    name === "MDv5a" || name === "MDv1000"
+      ? "bg-blue-100 text-blue-700 border-blue-200"
+      : name === "BioClip"
+      ? "bg-violet-100 text-violet-700 border-violet-200"
+      : name === "SpeciesNet"
+      ? "bg-teal-100 text-teal-700 border-teal-200"
+      : "bg-slate-100 text-slate-600 border-slate-200";
+  return (
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold border ${base}`}>
+      {name}
+      {conf !== undefined && conf > 0 && (
+        <span className="font-normal opacity-80 ml-0.5">{Math.round(conf * 100)}%</span>
+      )}
+    </span>
+  );
+}
+
+function AgreementBadge({ level }: { level?: string | null }) {
+  if (!level) return null;
+  const styles =
+    level === "High"
+      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+      : level === "Medium"
+      ? "bg-amber-100 text-amber-700 border-amber-200"
+      : "bg-red-100 text-red-700 border-red-200";
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border ${styles}`}>
+      {level}
+    </span>
+  );
+}
+
+function ModelBreakdown({
+  method,
+  bioclipConf,
+  speciesnetConf,
+  agreement,
+  detected,
+}: {
+  method: string;
+  bioclipConf?: number;
+  speciesnetConf?: number;
+  agreement?: string | null;
+  detected?: string;
+}) {
+  const models = method ? method.split(" + ").filter(Boolean) : [];
+  const detectors = models.filter((m) => m.startsWith("MDv") || m === "MegaDetector");
+  const isAnimal =
+    detected && detected !== "Empty" && detected !== "Unidentified" &&
+    detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
+
+  if (!detectors.length && !isAnimal) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 mt-1">
+      {detectors.map((m) => <ModelPill key={m} name={m} />)}
+      {isAnimal && (
+        <>
+          {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
+          {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
+          <AgreementBadge level={agreement} />
+        </>
+      )}
+    </div>
+  );
+}
+
 function ConfBar({ value }: { value: unknown }) {
   const v = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
   const pct = isNaN(v) ? 0 : Math.round(v * 100);
@@ -202,6 +273,13 @@ function QueueCard({
           <p className="text-[11px] text-slate-400 truncate mt-0.5">{filename}</p>
         </div>
         <ConfBar value={conf} />
+        <ModelBreakdown
+          method={String(row.detection_method ?? "")}
+          bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
+          speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
+          agreement={row.agreement as string | null}
+          detected={species}
+        />
         {row.capture_date != null && String(row.capture_date) && (
           <p className="text-[11px] text-slate-400">{String(row.capture_date)} {String(row.capture_time ?? "")}</p>
         )}
