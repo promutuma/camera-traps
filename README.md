@@ -2,7 +2,7 @@
 
 A **FastAPI + React platform** for automated analysis of wildlife camera trap images, designed for the **Gambella Wetland Landscape Baseline Survey** and similar conservation programmes.
 
-The system runs a full multi-model AI ensemble pipeline — OCR metadata extraction, parallel animal detection (**MegaDetector V5a + V1000**), species identification (**BioClip + SpeciesNet**), detection fusion, independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard with real-time per-model output streaming.
+The system runs a full multi-model AI ensemble pipeline — OCR metadata extraction, parallel animal detection (**MegaDetector V5a + V1000**), species identification (**BioCLIP + SpeciesNet**), taxonomy-aware detection fusion, independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard with real-time per-model output streaming.
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green)
 ![React](https://img.shields.io/badge/React-19-blue)
@@ -61,9 +61,9 @@ category "1" = Animal,  "2" = Person,  "3" = Vehicle
 
 ### Model 2 — MegaDetector V1000 / Redwood (Detector)
 
-**Source:** [agentmorris/MegaDetector](https://github.com/agentmorris/MegaDetector), July 2024 release  
-**Architecture:** YOLOv5 (newer training data than V5a)  
-**Install:** Same `megadetector` package. Weights downloaded automatically on first run.  
+**Source:** [agentmorris/MegaDetector](https://github.com/agentmorris/MegaDetector), v1000.0 release  
+**Architecture:** YOLOv5x6 (larger and newer than V5a)  
+**Install:** Same `megadetector` package. Weights (~600 MB) downloaded automatically from GitHub releases on first run.  
 **Model string used:** `"redwood"` (one of five V1000 variants: redwood, spruce, cedar, larch, sorrel)
 
 MDv1000 is the second detector running **in parallel** with MDv5a. Because each was trained on a different dataset partition, they have complementary blind spots — an animal missed by one is often caught by the other.
@@ -80,15 +80,22 @@ After both detectors run, the pipeline applies **Non-Maximum Suppression (NMS)**
 
 ---
 
-### Model 3 — BioClip (Classifier)
+### Model 3 — BioCLIP (Classifier)
 
-**Source:** [Imageomics/bioclip](https://github.com/Imageomics/BioCLIP) — OpenCLIP foundation model  
-**Architecture:** CLIP (Contrastive Language–Image Pre-Training), vision transformer  
+**Source:** [Imageomics/bioclip](https://github.com/Imageomics/BioCLIP) — OpenCLIP foundation model trained on the tree of life  
+**Architecture:** Vision Transformer (ViT), CLIP-based  
 **Install:** `pip install open_clip_torch` (weights auto-download, ~850 MB)
 
-BioClip is a **zero-shot** classifier. Unlike trained classifiers, it does not have a fixed set of species it was trained to recognise. Instead, it compares the animal crop against a text description of every species in a custom label list (`WILDLIFE_CLASSES`, ~100 entries for African wildlife). The species whose text description best matches the image wins.
+BioCLIP is a **zero-shot foundation model** trained on the entire tree of life. Unlike traditional classifiers with fixed categories, it links visual features to biological taxonomy — meaning it understands hierarchical relationships between species (lion → Felidae → Carnivora → Mammalia) rather than treating them as isolated labels.
 
-This makes BioClip flexible — you can add new species to the label list without retraining. The trade-off is that it is less accurate than trained classifiers for common species.
+**What sets BioCLIP apart:**
+
+The pipeline uses BioCLIP's full taxonomic output via `predict_taxonomy()`, which runs a single image forward pass and produces:
+- **Species-level predictions** — top-k species with confidence scores from the 129-species African wildlife list
+- **Full taxonomic path** — for each prediction: `Mammalia > Carnivora > Felidae > Panthera > leo`
+- **Family-level classification** — an independent classification against 31 family-level text prompts (e.g. `"a photo of a wild cat such as a lion, leopard, cheetah…"`) that cross-checks the species prediction at a coarser level
+
+This dual output — species prediction + independent family prediction — is what enables reliable **taxonomy-aware agreement** with SpeciesNet (see ensemble section below).
 
 **What it needs to run:**
 - `open_clip_torch` package
@@ -102,19 +109,33 @@ This makes BioClip flexible — you can add new species to the label list withou
 ### Model 4 — SpeciesNet (Classifier)
 
 **Source:** [google/cameratrapai](https://github.com/google/cameratrapai)  
-**Architecture:** EfficientNetV2-M trained on **65 million** camera trap images  
+**Architecture:** EfficientNetV2-M (CNN) trained on **65 million** human-verified camera trap images  
 **Install:** `pip install speciesnet`  
 **Model download:** Requires **Kaggle credentials** (free account) — see setup below.
 
-SpeciesNet is Google's purpose-built camera trap classifier. Unlike BioClip (zero-shot), SpeciesNet was directly trained on camera trap images across diverse global ecosystems. It classifies into **2 000+ labels** covering individual species, higher taxonomic ranks (Felidae, Mammalia), and non-animal classes (blank, vehicle, human).
+SpeciesNet is Google's purpose-built camera trap classifier, developed in partnership with Wildlife Insights. It is the specialist of the ensemble: while BioCLIP understands broad biological relationships across 450,000+ taxa, SpeciesNet was trained specifically on camera trap conditions — poor lighting, awkward angles, nocturnal infrared shots, partial visibility, and motion blur — making it the most accurate classifier for common field species.
 
-Because it was trained specifically on camera trap imagery, it outperforms general-purpose CLIP models on common species and gives the ensemble its strongest species-level signal.
+**SpeciesNet's key advantages for camera trap data:**
+
+| Capability | Detail |
+|---|---|
+| **Blank detection** | 98.7% accuracy at identifying empty frames (wind, shadows, vegetation). Classifies these as `"blank"` before any species ID begins — allowing bulk-deletion of thousands of false triggers |
+| **Camera trap optimised** | Trained on 65M field images across diverse global ecosystems; outperforms general-purpose models on nocturnal and low-quality shots |
+| **Rich taxonomy output** | Each prediction includes scientific name, common name, and full hierarchical path (e.g. `Animalia > Chordata > Mammalia > Carnivora > Felidae > Panthera > leo`) |
+| **Night specialisation** | Explicitly trained on IR/night-vision imagery — the ensemble gives SpeciesNet higher weight at night |
+
+**SpeciesNet label format** (raw output, one record per prediction):
+```
+taxon_id ; Animalia ; Chordata ; Mammalia ; Carnivora ; Felidae ; Panthera ; leo ; lion
+```
+
+The pipeline parses this into a structured dict with `common_name`, `scientific_name`, and `hierarchy` fields.
 
 **What it needs to run:**
 - `speciesnet` Python package
 - A free [Kaggle account](https://www.kaggle.com/) with API credentials
-- Model weights downloaded automatically from Kaggle on first run
-- ~1 GB disk + ~1 GB RAM
+- Model weights downloaded automatically from Kaggle on first run (~220 MB)
+- ~1 GB RAM
 
 **Kaggle credentials setup:**
 
@@ -127,21 +148,38 @@ KAGGLE_USERNAME=your_kaggle_username
 KAGGLE_KEY=your_kaggle_api_key
 ```
 
-If credentials are absent, SpeciesNet logs a warning at startup and the pipeline continues with BioClip only — no crash, no manual intervention needed.
+If credentials are absent, SpeciesNet logs a warning at startup and the pipeline continues with BioCLIP only — no crash, no manual intervention needed.
+
+---
+
+### BioCLIP vs SpeciesNet — When Each Model Wins
+
+| | BioCLIP | SpeciesNet |
+|---|---|---|
+| **Architecture** | Vision Transformer (CLIP-based) | CNN (EfficientNetV2-M) |
+| **Organism scope** | 450,000+ taxa (animals, plants, fungi, insects) | ~2,500 categories (mammals, birds, reptiles) |
+| **Training data** | 10M–200M diverse biological images | 65M+ human-labelled camera trap images |
+| **Zero-shot** | Yes — can identify species never seen in training | No — fixed category ceiling |
+| **Blank detection** | Poor (classifies every frame) | Excellent (98.7% accuracy) |
+| **Night/IR images** | Not optimised | Explicitly trained on nocturnal field imagery |
+| **Taxonomy output** | Full path with genus/family/order | Full path via label hierarchy |
+| **Best for** | Unusual or rare species, taxonomic fallback, cross-checking | High-volume common species ID, blank filtering |
+
+**Design implication:** SpeciesNet is the primary species signal for camera trap data. BioCLIP provides a complementary zero-shot cross-check — particularly valuable when SpeciesNet encounters a rare or out-of-distribution species.
 
 ---
 
 ### How the ensemble combines all four models
 
-The pipeline runs a two-stage ensemble architecture to combine outputs from the four underlying models:
+The pipeline runs a two-stage ensemble architecture:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    STAGE 1: DETECTION                        │
 │                                                             │
-│  Full image → MDv5a   ─────────┐                           │
-│                                 ├──► NMS Fusion             │
-│  Full image → MDv1000 ─────────┘    (IoU ≥ 0.5)            │
+│  Full image → MDv5a    ────────┐                            │
+│                                ├──► NMS Fusion              │
+│  Full image → MDv1000  ────────┘    (IoU ≥ 0.5)             │
 │                                        │                    │
 │                              merged bounding boxes          │
 └─────────────────────────────────────────────────────────────┘
@@ -150,12 +188,17 @@ The pipeline runs a two-stage ensemble architecture to combine outputs from the 
 ┌─────────────────────────────────────────────────────────────┐
 │               STAGE 2: CROP + CLASSIFY (parallel)           │
 │                                                             │
-│  Crop + 10% padding → BioClip    → [(Lion, 0.89), ...]     │
-│                     → SpeciesNet → [(Panthera leo, 0.82)]  │
+│  Crop + 10% padding                                         │
+│    → BioCLIP  predict_taxonomy() → species + family + path  │
+│    → SpeciesNet classify_crop()  → label JSON with          │
+│                                    common_name + hierarchy  │
 │                                                             │
-│  Fusion (weighted avg):                                     │
-│    score = 0.45 × BioClip + 0.55 × SpeciesNet              │
-│    + 0.08 agreement bonus when both pick the same species   │
+│  Fusion (day):   0.40 × BioCLIP + 0.60 × SpeciesNet        │
+│  Fusion (night): 0.25 × BioCLIP + 0.75 × SpeciesNet        │
+│                                                             │
+│  Agreement bonus (taxonomy-aware):                          │
+│    +0.08 if BioCLIP genus appears in SpeciesNet hierarchy   │
+│    +0.04 if BioCLIP family matches SpeciesNet hierarchy     │
 └─────────────────────────────────────────────────────────────┘
                                          │
                                          ▼
@@ -163,31 +206,51 @@ The pipeline runs a two-stage ensemble architecture to combine outputs from the 
 │                   FINAL OUTPUT per detection                 │
 │                                                             │
 │  species     = "Lion"                                       │
-│  confidence  = 0.91                                         │
-│  agreement   = "High"   ← both classifiers agreed          │
+│  confidence  = 0.93                                         │
+│  agreement   = "High"   ← genus Panthera in SN hierarchy   │
 │  breakdown   = { MDv5a: …, MDv1000: …,                     │
-│                  BioClip: …, SpeciesNet: … }                │
+│                  BioCLIP: …, SpeciesNet: … }                │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 #### Stage 1: Bounding Box Fusion (NMS)
-1. **Detections:** Bounding boxes from **MegaDetector v5a** and **MegaDetector v1000** are collected concurrently.
-2. **NMS Merge:** Non-Maximum Suppression (NMS) merges overlapping boxes referring to the same object using an Intersection-over-Union (`IoU >= 0.50`) threshold:
+
+1. **Detections:** Bounding boxes from **MegaDetector V5a** and **MegaDetector V1000** are collected concurrently.
+2. **NMS Merge:** Non-Maximum Suppression merges overlapping boxes (IoU ≥ 0.5):
    $$\text{IoU} = \frac{\text{Area of Intersection}}{\text{Area of Union}}$$
-3. **Geometry Selection:** If both models detect the same animal, the bounding box geometry with the higher confidence score is selected to represent the subject.
+3. **Geometry Selection:** If both models detect the same animal, the higher-confidence box geometry is kept.
 
-#### Stage 2: Classifier Fusion (Weighted Average)
-For every merged box classified as `"Animal"`, the image crop (padded by 10% on all sides) is run through **BioClip** and **SpeciesNet**:
+#### Stage 2: Taxonomy-Aware Classifier Fusion
 
-1. **Weighted Average Calculation:**
-   Predictions from both classifiers are fused using a weighted average score:
-   $$\text{Fused Score} = (\text{BioClip Score} \times 0.45) + (\text{SpeciesNet Score} \times 0.55)$$
-   *SpeciesNet carries a slightly higher weight (0.55) because it was pre-trained specifically on camera-trap image datasets, whereas BioClip is a zero-shot general model.*
+For every merged box classified as `"Animal"`, the padded crop runs through **BioCLIP** and **SpeciesNet** in parallel:
 
-2. **Agreement Confidence Boost:**
-   * **High Agreement (+0.08):** If both classifiers' top prediction matches exactly (or is a direct substring of each other), we add a confidence bonus of **`+0.08`** to the fused score (capped at `1.0`).
-   * **Medium Agreement (+0.04):** If the top predictions share a keyword longer than 3 characters, a partial agreement bonus of **`+0.04`** is added.
-   * **Low Agreement (+0.00):** If predictions disagree, no bonus is applied, and the item is queued for human verification in the **Review Queue**.
+**1. Dynamic weights based on time of day:**
+
+| Condition | BioCLIP weight | SpeciesNet weight | Reason |
+|---|---|---|---|
+| Day (colour image) | 0.40 | 0.60 | Both models competent; SpeciesNet favoured |
+| Night / IR image | 0.25 | 0.75 | SpeciesNet explicitly trained on nocturnal camera trap imagery; BioCLIP not optimised for IR |
+
+Day/night is determined before classification via `DayNightClassifier`, which detects grayscale/low-saturation images as night-vision regardless of brightness.
+
+**2. Taxonomy-aware agreement detection:**
+
+Rather than word-matching, agreement is computed by comparing BioCLIP's full taxonomic output against SpeciesNet's hierarchy:
+
+| Level | Agreement | Bonus | Example |
+|---|---|---|---|
+| Genus matches SN hierarchy | High | +0.08 | BioCLIP: *Panthera* leo → SN hierarchy contains *Panthera* |
+| Species common name matches | High | +0.08 | BioCLIP: "lion" matches SN display "lion" |
+| Family matches SN hierarchy | Medium | +0.04 | Both predict Felidae even if species differ |
+| Independent family prediction matches | Medium | +0.04 | BioCLIP family features confirm same family |
+| Order matches SN hierarchy | Medium | +0.04 | Both predict Carnivora |
+| No shared taxon | Low | +0.00 | Flagged for human review |
+
+BioCLIP's `predict_taxonomy()` computes two independent signals in a single forward pass:
+- Species-level scoring against the 129-species African wildlife list
+- Family-level scoring against 31 family text prompts (e.g. `"a photo of a wild cat such as a lion, leopard, cheetah…"`)
+
+The family-level prediction serves as an independent cross-check — if both the species prediction and the independent family prediction map to the same family as SpeciesNet's hierarchy, agreement is elevated to Medium even if species labels differ.
 
 ---
 
@@ -195,7 +258,7 @@ For every merged box classified as `"Animal"`, the image crop (padded by 10% on 
 
 | Tab | Feature |
 |-----|---------|
-| Upload & Process | Auto-upload on file selection; real-time per-model output panel (MDv5a · MDv1000 · BioClip · SpeciesNet · Fusion); SSE progress stream |
+| Upload & Process | Auto-upload on file selection; real-time per-model output panel (MDv5a · MDv1000 · BioCLIP · SpeciesNet · Fusion); SSE progress stream |
 | Review Results | Table and gallery views; bounding box overlays; multi-animal grouping; sortable columns; inline per-detection species editing; confidence bars; Excel/CSV export |
 | Statistics | Per-species bar charts, day/night pie chart, confidence distribution |
 | History | Long-term trends from SQLite database, CSV export |
@@ -221,7 +284,7 @@ camera-traps/
 │   ├── main.py                   # App factory, CORS, lifespan model loading
 │   ├── routers/                  # One router per feature tab (16 total)
 │   │   ├── config.py             # GET/PATCH /api/config
-│   │   ├── images.py             # Upload (auto), processing, SSE stream
+│   │   ├── images.py             # Upload, processing, SSE stream; MIME validation
 │   │   ├── results.py            # Review, edit, export
 │   │   ├── statistics.py         # Stats summary
 │   │   ├── history.py            # History, CSV export
@@ -246,7 +309,9 @@ camera-traps/
 ├── frontend/                     # React + TypeScript + Vite application
 │   ├── vite.config.ts            # Vite dev proxy: /api → localhost:8000
 │   └── src/
-│       ├── App.tsx               # React Router with 15 routes
+│       ├── App.tsx               # React Router with 15 routes; Error Boundary on each
+│       ├── components/
+│       │   └── ErrorBoundary.tsx # Class-based Error Boundary — catches render errors
 │       ├── api/client.ts         # Typed axios client
 │       ├── store/configStore.ts  # Zustand global config store
 │       └── pages/
@@ -255,15 +320,17 @@ camera-traps/
 │
 ├── core/                         # AI/ML business logic
 │   ├── animal_detector.py        # MegaDetectorWrapper (v5a + v1000) + AnimalDetector
-│   │                             # orchestrator with parallel inference
-│   ├── ensemble_engine.py        # NMS detection fusion + weighted species fusion
-│   ├── speciesnet_classifier.py  # Google SpeciesNet wrapper (EfficientNetV2-M)
-│   ├── bioclip_classifier.py     # OpenCLIP zero-shot species classifier
+│   │                             # orchestrator; parallel inference; is_night → fuse_species
+│   ├── ensemble_engine.py        # NMS detection fusion + taxonomy-aware species fusion
+│   │                             # Dynamic weights (day 0.40/0.60, night 0.25/0.75)
+│   ├── speciesnet_classifier.py  # Google SpeciesNet wrapper; parses full taxonomy JSON
+│   ├── bioclip_classifier.py     # BioCLIP zero-shot classifier with predict_taxonomy():
+│   │                             # species path + independent family-level cross-check
 │   ├── species_library.py        # 159-species African wildlife DB + synonyms
-│   ├── day_night_classifier.py   # Brightness-based day/night
+│   ├── day_night_classifier.py   # Brightness + saturation day/night/IR detection
 │   ├── ocr_processor.py          # EasyOCR metadata extraction
-│   ├── image_processor.py        # Unified processing pipeline
-│   ├── db_manager.py             # SQLite schema and persistence (WAL mode)
+│   ├── image_processor.py        # Unified pipeline; passes is_night to detector
+│   ├── db_manager.py             # SQLite schema, WAL mode, job persistence table
 │   ├── independence_engine.py    # 30-min IDE grouping + RAI
 │   ├── qc_engine.py              # QC flag system
 │   ├── station_manager.py        # Station registry + deployments
@@ -312,12 +379,12 @@ python3.12 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate.bat
 pip install -r requirements.txt
 pip install -r backend/requirements.txt
-python force_download.py          # pre-downloads MDv5a + BioClip (~1.5 GB)
+python force_download.py          # pre-downloads MDv5a + BioCLIP (~1.5 GB)
 ```
 
 ### Step 2 — Set up SpeciesNet credentials (optional but recommended)
 
-SpeciesNet downloads its weights from Kaggle on first run. Without credentials the pipeline falls back to BioClip-only — still functional, just less accurate on common species.
+SpeciesNet downloads its weights from Kaggle on first run. Without credentials the pipeline falls back to BioCLIP-only — still functional, just less accurate on common species and unable to detect blanks with high confidence.
 
 ```bash
 # 1. Create a free account at https://www.kaggle.com/
@@ -422,8 +489,9 @@ Named volumes prevent model re-downloads on rebuild:
 ```
 easyocr_cache       → /root/.EasyOCR
 huggingface_cache   → /root/.cache/huggingface
+wildlife_data       → /app/data  (SQLite DB + uploaded images)
 ```
-MegaDetector and SpeciesNet weights are stored inside the container layer on first build.
+MegaDetector and SpeciesNet weights are cached at `/tmp/megadetector_models/` and `~/.cache/kagglehub/` respectively.
 
 ---
 
@@ -443,7 +511,7 @@ Browser → http://localhost:5173  →  Vite dev server (React, HMR)
                                          ↓  proxy /api/*
                                     FastAPI  (http://localhost:8000)
                                          ↓
-                                    core/ (MDv5a + MDv1000 + BioClip + SpeciesNet)
+                                    core/ (MDv5a + MDv1000 + BioCLIP + SpeciesNet)
                                          ↓
                                     wildlife_data.db (SQLite, WAL mode)
 ```
@@ -466,7 +534,7 @@ All runtime settings are in the left sidebar. Changes POST to `PATCH /api/config
 | Default Trap Nights | Used for RAI when no deployment records exist. |
 | Review Queue Threshold | Images below this confidence go to the Review Queue. |
 | Reviewer ID | Name/ID logged against review actions. |
-| Low-Spec Mode | Disables MDv1000 + SpeciesNet; INT8-quantizes MDv5a + BioClip. Keeps RAM under ~2 GB. |
+| Low-Spec Mode | Disables MDv1000 + SpeciesNet; INT8-quantizes MDv5a + BioCLIP. Keeps RAM under ~2 GB. |
 | CPU Threads (Windows only) | PyTorch intra-op threads (default ¼ of core count). |
 
 ---
@@ -482,8 +550,8 @@ All models load once at startup and stay resident. The ensemble runs four models
 | PyTorch runtime | ~1.2 GB | ~2 GB | Shared across all models |
 | MegaDetector V5a | ~600 MB | ~600 MB | Always loaded |
 | MegaDetector V1000 | ~600 MB | ~600 MB | Skipped in Low-Spec Mode |
-| BioClip (OpenCLIP) | ~850 MB | ~850 MB | Always loaded |
-| SpeciesNet (EfficientNetV2-M) | ~1.0 GB | ~1.0 GB | Skipped without Kaggle credentials or in Low-Spec Mode |
+| BioCLIP (OpenCLIP) | ~850 MB | ~850 MB | Always loaded; family features add ~1 MB |
+| SpeciesNet (EfficientNetV2-M) | ~1.0 GB | ~220 MB | Skipped without Kaggle credentials or in Low-Spec Mode |
 | EasyOCR | ~200 MB | ~200 MB | Always loaded |
 | **Full ensemble total** | **~4.5 GB** | **~5.5 GB** | |
 | **Low-Spec total** | **~2.3 GB** | **~3.5 GB** | MDv1000 + SpeciesNet disabled |
@@ -494,7 +562,7 @@ All models load once at startup and stay resident. The ensemble runs four models
 |----------|--------------|---------------|
 | RAM | 8 GB | 16 GB |
 | CPU | 2-core | 4+ cores (parallel inference benefits significantly) |
-| GPU | Not required | CUDA GPU speeds up BioClip + SpeciesNet |
+| GPU | Not required | CUDA GPU speeds up BioCLIP + SpeciesNet |
 | Disk | 5 GB free | 10 GB free |
 | OS | Windows 10 / macOS 12 / Ubuntu 20.04 | — |
 
@@ -539,7 +607,22 @@ echo "KAGGLE_KEY=your_api_key" >> .env
 # 3. Restart the backend
 ```
 
-The pipeline continues to work without SpeciesNet — it falls back to BioClip only. Agreement will show "Medium" instead of "High" for most detections.
+The pipeline continues to work without SpeciesNet — it falls back to BioCLIP only. Agreement will show "Medium" for most detections and blank detection accuracy will be reduced.
+
+---
+
+## Troubleshooting: MDv1000 Not Loading
+
+**Symptom:** Startup log shows `Error loading redwood: <urlopen error [Errno 111] Connection refused>`
+
+**Cause:** An older version of the `megadetector` pip package ships with a placeholder URL (`http://localhost:8181/`) for v1000 model weights instead of the real GitHub releases URL. The app patches this automatically at startup, but if you installed from a very old package, the patch may not apply cleanly.
+
+**Fix:**
+```bash
+pip install --upgrade megadetector
+```
+
+The real download URL is `https://github.com/agentmorris/MegaDetector/releases/download/v1000.0/md_v1000.0.0-redwood.pt`.
 
 ---
 
@@ -647,40 +730,94 @@ git pull && install.bat
 ### Pipeline
 
 - **MegaDetector V5a + V1000** run in parallel threads per image. Bounding boxes are NMS-merged (IoU ≥ 0.5).
-- **BioClip + SpeciesNet** run in parallel threads per animal crop. Scores are fused with weights 0.45/0.55 (SpeciesNet weighted higher due to camera-trap training data). Agreement bonus of +0.08 applied when both classifiers pick the same top species.
+- **Day/night classification** runs before species classification; `DayNightClassifier` detects grayscale/low-saturation images as night-vision regardless of pixel brightness.
+- **BioCLIP `predict_taxonomy()`** performs a single image forward pass scoring against both the 129-species list and 31 family-level prompts. Returning: top species, full taxonomic path (`Mammalia > order > family > genus > epithet`), and an independent family prediction.
+- **SpeciesNet** classifies the same crop via its filepath-based API (crop saved to temp JPEG, classified, file deleted). Returns JSON labels with `common_name`, `scientific_name`, and `hierarchy`.
+- **Fusion weights** are dynamic: `(0.40 BioCLIP, 0.60 SpeciesNet)` for day images; `(0.25 BioCLIP, 0.75 SpeciesNet)` at night.
+- **Agreement** is computed by comparing BioCLIP's genus/family against SpeciesNet's taxonomy hierarchy — not word matching. High (+0.08) for genus match; Medium (+0.04) for family match.
 - Images upload automatically in the browser (400 ms debounce) on file selection — the server receives files before the user clicks "Start".
-- SSE stream (`GET /api/images/job/{id}/stream`) emits both `model_event` messages (per model per image) and `progress` heartbeats. The frontend renders each image's results as a live card as they arrive.
+- SSE stream (`GET /api/images/job/{id}/stream`) emits both `model_event` messages (per model per image) and `progress` heartbeats.
 - All processing runs in a `ThreadPoolExecutor` background task to keep the FastAPI event loop free.
+- Completed jobs are persisted to a `jobs` table in SQLite so job metadata survives server restarts.
+- File uploads are validated by magic bytes (JPEG, PNG, TIFF, BMP, WebP) — not just MIME type headers — before being saved.
 
 ### Data
 
 - **EasyOCR** reads date, time, and temperature from camera metadata strips (bottom 10% of image) via regex.
 - **Independence rule** — same species + same station + detections within the window = one IDE. RAI = IDEs / trap nights.
 - **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes. Original files are never modified.
-- **SQLite** (`wildlife_data.db`) in WAL mode — all stations, IDEs, review actions, community observations, project config, and ArcGIS sync log stored in one local file.
+- **SQLite** (`wildlife_data.db`) in WAL mode — all stations, IDEs, review actions, community observations, project config, job metadata, and ArcGIS sync log stored in one local file.
 - **Species library** — 159 African wildlife species with full scientific names (e.g. *Panthera leo*), family, order, IUCN status, and 59 synonym mappings (e.g. "painted wolf" → "African Wild Dog").
+- **`SPECIES_TAXONOMY`** — compile-time taxonomy table covering all 129 `WILDLIFE_CLASSES` entries, mapping common name → order / family / genus / scientific name. Used by BioCLIP to build taxonomic paths and by the ensemble for family/genus-level agreement scoring.
 
 ---
 
 ## Recent Changes
 
+### Taxonomy-Aware Ensemble + ML Quality (May 2026)
+
+**BioCLIP (`core/bioclip_classifier.py`):**
+- Added `SPECIES_TAXONOMY` — a compile-time table mapping all 129 `WILDLIFE_CLASSES` entries to their order, family, genus, and scientific name.
+- Added `FAMILY_PROMPTS` — 31 family-level natural language prompts (e.g. `"a photo of a wild cat such as a lion, leopard, cheetah…"`) for independent family classification.
+- Added `_compute_family_features()` — pre-computes family text embeddings alongside species embeddings at startup.
+- Added `_encode_image()` — single image forward pass whose result is shared by both scoring passes.
+- Added `predict_taxonomy()` — replaces `predict_list()` for ensemble use. Single forward pass; scores against both species and family embeddings; returns `top`, `candidates`, `family_prediction`, `family_confidence`.
+
+**Ensemble (`core/ensemble_engine.py`):**
+- Replaced flat word-matching agreement with `_taxonomy_agreement_structured()` — compares BioCLIP's genus/family/order against SpeciesNet's parsed hierarchy. High agreement fires correctly when BioCLIP predicts "lion" and SpeciesNet returns the genus *Panthera*.
+- `_DEFAULT_WEIGHTS` updated to `(0.40, 0.60)` — SpeciesNet carries more weight overall.
+- Added `_NIGHT_WEIGHTS = (0.25, 0.75)` — SpeciesNet dominant at night (trained on IR/nocturnal imagery; BioCLIP is not).
+- `fuse_species()` gains `is_night: bool` and `bioclip_taxonomy: Optional[Dict]` parameters.
+
+**Pipeline (`core/image_processor.py`, `core/animal_detector.py`):**
+- `ImageProcessor.process_single_image()` passes `is_night` (from day/night result) into `detector.detect()`.
+- `AnimalDetector._classify_parallel()` now calls `predict_taxonomy()` and returns `(bc_pairs, sn_pairs, bc_taxonomy)`.
+- `fuse_species()` receives the full BioCLIP taxonomy dict for structured comparison.
+
+---
+
+### Reliability & Security (May 2026)
+
+**Backend (`backend/routers/images.py`):**
+- Added `_is_allowed_image()` — validates uploaded files by magic bytes (JPEG `FF D8 FF`, PNG `89 50 4E 47`, TIFF, BMP, WebP). Returns HTTP 415 if the file is not a recognised image format, regardless of filename extension.
+- DB save failure changed from `except Exception: pass` → `logger.error(...)`. Failures now appear in logs instead of being silently discarded.
+- Job metadata (`status`, `total`, `completed`, `error`, `created_at`, `finished_at`) is saved to SQLite `jobs` table on job completion via `db_manager.save_job()`.
+
+**Database (`core/db_manager.py`):**
+- Added `jobs` table (created alongside existing tables on startup).
+- Added `save_job()` — upsert by `job_id`.
+- Added `load_recent_jobs()` — returns the 50 most recent completed/errored jobs ordered by `finished_at`.
+
+**Frontend (`frontend/src/`):**
+- Added `ErrorBoundary.tsx` — class-based React Error Boundary that renders a red error card with a "Try again" button instead of a blank crash.
+- Wrapped all 15 routes in `App.tsx` with `<ErrorBoundary label="...">` — a render error in any single page no longer crashes the entire app.
+
+---
+
+### MDv1000 / Redwood Model Fix (May 2026)
+
+- The `megadetector` pip package (≤ 5.0.29) ships with `localhost:8181` as the download URL for all v1000 model variants — a test-only placeholder. The app now patches `megadetector.detection.run_detector.known_models` at startup to use the real GitHub releases URL (`https://github.com/agentmorris/MegaDetector/releases/download/v1000.0/`).
+- Added proper metadata (`typical_detection_threshold: 0.3`, `image_size`, `model_type`) to all v1000 entries.
+
+---
+
 ### Multi-Model Ensemble Pipeline (May 2026)
 
 **Core:**
-- `core/ensemble_engine.py` (new) — IoU-based NMS to merge MDv5a + MDv1000 detections; weighted score fusion (0.45/0.55) for BioClip + SpeciesNet species predictions; agreement scoring (High / Medium / Low) with +0.08 confidence bonus on agreement.
-- `core/speciesnet_classifier.py` (new) — thin wrapper around Google's `SpeciesNetClassifier` (EfficientNetV2-M); saves crops to temp JPEG for the filepath-based API, classifies, cleans up.
-- `core/animal_detector.py` — `MegaDetectorWrapper` now accepts `model_version` param, supporting any MD model string. `AnimalDetector` accepts `megadetector_v1000` and `speciesnet` as optional second detector/classifier. Both detector pairs and classifier pairs run in parallel via `ThreadPoolExecutor`. Result dicts carry a `_model_events` list for SSE streaming.
+- `core/ensemble_engine.py` (new) — IoU-based NMS to merge MDv5a + MDv1000 detections; weighted score fusion for BioCLIP + SpeciesNet species predictions; agreement scoring (High / Medium / Low) with confidence bonus.
+- `core/speciesnet_classifier.py` (new) — thin wrapper around Google's `SpeciesNetClassifier`; saves crops to temp JPEG for the filepath-based API, classifies, cleans up.
+- `core/animal_detector.py` — `MegaDetectorWrapper` now accepts `model_version` param. `AnimalDetector` accepts `megadetector_v1000` and `speciesnet` as optional second detector/classifier. Both detector pairs and classifier pairs run in parallel via `ThreadPoolExecutor`. Result dicts carry a `_model_events` list for SSE streaming.
 - `core/species_library.py` — expanded from 33 Gambella-specific entries to **159 pan-African species** with full scientific names, families, IUCN status, and **59 synonym mappings**.
 
 **Backend:**
 - `backend/services/job_manager.py` — `Job` dataclass gains `model_events: List[Dict]` queue.
-- `backend/routers/images.py` — SSE stream tracks an event cursor and yields `model_event` messages (per-model per-image) before each `progress` heartbeat. `_run_processing` extracts `_model_events` from each result and appends them to `job.model_events`.
+- `backend/routers/images.py` — SSE stream tracks an event cursor and yields `model_event` messages (per-model per-image) before each `progress` heartbeat.
 - `backend/models/state.py` — adds `md_v1000_model` and `speciesnet_model` fields.
-- `backend/main.py` — loads MDv1000 (redwood) and SpeciesNet in `_load_all_models()`. Both are skipped when `enable_low_spec=True`. `pin_memory` PyTorch warning suppressed.
+- `backend/main.py` — loads MDv1000 (redwood) and SpeciesNet in `_load_all_models()`. Both are skipped when `enable_low_spec=True`.
 - `backend/requirements.txt` — adds `speciesnet>=4.0.2`.
 
 **Frontend:**
-- `frontend/src/pages/Upload.tsx` — files auto-upload with 400 ms debounce on select/drop. "Start AI Analysis" button only calls `startProcessing()` (files already on server). Live model output panel replaces the plain text log with per-image cards showing MDv5a → MDv1000 → Detection fusion → BioClip → SpeciesNet → final result with agreement badge.
+- `frontend/src/pages/Upload.tsx` — files auto-upload with 400 ms debounce on select/drop. Live model output panel with per-image cards showing MDv5a → MDv1000 → Detection fusion → BioCLIP → SpeciesNet → final result with agreement badge.
 
 ---
 

@@ -16,11 +16,7 @@ function parseBbox(raw: unknown): [number, number, number, number] | null {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function confColor(v: number) {
-  if (v >= 0.7) return "bg-green-500";
-  if (v >= 0.4) return "bg-amber-400";
-  return "bg-red-400";
-}
+
 
 // ── Model breakdown components ────────────────────────────────────────────────
 
@@ -815,7 +811,7 @@ export default function ReviewQueue() {
                               </div>
                               <div className="flex items-center justify-between mt-1">
                                 <span className="text-[10px] text-slate-400 font-medium">{Math.round(itemConf * 100)}% conf</span>
-                                {row.agreement && (
+                                {!!row.agreement && (
                                   <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
                                     row.agreement === "High" ? "bg-emerald-100 text-emerald-700" :
                                     row.agreement === "Medium" ? "bg-amber-100 text-amber-700" :
