@@ -7,6 +7,38 @@ import {
 
 const COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
 
+function StatsSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      {/* Title */}
+      <div className="space-y-2">
+        <div className="h-7 w-48 bg-slate-200 dark:bg-slate-800 rounded-lg"></div>
+        <div className="h-4 w-72 bg-slate-150 dark:bg-slate-850 rounded-lg"></div>
+      </div>
+
+      {/* Metrics Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-24 bg-white/70 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-xl p-4 space-y-3">
+            <div className="h-4 w-20 bg-slate-200 dark:bg-slate-800 rounded"></div>
+            <div className="h-8 w-12 bg-slate-250 dark:bg-slate-800 rounded-lg"></div>
+          </div>
+        ))}
+      </div>
+
+      {/* Charts Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {[1, 2].map((i) => (
+          <div key={i} className="h-80 bg-white/70 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-xl p-4 space-y-3">
+            <div className="h-5 w-32 bg-slate-200 dark:bg-slate-800 rounded"></div>
+            <div className="h-56 w-full bg-slate-100 dark:bg-slate-800/50 rounded-lg"></div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function Statistics() {
   const [data, setData] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -15,9 +47,13 @@ export default function Statistics() {
     getStats().then(setData).finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div className="text-center py-12 text-slate-400">Loading…</div>;
+  if (loading) return <StatsSkeleton />;
   if (!data || (data.total_images as number) === 0)
-    return <div className="text-center py-12 text-slate-400">No data yet. Process images first.</div>;
+    return (
+      <div className="text-center py-16 text-slate-400 bg-white/75 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-2xl p-8 backdrop-blur-md">
+        No data yet. Process images first.
+      </div>
+    );
 
   const metrics = [
     { label: "Total Images", value: data.total_images },
@@ -36,7 +72,7 @@ export default function Statistics() {
       {/* Metric cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {metrics.map((m) => (
-          <div key={m.label} className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+          <div key={m.label} className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">{m.label}</p>
             <p className="text-3xl font-bold text-slate-800 dark:text-slate-100 mt-1">{String(m.value)}</p>
           </div>
@@ -45,7 +81,7 @@ export default function Statistics() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Species distribution */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
           <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Species Distribution</h2>
           <ResponsiveContainer width="100%" height={250}>
             <BarChart data={data.species_distribution as object[]}>
@@ -58,7 +94,7 @@ export default function Statistics() {
         </div>
 
         {/* Day/Night pie */}
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
           <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Day / Night Distribution</h2>
           <ResponsiveContainer width="100%" height={250}>
             <PieChart>
@@ -85,7 +121,7 @@ export default function Statistics() {
 
       {/* Hourly activity patterns */}
       {Array.isArray(data.hourly_distribution) && data.hourly_distribution.length > 0 && (
-        <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
           <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Daily Hourly Activity Pattern (24-Hour Cycle)</h2>
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={data.hourly_distribution as object[]}>
@@ -99,7 +135,7 @@ export default function Statistics() {
       )}
 
       {/* Confidence series */}
-      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 shadow-sm">
+      <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
         <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Detection Confidence Distribution</h2>
         <ResponsiveContainer width="100%" height={200}>
           <LineChart

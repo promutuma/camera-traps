@@ -567,6 +567,7 @@ export default function ReviewQueue() {
   const [tab, setTab] = useState<Tab>("queue");
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [queuePage, setQueuePage] = useState(1);
+  const [showHotkeys, setShowHotkeys] = useState(false);
   const [filterDisagreement, setFilterDisagreement] = useState(false);
 
   const displayedQueue = filterDisagreement
@@ -662,7 +663,14 @@ export default function ReviewQueue() {
             if (displayedQueue.length === 0) {
               return (
                 <div className="space-y-4">
-                  <div className="flex justify-end">
+                  <div className="flex justify-end gap-2">
+                    <button
+                      onClick={() => setShowHotkeys(true)}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm"
+                    >
+                      <span className="material-symbols-outlined text-sm">keyboard</span>
+                      Key Shortcuts
+                    </button>
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm">
                       <input
                         type="checkbox"
@@ -690,19 +698,28 @@ export default function ReviewQueue() {
                   <p className="text-xs text-slate-400 font-medium">
                     {displayedQueue.length} item(s) pending review {filterDisagreement && "(disagreement filter active)"}
                   </p>
-                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm">
-                    <input
-                      type="checkbox"
-                      checked={filterDisagreement}
-                      onChange={(e) => {
-                        setFilterDisagreement(e.target.checked);
-                        setQueuePage(1);
-                        setFocusedIdx(0);
-                      }}
-                      className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
-                    />
-                    Classifier Disagreement Filter
-                  </label>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowHotkeys(true)}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm"
+                    >
+                      <span className="material-symbols-outlined text-sm">keyboard</span>
+                      Key Shortcuts
+                    </button>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 hover:bg-slate-100 transition shadow-sm">
+                      <input
+                        type="checkbox"
+                        checked={filterDisagreement}
+                        onChange={(e) => {
+                          setFilterDisagreement(e.target.checked);
+                          setQueuePage(1);
+                          setFocusedIdx(0);
+                        }}
+                        className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
+                      />
+                      Classifier Disagreement Filter
+                    </label>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
                   {pagedQueue.map((row, i) => {
@@ -746,6 +763,100 @@ export default function ReviewQueue() {
               : <DataTable rows={audit} cols={AUDIT_COLS} />
           )}
         </>
+      )}
+
+      {/* Keyboard Shortcuts Drawer */}
+      <div
+        className={`fixed inset-y-0 right-0 w-80 bg-white/95 backdrop-blur-md border-l border-slate-200 shadow-2xl z-50 transform transition-transform duration-300 ease-out flex flex-col ${
+          showHotkeys ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-emerald-600">keyboard</span>
+            <h3 className="font-bold text-slate-800 text-sm">Keyboard Shortcuts</h3>
+          </div>
+          <button
+            onClick={() => setShowHotkeys(false)}
+            className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition"
+          >
+            <span className="material-symbols-outlined text-lg">close</span>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-5">
+          <div className="space-y-3">
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Navigation</h4>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Next Card</span>
+                <div className="flex gap-1">
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">J</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">→</kbd>
+                </div>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Previous Card</span>
+                <div className="flex gap-1">
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">K</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">←</kbd>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Card Actions</h4>
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Confirm detection</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">A</kbd>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Correct label</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">C</kbd>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Flag for review</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">F</kbd>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Cancel / Close Form</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">Esc</kbd>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Bounding Box Adjustment</h4>
+            <div className="space-y-2.5 text-xs text-slate-600 leading-relaxed bg-orange-50/50 border border-orange-100 rounded-xl p-3">
+              <p className="flex items-start gap-1.5">
+                <span className="text-orange-500 font-bold">1.</span>
+                Click <strong className="font-semibold text-slate-700">✏️ Box</strong> inside any active card to toggle editing.
+              </p>
+              <p className="flex items-start gap-1.5">
+                <span className="text-orange-500 font-bold">2.</span>
+                Click and drag directly on the image to draw a new bounding box.
+              </p>
+              <p className="flex items-start gap-1.5">
+                <span className="text-orange-500 font-bold">3.</span>
+                The new box appears in orange. Press <strong className="font-semibold text-slate-700">Done Box</strong> or save to commit.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 border-t border-slate-100 bg-slate-50/50 text-[10px] text-slate-400 text-center">
+          Shortcuts are disabled when typing in input fields.
+        </div>
+      </div>
+
+      {/* Backdrop overlay */}
+      {showHotkeys && (
+        <div
+          onClick={() => setShowHotkeys(false)}
+          className="fixed inset-0 bg-slate-900/20 backdrop-blur-sm z-40 transition-opacity"
+        />
       )}
     </div>
   );

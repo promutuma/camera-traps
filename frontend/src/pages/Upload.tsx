@@ -587,31 +587,105 @@ export default function Upload() {
           </button>
 
           {/* Progress widget */}
-          {job && (
-            <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-sm rounded-2xl">
-              <div className="flex justify-between items-center text-xs">
-                <span className="font-bold text-slate-700 dark:text-slate-300">
-                  {job.status === "done" ? "Complete" : job.status === "error" ? "Failed" : "Running…"}
-                </span>
-                <span className="font-mono font-bold text-emerald-600 dark:text-emerald-450">{pct}%</span>
+          {job && (() => {
+            const lastEventModel = imageRows.length > 0 && imageRows[imageRows.length - 1].events.length > 0
+              ? imageRows[imageRows.length - 1].events[imageRows[imageRows.length - 1].events.length - 1]?.model
+              : null;
+
+            return (
+              <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-4 space-y-4 shadow-sm rounded-2xl">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="font-bold text-slate-700 dark:text-slate-300">
+                    {job.status === "done" ? "Complete" : job.status === "error" ? "Failed" : "Running…"}
+                  </span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-450">{pct}%</span>
+                </div>
+                <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className={`h-1.5 rounded-full transition-all duration-300 ${
+                      job.status === "error" ? "bg-red-500" : "bg-emerald-500"
+                    }`}
+                    style={{ width: `${job.status === "done" ? 100 : pct}%` }}
+                  />
+                </div>
+
+                {/* Pipeline Stepper */}
+                {job.status === "running" && (
+                  <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-2.5">
+                    <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider">Pipeline Progress</p>
+                    <div className="space-y-2">
+                      {[
+                        { id: "ocr", label: "OCR Date/Time Extraction" },
+                        { id: "detect", label: "MegaDetector Bounding Boxes" },
+                        { id: "classify", label: "BioClip & SpeciesNet Classifiers" },
+                        { id: "fusion", label: "Ensemble Fusion & Database Write" },
+                      ].map((step, sIdx) => {
+                        const isOcr = lastEventModel === "ocr";
+                        const isDetect = lastEventModel != null && (lastEventModel.startsWith("md") || lastEventModel === "megadetector" || lastEventModel === "MDv5a" || lastEventModel === "MDv1000" || lastEventModel === "MD1000-redwood" || lastEventModel === "redwood");
+                        const isClassify = lastEventModel === "bioclip" || lastEventModel === "speciesnet";
+                        const isFusion = lastEventModel === "fusion" || lastEventModel === "fused" || lastEventModel === "ensemble";
+
+                        let active = false;
+                        let done = false;
+
+                        if (job.status === "done") {
+                          done = true;
+                        } else {
+                          if (step.id === "ocr") {
+                            active = isOcr || !lastEventModel; // active by default at start
+                            done = isDetect || isClassify || isFusion;
+                          } else if (step.id === "detect") {
+                            active = isDetect;
+                            done = isClassify || isFusion;
+                          } else if (step.id === "classify") {
+                            active = isClassify;
+                            done = isFusion;
+                          } else if (step.id === "fusion") {
+                            active = isFusion;
+                          }
+                        }
+
+                        return (
+                          <div key={step.id} className="flex items-center gap-2 text-xs">
+                            <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition ${
+                              done
+                                ? "bg-emerald-100 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-450"
+                                : active
+                                ? "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-300 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 animate-pulse"
+                                : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400"
+                            }`}>
+                              {done ? (
+                                <span className="material-symbols-outlined text-[10px] leading-none font-bold">check</span>
+                              ) : (
+                                <span className="text-[9px] font-bold">{sIdx + 1}</span>
+                              )}
+                            </div>
+                            <span className={`font-semibold ${
+                              done
+                                ? "text-slate-400 dark:text-slate-500 line-through decoration-slate-300/40"
+                                : active
+                                ? "text-indigo-600 dark:text-indigo-455 font-bold"
+                                : "text-slate-400 dark:text-slate-500"
+                            }`}>
+                              {step.label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-medium pt-1">
+                  <span>Total: {job.total}</span>
+                  <span>Done: {job.completed}</span>
+                </div>
+                {job.error && (
+                  <p className="text-[10px] text-red-600 font-medium break-all">{job.error}</p>
+                )}
               </div>
-              <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                <div
-                  className={`h-1.5 rounded-full transition-all duration-300 ${
-                    job.status === "error" ? "bg-red-500" : "bg-emerald-500"
-                  }`}
-                  style={{ width: `${job.status === "done" ? 100 : pct}%` }}
-                />
-              </div>
-              <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 font-medium">
-                <span>Total: {job.total}</span>
-                <span>Done: {job.completed}</span>
-              </div>
-              {job.error && (
-                <p className="text-[10px] text-red-600 font-medium break-all">{job.error}</p>
-              )}
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* ── Right: live model output panel ── */}

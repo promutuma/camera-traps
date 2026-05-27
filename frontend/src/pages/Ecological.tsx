@@ -8,6 +8,28 @@ import {
 
 type Row = Record<string, unknown>;
 
+function EcoSkeleton() {
+  return (
+    <div className="space-y-6 animate-pulse">
+      {/* Headline metrics */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[1, 2, 3, 4].map((i) => (
+          <div key={i} className="h-24 bg-white/70 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-xl p-4 space-y-3">
+            <div className="h-4 w-20 bg-slate-200 dark:bg-slate-800 rounded"></div>
+            <div className="h-8 w-12 bg-slate-250 dark:bg-slate-800 rounded-lg"></div>
+          </div>
+        ))}
+      </div>
+
+      {/* Chart card */}
+      <div className="h-72 bg-white/70 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-xl p-4 space-y-3">
+        <div className="h-5 w-32 bg-slate-200 dark:bg-slate-800 rounded"></div>
+        <div className="h-52 w-full bg-slate-100 dark:bg-slate-800/50 rounded-lg"></div>
+      </div>
+    </div>
+  );
+}
+
 export default function Ecological() {
   const config = useConfigStore((s) => s.config);
   const trapNights = config?.trap_nights_default ?? 30;
@@ -64,13 +86,13 @@ export default function Ecological() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Ecological Analytics</h1>
-          <p className="text-slate-500 text-sm mt-1">All indicators derived from Independent Detection Events (IDEs)</p>
+          <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Ecological Analytics</h1>
+          <p className="text-slate-500 dark:text-slate-450 text-sm mt-1">All indicators derived from Independent Detection Events (IDEs)</p>
         </div>
         <button
           onClick={compute}
           disabled={loading}
-          className="px-6 py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white font-semibold rounded-lg"
+          className="px-6 py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white font-semibold rounded-lg shadow-sm transition"
         >
           {loading ? "Computing…" : "Compute IDEs"}
         </button>
@@ -78,11 +100,15 @@ export default function Ecological() {
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 text-sm">{error}</div>}
 
+      {loading && <EcoSkeleton />}
+
       {!computed && !loading && (
-        <div className="text-center py-16 text-slate-400">Click "Compute IDEs" to run the analysis.</div>
+        <div className="text-center py-16 text-slate-400 bg-white/75 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-2xl p-8 backdrop-blur-md">
+          Click "Compute IDEs" to run the analysis.
+        </div>
       )}
 
-      {computed && (
+      {computed && !loading && (
         <div className="space-y-6">
           {/* Headline metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -92,9 +118,9 @@ export default function Ecological() {
               ["Unique Species", new Set(ideSummary.map((r) => r.species)).size],
               ["Stations", new Set(ideSummary.map((r) => r.station_id)).size],
             ].map(([label, val]) => (
-              <div key={String(label)} className="bg-white rounded-xl border border-slate-200 p-4">
-                <p className="text-sm text-slate-500">{label}</p>
-                <p className="text-3xl font-bold text-slate-800 mt-1">{String(val)}</p>
+              <div key={String(label)} className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
+                <p className="text-sm text-slate-500 dark:text-slate-450 font-medium">{label}</p>
+                <p className="text-3xl font-bold text-slate-800 dark:text-slate-100 mt-1">{String(val)}</p>
               </div>
             ))}
           </div>
@@ -107,7 +133,7 @@ export default function Ecological() {
                   <XAxis dataKey="species" tick={{ fontSize: 11 }} />
                   <YAxis />
                   <Tooltip />
-                  <Bar dataKey="count" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="count" fill="#10b981" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </Card>
@@ -129,7 +155,7 @@ export default function Ecological() {
                   <YAxis />
                   <Tooltip />
                   <Legend />
-                  <Line type="monotone" dataKey="count" stroke="#16a34a" strokeWidth={1.5} dot={false} />
+                  <Line type="monotone" dataKey="count" stroke="#10b981" strokeWidth={1.5} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </Card>
@@ -150,7 +176,7 @@ export default function Ecological() {
                   <XAxis dataKey="cumulative_ides" tick={{ fontSize: 10 }} />
                   <YAxis />
                   <Tooltip />
-                  <Line type="monotone" dataKey="cumulative_species" stroke="#2563eb" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="cumulative_species" stroke="#3b82f6" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </Card>
@@ -208,8 +234,8 @@ export default function Ecological() {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <h2 className="font-semibold text-slate-700 mb-3">{title}</h2>
+    <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
+      <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">{title}</h2>
       {children}
     </div>
   );
@@ -219,20 +245,20 @@ function DataTable({ rows, cols }: { rows: Row[]; cols: string[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-sm">
-        <thead className="bg-slate-50">
+        <thead className="bg-slate-50 dark:bg-slate-800/50">
           <tr>
             {cols.map((c) => (
-              <th key={c} className="text-left px-3 py-2 font-medium text-slate-600 capitalize">
+              <th key={c} className="text-left px-3 py-2 font-medium text-slate-600 dark:text-slate-400 capitalize">
                 {c.replace(/_/g, " ")}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
+        <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
           {rows.map((row, i) => (
-            <tr key={i} className="hover:bg-slate-50">
+            <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
               {cols.map((c) => (
-                <td key={c} className="px-3 py-2 text-slate-700">
+                <td key={c} className="px-3 py-2 text-slate-700 dark:text-slate-300">
                   {typeof row[c] === "number" ? (row[c] as number).toFixed(4) : String(row[c] ?? "")}
                 </td>
               ))}
