@@ -67,14 +67,18 @@ function parseSnetLabel(raw: string): { display: string; tooltip: string } {
 
 // ── Small components ──────────────────────────────────────────────────────────
 
+type FileStatus = "pending" | "processing" | "done";
+
 function ThumbnailItem({
   file,
   onRemove,
   disabled,
+  status = "pending",
 }: {
   file: File;
   onRemove: () => void;
   disabled: boolean;
+  status?: FileStatus;
 }) {
   const [preview, setPreview] = useState<string>("");
 
@@ -85,28 +89,48 @@ function ThumbnailItem({
   }, [file]);
 
   return (
-    <div className="flex items-center justify-between p-2 rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/40 hover:bg-slate-100/50 dark:hover:bg-slate-900/70 transition-colors">
+    <div className={`flex items-center justify-between p-2 rounded-xl border transition-colors ${
+      status === "done"
+        ? "border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/30 dark:bg-emerald-950/10"
+        : status === "processing"
+        ? "border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/20 dark:bg-indigo-950/10"
+        : "border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/40 hover:bg-slate-100/50 dark:hover:bg-slate-900/70"
+    }`}>
       <div className="flex items-center gap-3 overflow-hidden">
-        {preview ? (
-          <img
-            src={preview}
-            alt={file.name}
-            className="w-10 h-10 rounded-lg object-cover border border-slate-200 dark:border-slate-800 shrink-0"
-          />
-        ) : (
-          <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
-            <span className="material-symbols-outlined text-slate-400 select-none text-lg">image</span>
-          </div>
-        )}
+        <div className="relative shrink-0">
+          {preview ? (
+            <img
+              src={preview}
+              alt={file.name}
+              className="w-10 h-10 rounded-lg object-cover border border-slate-200 dark:border-slate-800"
+            />
+          ) : (
+            <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+              <span className="material-symbols-outlined text-slate-400 select-none text-lg">image</span>
+            </div>
+          )}
+          {status === "done" && (
+            <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white dark:border-slate-900 flex items-center justify-center">
+              <span className="material-symbols-outlined text-white text-[9px] leading-none select-none">check</span>
+            </div>
+          )}
+          {status === "processing" && (
+            <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-indigo-400 border-2 border-white dark:border-slate-900 flex items-center justify-center">
+              <span className="material-symbols-outlined text-white text-[9px] leading-none animate-spin select-none">sync</span>
+            </div>
+          )}
+        </div>
         <div className="overflow-hidden">
           <p
-            className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[140px]"
+            className="text-[10px] font-semibold text-slate-700 dark:text-slate-300 truncate max-w-[130px]"
             title={file.name}
           >
             {file.name}
           </p>
           <p className="text-[9px] text-slate-400 dark:text-slate-500">
             {(file.size / 1024).toFixed(0)} KB
+            {status === "done" && <span className="ml-1 text-emerald-500 font-semibold">· done</span>}
+            {status === "processing" && <span className="ml-1 text-indigo-400 font-semibold">· analysing…</span>}
           </p>
         </div>
       </div>
@@ -211,9 +235,9 @@ function DetectionCrop({ file, bbox }: { file?: File; bbox?: number[] }) {
       const sw = Math.min(img.naturalWidth - sx, (bw + pad * 2) * img.naturalWidth);
       const sh = Math.min(img.naturalHeight - sy, (bh + pad * 2) * img.naturalHeight);
 
-      canvas.width = 80;
-      canvas.height = 60;
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 80, 60);
+      canvas.width = 100;
+      canvas.height = 75;
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 100, 75);
       if (alive) setReady(true);
     };
     img.src = objUrl;
@@ -226,7 +250,7 @@ function DetectionCrop({ file, bbox }: { file?: File; bbox?: number[] }) {
   if (!file) return null;
 
   return (
-    <div className="shrink-0 relative" style={{ width: 80, height: 60 }}>
+    <div className="shrink-0 relative" style={{ width: 100, height: 75 }}>
       {!ready && (
         <div className="absolute inset-0 rounded-lg bg-slate-100 dark:bg-slate-800 animate-pulse" />
       )}
@@ -235,7 +259,7 @@ function DetectionCrop({ file, bbox }: { file?: File; bbox?: number[] }) {
         className={`rounded-lg border border-slate-200 dark:border-slate-700 object-cover transition-opacity duration-300 ${
           ready ? "opacity-100" : "opacity-0"
         }`}
-        style={{ width: 80, height: 60 }}
+        style={{ width: 100, height: 75 }}
       />
     </div>
   );
@@ -304,6 +328,35 @@ function ImageResultCard({
     detFusion?.detections?.[0]?.bbox ??
     detMDv5a?.detections?.[0]?.bbox ??
     detMDv1000?.detections?.[0]?.bbox;
+
+  // Compact row for empty/non-animal frames
+  if (isEmpty) {
+    const personLabels = [detMDv5a, detMDv1000]
+      .flatMap((e) => e?.detections ?? [])
+      .filter((d) => d.label.toLowerCase() !== "animal")
+      .map((d) => `${d.label} ${d.conf.toFixed(2)}`);
+    const isPersonOrVehicle = personLabels.length > 0;
+    return (
+      <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-800/60 bg-slate-50/40 dark:bg-slate-900/30">
+        <span className={`material-symbols-outlined text-sm select-none shrink-0 ${isPersonOrVehicle ? "text-blue-400" : "text-slate-300 dark:text-slate-600"}`}>
+          {isPersonOrVehicle ? "person" : "hide_image"}
+        </span>
+        <p className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0" title={row.name}>
+          {row.name}
+        </p>
+        <span className="text-[9px] text-slate-400 dark:text-slate-500 italic shrink-0">
+          {isPersonOrVehicle ? personLabels.join(", ") : "empty"}
+        </span>
+        <button
+          onClick={onFlag}
+          title={flagged ? "Remove flag" : "Flag for review"}
+          className={`p-0.5 rounded-full shrink-0 transition-colors cursor-pointer ${flagged ? "text-amber-500" : "text-slate-300 dark:text-slate-600 hover:text-amber-500"}`}
+        >
+          <span className="material-symbols-outlined text-sm select-none leading-none block">{flagged ? "flag" : "outlined_flag"}</span>
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -474,6 +527,7 @@ export default function Upload() {
   const inputRef = useRef<HTMLInputElement>(null);
   const sseRef = useRef<EventSource | null>(null);
   const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resultsScrollRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
   // Poll model status until ready
@@ -666,6 +720,20 @@ export default function Upload() {
       ? Math.round((elapsed / pct) * (100 - pct))
       : null;
 
+  // Per-file status for the file list
+  const fileStatuses = new Map<string, FileStatus>();
+  for (const row of imageRows) {
+    const hasDone = row.events.some((e) => e.model === "Result");
+    fileStatuses.set(row.name, hasDone ? "done" : "processing");
+  }
+
+  // Auto-scroll live results to bottom when new cards appear
+  useEffect(() => {
+    if (resultsScrollRef.current) {
+      resultsScrollRef.current.scrollTop = resultsScrollRef.current.scrollHeight;
+    }
+  }, [imageRows.length]);
+
   const uploadStatusLabel = () => {
     if (uploadPhase === "uploading") return "Uploading…";
     if (uploadPhase === "ready") return `${files.length} file(s) ready`;
@@ -822,6 +890,7 @@ export default function Upload() {
                     file={f}
                     onRemove={() => removeFile(i)}
                     disabled={processing}
+                    status={fileStatuses.get(f.name) ?? "pending"}
                   />
                 ))}
               </div>
@@ -884,7 +953,7 @@ export default function Upload() {
                     <span className="font-mono text-slate-400">
                       {fmtTime(elapsed)}
                       {etaSecs != null && (
-                        <span className="text-slate-300 dark:text-slate-600">
+                        <span className="text-slate-400 dark:text-slate-400">
                           {" "}/ ~{fmtTime(etaSecs)} left
                         </span>
                       )}
@@ -1093,7 +1162,7 @@ export default function Upload() {
             </div>
 
             {/* Scrollable card grid */}
-            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+            <div ref={resultsScrollRef} className="flex-1 overflow-y-auto custom-scrollbar p-4">
               {imageRows.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-slate-400 dark:text-slate-500 gap-3">
                   <span className="material-symbols-outlined text-5xl select-none">analytics</span>

@@ -451,15 +451,15 @@ function Lightbox({
       onClick={onClose}
     >
       <div
-        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-[92vw] w-full overflow-hidden flex flex-col max-h-[92vh]"
+        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-[90vw] max-w-6xl overflow-hidden flex flex-col max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Main content row: image + details ── */}
-        <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+        <div className="flex flex-row flex-1 min-h-0 overflow-hidden">
 
         {/* ── Image panel ── */}
         <div
-          className="md:w-[68%] bg-slate-955 flex items-center justify-center relative min-h-[400px] md:min-h-[580px] overflow-hidden group/image select-none"
+          className="flex-1 min-w-0 bg-slate-950 flex items-center justify-center relative overflow-hidden group/image select-none"
           onWheel={handleWheel}
         >
           {/* Zoom controls overlay */}
@@ -584,7 +584,7 @@ function Lightbox({
         </div>
 
         {/* ── Details panel ── */}
-        <div className="md:w-[32%] p-5 flex flex-col gap-4 overflow-y-auto dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+        <div className="w-80 shrink-0 flex flex-col gap-3 overflow-y-auto border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 p-4">
           <div className="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
             <p className="font-bold text-slate-800 dark:text-slate-100 text-sm break-all leading-snug">{filename}</p>
             <button onClick={onClose} className="shrink-0 text-slate-450 hover:text-slate-700 dark:hover:text-slate-300 text-xl leading-none mt-0.5 cursor-pointer">✕</button>
@@ -814,8 +814,6 @@ function Lightbox({
         </div>
       </div>
 
-        </div>{/* end main content row */}
-
       {/* ── Filmstrip ── */}
       {groups.length > 1 && (
         <div
@@ -855,6 +853,7 @@ function Lightbox({
           })}
         </div>
       )}
+      </div>
     </div>
   );
 }

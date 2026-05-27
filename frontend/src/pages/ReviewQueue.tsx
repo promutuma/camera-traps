@@ -379,28 +379,46 @@ function DetailSidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
-        <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2">
-          <div className="flex justify-between">
-            <span className="text-slate-400">Classified Species</span>
-            <span className="font-bold text-slate-700">{species}</span>
+        {/* Metadata */}
+        <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2.5">
+          <div>
+            <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Classified Species</p>
+            <p className="font-bold text-slate-800 text-sm">{species}</p>
           </div>
-          <div className="flex justify-between items-center">
-            <span className="text-slate-400">Confidence</span>
-            <span className="font-semibold text-slate-700">{Math.round(conf * 100)}%</span>
+          <div>
+            <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-1">Confidence</p>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className={`h-1.5 rounded-full transition-all ${conf >= 0.7 ? "bg-emerald-500" : conf >= 0.4 ? "bg-amber-400" : "bg-red-400"}`}
+                  style={{ width: `${Math.round(conf * 100)}%` }}
+                />
+              </div>
+              <span className={`font-bold text-xs w-8 text-right shrink-0 ${conf >= 0.7 ? "text-emerald-600" : conf >= 0.4 ? "text-amber-500" : "text-red-500"}`}>
+                {Math.round(conf * 100)}%
+              </span>
+            </div>
           </div>
           {row.capture_date != null && (
-            <div className="flex justify-between">
-              <span className="text-slate-400">Date / Time</span>
-              <span className="font-medium text-slate-600">
+            <div>
+              <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Date / Time</p>
+              <p className="font-medium text-slate-600 text-[11px]">
                 {String(row.capture_date)} {String(row.capture_time ?? "")}
-              </span>
+              </p>
+            </div>
+          )}
+          {row.station_id != null && String(row.station_id) && (
+            <div>
+              <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Station</p>
+              <p className="font-medium text-slate-600 text-[11px]">{String(row.station_id)}</p>
             </div>
           )}
         </div>
 
-        <div className="space-y-2">
+        {/* Model Performance */}
+        <div className="space-y-1.5">
           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Performance</span>
-          <div className="border border-slate-100 rounded-xl p-3 space-y-2.5 bg-slate-50/30">
+          <div className="border border-slate-100 rounded-xl p-3 space-y-2 bg-slate-50/30">
             <ModelBreakdown
               method={String(row.detection_method ?? "")}
               bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
@@ -408,35 +426,95 @@ function DetailSidebar({
               agreement={row.agreement as string | null}
               detected={species}
             />
+            {/* BioClip top result */}
+            {(() => {
+              let bd: Record<string, any> | null = null;
+              try {
+                if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown as string);
+                else if (row.model_breakdown) bd = row.model_breakdown as Record<string, any>;
+              } catch {}
+              if (!bd) return null;
+              const bcTop: [string, number][] = (bd.BioClip ?? []).slice(0, 1);
+              const snTop: [string, number][] = (bd.SpeciesNet ?? []).slice(0, 1);
+              if (!bcTop.length && !snTop.length) return null;
+              return (
+                <div className="space-y-1 pt-1 border-t border-slate-100">
+                  {bcTop.map(([s, c], i) => (
+                    <div key={`bc-${i}`} className="flex items-center justify-between text-[10px]">
+                      <span className="text-slate-400">BioClip top</span>
+                      <span className="font-semibold text-violet-700 truncate max-w-[120px]">{s} <span className="text-slate-400 font-normal">{Math.round(c * 100)}%</span></span>
+                    </div>
+                  ))}
+                  {snTop.map(([s, c], i) => {
+                    let label = String(s);
+                    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
+                    return (
+                      <div key={`sn-${i}`} className="flex items-center justify-between text-[10px]">
+                        <span className="text-slate-400">SpeciesNet top</span>
+                        <span className="font-semibold text-teal-700 truncate max-w-[120px]">{label} <span className="text-slate-400 font-normal">{Math.round(c * 100)}%</span></span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
           </div>
         </div>
 
-        <div className="pt-2 border-t border-slate-100">
+        {/* Model Suggestions (candidates) — visible in idle mode */}
+        {mode === "idle" && (() => {
+          const candidates = getCandidates(row);
+          if (candidates.length === 0) return null;
+          return (
+            <div className="space-y-1.5">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Suggestions</span>
+              <div className="border border-slate-100 rounded-xl overflow-hidden bg-white">
+                {candidates.map((c, ci) => (
+                  <div key={ci} className="flex items-center gap-2 px-2.5 py-1.5 border-b last:border-b-0 border-slate-100 text-[10px]">
+                    <span className="truncate flex-1 font-medium text-slate-700">{c.label}</span>
+                    <div className="w-12 h-1 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                      <div className="h-1 bg-teal-400 rounded-full" style={{ width: `${Math.round(c.conf * 100)}%` }} />
+                    </div>
+                    <span className="font-mono text-slate-400 shrink-0 w-6 text-right">{Math.round(c.conf * 100)}%</span>
+                    <span className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${c.source === "BioClip" ? "bg-violet-100 text-violet-600" : "bg-teal-100 text-teal-600"}`}>
+                      {c.source === "BioClip" ? "BC" : "SN"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+
+        <div className="pt-1 border-t border-slate-100">
           {mode === "idle" ? (
             <div className="space-y-2">
               <button
                 onClick={() => setMode("confirm-note")}
                 disabled={busy}
-                className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-sm">check_circle</span>
-                Confirm Detection
+                <span className="flex-1">Confirm Detection</span>
+                <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">A</kbd>
               </button>
               <button
                 onClick={() => setMode("correct")}
                 disabled={busy}
-                className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-sm">edit</span>
-                Correct Label / Box
+                <span className="flex-1">Correct Label / Box</span>
+                <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">C</kbd>
               </button>
               <button
                 onClick={() => setMode("flag-note")}
                 disabled={busy}
-                className="w-full flex items-center justify-center gap-1.5 py-2.5 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-sm">flag</span>
-                Flag For Review
+                <span className="flex-1">Flag For Review</span>
+                <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">F</kbd>
               </button>
             </div>
           ) : (
@@ -962,6 +1040,25 @@ export default function ReviewQueue() {
                         setImgNatural={setImgNatural}
                       />
                     )}
+                    {/* Prev / Next navigation arrows */}
+                    {focusedIdx > 0 && (
+                      <button
+                        onClick={() => { setFocusedIdx(i => i - 1); resetItemActionState(); }}
+                        className="absolute left-6 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-emerald-600/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-xl transition opacity-0 group-hover:opacity-100 cursor-pointer shadow-lg border border-white/10 z-10"
+                        title="Previous (K / ↑)"
+                      >‹</button>
+                    )}
+                    {focusedIdx < displayedQueue.length - 1 && (
+                      <button
+                        onClick={() => { setFocusedIdx(i => i + 1); resetItemActionState(); }}
+                        className="absolute right-6 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-emerald-600/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-xl transition opacity-0 group-hover:opacity-100 cursor-pointer shadow-lg border border-white/10 z-10"
+                        title="Next (J / ↓)"
+                      >›</button>
+                    )}
+                    {/* Item counter */}
+                    <div className="absolute bottom-6 right-6 text-xs text-white/40 font-mono select-none opacity-0 group-hover:opacity-100 transition">
+                      {focusedIdx + 1} / {displayedQueue.length}
+                    </div>
                   </div>
 
                   {currentItem && (
