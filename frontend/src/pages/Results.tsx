@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { getResults, updateResult, exportExcel, exportCsv, storedImageUrl } from "../api/client";
+import { getResults, updateResult, exportExcel, exportCsv, storedImageUrl, confirmDetection, flagDetection } from "../api/client";
 
 type Row = Record<string, unknown>;
 type SortDir = "asc" | "desc" | null;
@@ -24,6 +24,38 @@ function confColor(v: number): string {
   if (v >= 0.7) return "bg-green-500";
   if (v >= 0.4) return "bg-amber-400";
   return "bg-red-400";
+}
+
+/** Hex color for SVG bounding boxes, keyed by confidence. */
+function confBoxColor(conf: number): string {
+  if (conf >= 0.7) return "#22c55e";
+  if (conf >= 0.4) return "#f59e0b";
+  return "#ef4444";
+}
+
+/** Extract ranked species candidates from the model_breakdown JSON field. */
+function getCandidates(row: Row): { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] {
+  let bd: Record<string, any> | null = null;
+  try {
+    if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown);
+    else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
+  } catch {}
+  if (!bd) return [];
+
+  const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
+  const seen = new Set<string>();
+
+  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
+    const key = String(s).toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
+  }
+  for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
+    let label = String(s);
+    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
+    const key = label.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
+  }
+  return out;
 }
 
 function DayNightBadge({ value }: { value: unknown }) {
@@ -290,6 +322,8 @@ function Lightbox({
   onNavigate,
   onSave,
   onTaxonClick,
+  onVerify,
+  onFlag,
 }: {
   group: ImageGroup;
   groups: ImageGroup[];
@@ -297,6 +331,8 @@ function Lightbox({
   onNavigate: (g: ImageGroup) => void;
   onSave: (id: number, field: string, value: string) => Promise<void>;
   onTaxonClick?: (taxon: string) => void;
+  onVerify?: (detId: number) => Promise<void>;
+  onFlag?: (detId: number) => Promise<void>;
 }) {
   const { filename, rows } = group;
   const imgUrl = storedImageUrl(filename);
@@ -307,6 +343,9 @@ function Lightbox({
   const [editVal, setEditVal] = useState("");
   const [saving, setSaving] = useState(false);
   const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
+  const [actionBusy, setActionBusy] = useState<"verify" | "flag" | null>(null);
+
+  const filmstripRef = useRef<HTMLDivElement>(null);
 
   // Zoom / Pan / Opacity states
   const [scale, setScale] = useState(1);
@@ -317,6 +356,13 @@ function Lightbox({
   const [showCheatsheet, setShowCheatsheet] = useState(true);
 
   const idx = groups.findIndex((g) => g.filename === filename);
+
+  // Scroll filmstrip to keep selected thumbnail in view
+  useEffect(() => {
+    if (!filmstripRef.current) return;
+    const el = filmstripRef.current.querySelector("[data-active]") as HTMLElement | null;
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [idx]);
   const hasPrev = idx > 0;
   const hasNext = idx < groups.length - 1;
 
@@ -403,12 +449,15 @@ function Lightbox({
       onClick={onClose}
     >
       <div
-        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-[92vw] w-full overflow-hidden flex flex-col md:flex-row max-h-[92vh]"
+        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-[92vw] w-full overflow-hidden flex flex-col max-h-[92vh]"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* ── Main content row: image + details ── */}
+        <div className="flex flex-col md:flex-row flex-1 min-h-0 overflow-hidden">
+
         {/* ── Image panel ── */}
-        <div 
-          className="md:w-[68%] bg-slate-955 flex items-center justify-center relative min-h-[400px] md:min-h-[620px] overflow-hidden group/image select-none"
+        <div
+          className="md:w-[68%] bg-slate-955 flex items-center justify-center relative min-h-[400px] md:min-h-[580px] overflow-hidden group/image select-none"
           onWheel={handleWheel}
         >
           {/* Zoom controls overlay */}
@@ -499,12 +548,13 @@ function Lightbox({
                 {rows.map((row, i) => {
                   const bbox = parseBbox(row.bbox);
                   if (!bbox) return null;
-                  const color = BOX_COLORS[i % BOX_COLORS.length];
+                  const rowConf = typeof row.detection_confidence === "number" ? row.detection_confidence as number : 0;
+                  // Multi-animal frames: use distinct per-index colours so boxes are distinguishable.
+                  // Single-animal: confidence-coded colour (green/amber/red).
+                  const color = rows.length > 1 ? BOX_COLORS[i % BOX_COLORS.length] : confBoxColor(rowConf);
                   const sw = Math.max(2, imgNatural.w / 400);
                   const fs = Math.max(14, imgNatural.w / 55);
-                  const conf = typeof row.detection_confidence === "number"
-                    ? ` (${(row.detection_confidence as number).toFixed(2)})`
-                    : "";
+                  const conf = rowConf > 0 ? ` (${rowConf.toFixed(2)})` : "";
                   return (
                     <g key={i}>
                       <rect
@@ -563,64 +613,132 @@ function Lightbox({
               Detections ({rows.length})
             </p>
             {rows.map((row, i) => {
-              const color = BOX_COLORS[i % BOX_COLORS.length];
-              const conf = typeof row.detection_confidence === "number"
-                ? Math.round((row.detection_confidence as number) * 100)
-                : null;
+              const rawConf = typeof row.detection_confidence === "number" ? row.detection_confidence as number : 0;
+              const conf = rawConf > 0 ? Math.round(rawConf * 100) : null;
+              const boxColor = rows.length > 1 ? BOX_COLORS[i % BOX_COLORS.length] : confBoxColor(rawConf);
               const isEditingDet = detEdit?.idx === i;
+              const candidates = getCandidates(row);
+
               return (
-                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-955/20 p-3 space-y-1.5">
-                  {/* Species row */}
-                  <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-sm shrink-0 shadow-sm" style={{ background: color }} />
-                    {isEditingDet ? (
-                      <>
+                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-955/20 p-3 space-y-2">
+                  {isEditingDet ? (
+                    /* ── Candidate dropdown + manual override ── */
+                    <div className="space-y-2.5">
+                      {candidates.length > 0 && (
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Model candidates</p>
+                          <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                            {candidates.map((c, ci) => (
+                              <button
+                                key={ci}
+                                onClick={() => setDetEdit({ idx: i, val: c.label })}
+                                className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-left transition cursor-pointer ${
+                                  detEdit?.val === c.label
+                                    ? "bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-semibold border border-emerald-200 dark:border-emerald-800"
+                                    : "bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 text-slate-700 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
+                                }`}
+                              >
+                                <span className="truncate">{c.label}</span>
+                                <div className="flex items-center gap-1 shrink-0 ml-2">
+                                  <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
+                                  <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
+                                    c.source === "BioClip"
+                                      ? "bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400"
+                                      : "bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400"
+                                  }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Manual override</p>
                         <input
-                          autoFocus
-                          value={detEdit.val}
+                          autoFocus={candidates.length === 0}
+                          value={detEdit!.val}
                           onChange={(e) => setDetEdit({ idx: i, val: e.target.value })}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") commitDetEdit();
-                            if (e.key === "Escape") setDetEdit(null);
-                          }}
-                          className="flex-1 border border-emerald-500 rounded px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white"
+                          onKeyDown={(e) => { if (e.key === "Enter") commitDetEdit(); if (e.key === "Escape") setDetEdit(null); }}
+                          placeholder="Type species name…"
+                          className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-slate-800 dark:text-white placeholder-slate-400"
                         />
-                        <button onClick={commitDetEdit} disabled={saving}
-                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded font-semibold hover:shadow transition disabled:opacity-50 shrink-0 cursor-pointer">
-                          {saving ? "…" : "✓"}
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button onClick={commitDetEdit} disabled={saving || !detEdit?.val.trim()}
+                          className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg font-semibold disabled:opacity-50 cursor-pointer transition">
+                          {saving ? "Saving…" : "Save"}
                         </button>
                         <button onClick={() => setDetEdit(null)}
-                          className="text-slate-350 hover:text-slate-650 shrink-0 text-sm cursor-pointer px-1">✕</button>
-                      </>
-                    ) : (
-                      <>
+                          className="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-xs rounded-lg cursor-pointer hover:bg-slate-200 dark:hover:bg-slate-700 transition">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      {/* Species + confidence */}
+                      <div className="flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-sm shrink-0 shadow-sm" style={{ background: boxColor }} />
                         <span
                           className="font-bold text-slate-850 dark:text-slate-200 text-sm flex-1 truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
-                          title="Click to edit species"
+                          title="Click to correct species"
                           onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
                         >
                           {String(row.detected_animal ?? "Unknown")}
                         </span>
                         {conf !== null && (
-                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white font-bold shrink-0 ${confColor(conf / 100)}`}>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white font-bold shrink-0"
+                            style={{ background: boxColor }}>
                             {conf}%
                           </span>
                         )}
-                      </>
-                    )}
-                  </div>
+                      </div>
 
-                  {/* Model breakdown */}
-                  {!isEditingDet && (
-                    <ModelBreakdown
-                      method={String(row.detection_method ?? "")}
-                      bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
-                      speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
-                      agreement={row.agreement as string | null}
-                      detected={String(row.detected_animal ?? "")}
-                      modelBreakdown={row.model_breakdown}
-                      onTaxonClick={onTaxonClick}
-                    />
+                      {/* Model breakdown */}
+                      <ModelBreakdown
+                        method={String(row.detection_method ?? "")}
+                        bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
+                        speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
+                        agreement={row.agreement as string | null}
+                        detected={String(row.detected_animal ?? "")}
+                        modelBreakdown={row.model_breakdown}
+                        onTaxonClick={onTaxonClick}
+                      />
+
+                      {/* Verify / Flag quick actions */}
+                      {(onVerify || onFlag) && (
+                        <div className="flex gap-1.5 pt-1.5 border-t border-slate-100 dark:border-slate-800">
+                          {onVerify && (
+                            <button
+                              onClick={async () => {
+                                setActionBusy("verify");
+                                try { await onVerify(Number(row.detection_id ?? row.id ?? 0)); }
+                                finally { setActionBusy(null); }
+                              }}
+                              disabled={actionBusy !== null}
+                              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-semibold rounded-lg transition disabled:opacity-50 cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-xs select-none">check_circle</span>
+                              {actionBusy === "verify" ? "Verifying…" : "Verify"}
+                            </button>
+                          )}
+                          {onFlag && (
+                            <button
+                              onClick={async () => {
+                                setActionBusy("flag");
+                                try { await onFlag(Number(row.detection_id ?? row.id ?? 0)); }
+                                finally { setActionBusy(null); }
+                              }}
+                              disabled={actionBusy !== null}
+                              className="flex-1 flex items-center justify-center gap-1 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-[10px] font-semibold rounded-lg transition disabled:opacity-50 cursor-pointer"
+                            >
+                              <span className="material-symbols-outlined text-xs select-none">flag</span>
+                              {actionBusy === "flag" ? "Flagging…" : "Flag"}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );
@@ -638,19 +756,33 @@ function Lightbox({
             ] as [string, string, boolean][]).map(([label, field, editable]) => {
               const isEditing = editField === field;
               const val = primary[field];
+
+              // Notes: always-visible textarea, saves on blur
+              if (field === "user_notes") {
+                return (
+                  <div key={field} className="px-1">
+                    <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">{label}</p>
+                    <textarea
+                      value={isEditing ? editVal : String(val ?? "")}
+                      onFocus={() => { setEditField(field); setEditVal(String(val ?? "")); }}
+                      onChange={(e) => setEditVal(e.target.value)}
+                      onBlur={() => { if (editField === "user_notes") commitEdit(); }}
+                      rows={2}
+                      placeholder="Add notes…"
+                      className="w-full border border-slate-200 dark:border-slate-700 rounded-xl px-2.5 py-1.5 text-xs resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900/60 text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-600"
+                    />
+                  </div>
+                );
+              }
+
               return (
                 <div key={field} className="px-1">
                   <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">{label}</p>
                   {isEditing ? (
                     <div className="flex gap-1.5">
-                      {field === "user_notes" ? (
-                        <textarea autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)} rows={3}
-                          className="flex-1 border border-emerald-500 dark:border-emerald-700 rounded-xl px-2.5 py-1.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white" />
-                      ) : (
-                        <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
-                          onKeyDown={(e) => e.key === "Enter" && commitEdit()}
-                          className="flex-1 border border-emerald-500 dark:border-emerald-700 rounded-xl px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white" />
-                      )}
+                      <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && commitEdit()}
+                        className="flex-1 border border-emerald-500 dark:border-emerald-700 rounded-xl px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white" />
                       <div className="flex flex-col gap-1.5">
                         <button onClick={commitEdit} disabled={saving}
                           className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg font-semibold hover:shadow transition disabled:opacity-50 cursor-pointer">
@@ -679,6 +811,48 @@ function Lightbox({
           </p>
         </div>
       </div>
+
+        </div>{/* end main content row */}
+
+      {/* ── Filmstrip ── */}
+      {groups.length > 1 && (
+        <div
+          ref={filmstripRef}
+          className="border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/80 px-3 py-2 flex gap-1.5 overflow-x-auto shrink-0"
+          style={{ scrollbarWidth: "thin" }}
+        >
+          {groups.map((g, gIdx) => {
+            const isActive = g.filename === filename;
+            const gPrimary = g.rows[0];
+            const gConf = typeof gPrimary.detection_confidence === "number" ? gPrimary.detection_confidence as number : 0;
+            return (
+              <button
+                key={g.filename}
+                data-active={isActive ? "true" : undefined}
+                onClick={() => onNavigate(g)}
+                title={g.filename}
+                className={`shrink-0 relative rounded-lg overflow-hidden transition-all cursor-pointer border-2 ${
+                  isActive ? "border-emerald-500 opacity-100" : "border-transparent opacity-50 hover:opacity-90"
+                }`}
+                style={{ width: 64, height: 48 }}
+              >
+                <img
+                  src={storedImageUrl(g.filename)}
+                  alt=""
+                  className="w-full h-full object-cover"
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                />
+                <div className={`absolute bottom-0 left-0 right-0 h-1 ${
+                  gConf >= 0.7 ? "bg-emerald-500" : gConf >= 0.4 ? "bg-amber-400" : "bg-red-400"
+                }`} />
+                <span className="absolute top-0.5 right-0.5 text-[8px] font-mono text-white/80 bg-black/50 px-0.5 rounded leading-tight">
+                  {gIdx + 1}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -971,6 +1145,14 @@ export default function Results() {
           onNavigate={setLightbox}
           onSave={async (id, field, value) => { await saveEdit(id, field, value); }}
           onTaxonClick={setSelectedTaxon}
+          onVerify={async (detId) => {
+            await confirmDetection(detId, { reviewer_id: "viewer", action: "accept" });
+            load();
+          }}
+          onFlag={async (detId) => {
+            await flagDetection(detId, { reviewer_id: "viewer", notes: "" });
+            load();
+          }}
         />
       )}
 

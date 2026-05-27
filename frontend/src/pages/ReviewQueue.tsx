@@ -16,7 +16,30 @@ function parseBbox(raw: unknown): [number, number, number, number] | null {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/** Extract ranked species candidates from the model_breakdown JSON for the correction dropdown. */
+function getCandidates(row: Row): { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] {
+  let bd: Record<string, any> | null = null;
+  try {
+    if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown);
+    else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
+  } catch {}
+  if (!bd) return [];
 
+  const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
+  const seen = new Set<string>();
+
+  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
+    const key = String(s).toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
+  }
+  for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
+    let label = String(s);
+    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
+    const key = label.toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
+  }
+  return out;
+}
 
 // ── Model breakdown components ────────────────────────────────────────────────
 
@@ -456,49 +479,89 @@ function DetailSidebar({
                 </>
               )}
 
-              {mode === "correct" && (
-                <>
-                  <p className="font-bold text-blue-800 text-[11px] uppercase tracking-wider">Correct Detections</p>
-                  <input
-                    autoFocus
-                    placeholder="Correct label (e.g. Lion)"
-                    value={correctLabel}
-                    onChange={(e) => setCorrectLabel(e.target.value)}
-                    onKeyDown={(e) => e.key === "Escape" && setMode("idle")}
-                    className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-                  />
-                  <input
-                    placeholder="Notes (optional)"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
-                      if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
-                    }}
-                    className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-                  />
-                  <div className="flex gap-2">
-                    <button
-                      disabled={busy || !correctLabel.trim()}
-                      onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
-                      className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition"
-                    >
-                      {busy ? "Saving…" : "Save"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsDrawing(!isDrawing)}
-                      className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition ${
-                        isDrawing
-                          ? "bg-orange-100 text-orange-700 border-orange-200"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-                      }`}
-                    >
-                      {isDrawing ? "Done Box" : "✏️ Box"}
-                    </button>
-                  </div>
-                </>
-              )}
+              {mode === "correct" && (() => {
+                const candidates = getCandidates(row);
+                return (
+                  <>
+                    <p className="font-bold text-blue-800 text-[11px] uppercase tracking-wider">Correct Species</p>
+
+                    {/* Model candidates */}
+                    {candidates.length > 0 && (
+                      <div className="space-y-1">
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Model candidates — click to select</p>
+                        <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                          {candidates.map((c, ci) => (
+                            <button
+                              key={ci}
+                              type="button"
+                              onClick={() => setCorrectLabel(c.label)}
+                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-left transition cursor-pointer ${
+                                correctLabel === c.label
+                                  ? "bg-blue-100 text-blue-700 font-semibold border border-blue-200"
+                                  : "bg-white hover:bg-blue-50 text-slate-700 border border-slate-100"
+                              }`}
+                            >
+                              <span className="truncate">{c.label}</span>
+                              <div className="flex items-center gap-1 shrink-0 ml-2">
+                                <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
+                                <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
+                                  c.source === "BioClip"
+                                    ? "bg-violet-100 text-violet-600"
+                                    : "bg-teal-100 text-teal-600"
+                                }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        {candidates.length > 0 ? "Or type manually" : "Enter correct label"}
+                      </p>
+                      <input
+                        autoFocus={candidates.length === 0}
+                        placeholder="e.g. Lion"
+                        value={correctLabel}
+                        onChange={(e) => setCorrectLabel(e.target.value)}
+                        onKeyDown={(e) => e.key === "Escape" && setMode("idle")}
+                        className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                      />
+                    </div>
+                    <input
+                      placeholder="Notes (optional)"
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
+                        if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
+                      }}
+                      className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        disabled={busy || !correctLabel.trim()}
+                        onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
+                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition"
+                      >
+                        {busy ? "Saving…" : "Save Correction"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsDrawing(!isDrawing)}
+                        className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition ${
+                          isDrawing
+                            ? "bg-orange-100 text-orange-700 border-orange-200"
+                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                        }`}
+                      >
+                        {isDrawing ? "Done Box" : "✏️ Box"}
+                      </button>
+                    </div>
+                  </>
+                );
+              })()}
 
               {mode === "flag-note" && (
                 <>
@@ -617,6 +680,11 @@ export default function ReviewQueue() {
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [filterDisagreement, setFilterDisagreement] = useState(false);
+  const [sortConf, setSortConf] = useState<"asc" | "desc">("asc"); // asc = worst first
+
+  // Session progress tracking
+  const initialQueueSize = useRef<number | null>(null);
+  const [sessionReviewed, setSessionReviewed] = useState(0);
 
   const [mode, setMode] = useState<"idle" | "correct" | "confirm-note" | "flag-note">("idle");
   const [correctLabel, setCorrectLabel] = useState("");
@@ -638,14 +706,23 @@ export default function ReviewQueue() {
     setImgNatural(null);
   }, []);
 
-  const displayedQueue = filterDisagreement
-    ? queue.filter((row) => row.agreement === "Low" || row.agreement === "Medium")
-    : queue;
+  const sortedQueue = [...queue].sort((a, b) => {
+    const ca = typeof a.detection_confidence === "number" ? a.detection_confidence as number : 0;
+    const cb = typeof b.detection_confidence === "number" ? b.detection_confidence as number : 0;
+    return sortConf === "asc" ? ca - cb : cb - ca;
+  });
 
-  const load = async () => {
+  const displayedQueue = filterDisagreement
+    ? sortedQueue.filter((row) => row.agreement === "Low" || row.agreement === "Medium")
+    : sortedQueue;
+
+  const load = async (isAction = false) => {
     setLoading(true);
     const [q, l, a] = await Promise.all([getReviewQueue(), getReviewLog(), getPrivacyAudit()]);
-    setQueue(Array.isArray(q) ? q : []);
+    const newQueue = Array.isArray(q) ? q : [];
+    if (initialQueueSize.current === null) initialQueueSize.current = newQueue.length;
+    if (isAction) setSessionReviewed((n) => n + 1);
+    setQueue(newQueue);
     setLog(Array.isArray(l) ? l : []);
     setAudit(Array.isArray(a) ? a : []);
     setLoading(false);
@@ -680,13 +757,28 @@ export default function ReviewQueue() {
   return (
     <div className="flex flex-col h-[calc(100vh-6.5rem)] -mt-4 -mx-6 overflow-hidden">
       <div className="px-6 pt-4 pb-2 bg-white border-b border-slate-200 space-y-4 shrink-0">
-        <div className="flex items-start justify-between">
-          <div>
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
             <h1 className="text-xl font-bold text-slate-800">Review Queue</h1>
             <p className="text-slate-500 text-xs mt-0.5">
               Detections with confidence below <span className="font-mono font-semibold text-slate-700">{threshold}</span> need manual review.
               Reviewer: <span className="font-semibold text-slate-700">{reviewerId}</span>.
             </p>
+            {/* Session progress bar */}
+            {tab === "queue" && (initialQueueSize.current ?? 0) > 0 && (
+              <div className="mt-2 flex items-center gap-3">
+                <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden max-w-[200px]">
+                  <div
+                    className="h-1.5 bg-emerald-500 rounded-full transition-all duration-500"
+                    style={{ width: `${Math.round((sessionReviewed / (initialQueueSize.current ?? 1)) * 100)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] font-semibold text-slate-500">
+                  {sessionReviewed} / {initialQueueSize.current} reviewed this session
+                  {queue.length > 0 && <span className="text-slate-400"> · {queue.length} remaining</span>}
+                </span>
+              </div>
+            )}
           </div>
           {tab === "queue" && queue.length > 0 && (
             <p className="text-[10px] text-slate-400 font-mono bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 shrink-0">
@@ -715,6 +807,15 @@ export default function ReviewQueue() {
 
           {tab === "queue" && queue.length > 0 && (
             <div className="flex items-center gap-2">
+              {/* Sort control */}
+              <button
+                onClick={() => { setSortConf(s => s === "asc" ? "desc" : "asc"); setFocusedIdx(0); resetItemActionState(); }}
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm"
+                title={sortConf === "asc" ? "Sorted: worst confidence first" : "Sorted: best confidence first"}
+              >
+                <span className="material-symbols-outlined text-xs">sort</span>
+                Conf {sortConf === "asc" ? "↑ Worst first" : "↓ Best first"}
+              </button>
               <button
                 onClick={() => setShowHotkeys(true)}
                 className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm"
@@ -783,6 +884,16 @@ export default function ReviewQueue() {
                         const species = String(row.detected_animal ?? "Unknown");
                         const filename = String(row.filename ?? "");
                         const itemConf = typeof row.detection_confidence === "number" ? row.detection_confidence : parseFloat(String(row.detection_confidence ?? "0"));
+                        // Agreement-keyed left border: red=Low, amber=Medium, emerald=High, or selected=bright emerald
+                        const borderCls = isSelected
+                          ? "border-l-4 border-emerald-500"
+                          : row.agreement === "Low"
+                          ? "border-l-4 border-red-400"
+                          : row.agreement === "Medium"
+                          ? "border-l-4 border-amber-400"
+                          : row.agreement === "High"
+                          ? "border-l-4 border-emerald-300"
+                          : "border-l-4 border-slate-200";
                         return (
                           <button
                             key={Number(row.id ?? row.image_id ?? idx)}
@@ -791,8 +902,8 @@ export default function ReviewQueue() {
                               resetItemActionState();
                             }}
                             className={`w-full text-left p-3 flex gap-3 transition-colors outline-none ${
-                              isSelected ? "bg-emerald-50/80 border-l-4 border-emerald-500" : "hover:bg-slate-50 border-l-4 border-transparent"
-                            }`}
+                              isSelected ? "bg-emerald-50/80" : "hover:bg-slate-50"
+                            } ${borderCls}`}
                           >
                             <div className="w-14 h-14 bg-slate-100 rounded border border-slate-200 overflow-hidden shrink-0 relative">
                               <img
@@ -803,19 +914,29 @@ export default function ReviewQueue() {
                                   (e.target as HTMLElement).style.display = "none";
                                 }}
                               />
+                              {/* Confidence dot on thumbnail */}
+                              <span className={`absolute bottom-0.5 right-0.5 w-2 h-2 rounded-full border border-white ${
+                                itemConf >= 0.7 ? "bg-emerald-500" : itemConf >= 0.4 ? "bg-amber-400" : "bg-red-400"
+                              }`} />
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
                               <div className="min-w-0">
-                                <p className="font-semibold text-xs text-slate-800 truncate">{species}</p>
+                                <p className={`font-bold truncate ${isSelected ? "text-emerald-700" : "text-slate-800"} text-sm`}>
+                                  {species}
+                                </p>
                                 <p className="text-[10px] text-slate-400 truncate mt-0.5">{filename}</p>
                               </div>
-                              <div className="flex items-center justify-between mt-1">
-                                <span className="text-[10px] text-slate-400 font-medium">{Math.round(itemConf * 100)}% conf</span>
+                              <div className="flex items-center justify-between mt-1.5">
+                                <span className={`text-[10px] font-semibold ${
+                                  itemConf < 0.4 ? "text-red-500" : itemConf < 0.7 ? "text-amber-500" : "text-emerald-600"
+                                }`}>{Math.round(itemConf * 100)}%</span>
                                 {!!row.agreement && (
-                                  <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
-                                    row.agreement === "High" ? "bg-emerald-100 text-emerald-700" :
-                                    row.agreement === "Medium" ? "bg-amber-100 text-amber-700" :
-                                    "bg-red-100 text-red-700"
+                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${
+                                    row.agreement === "High"
+                                      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                                      : row.agreement === "Medium"
+                                      ? "bg-amber-100 text-amber-700 border-amber-200"
+                                      : "bg-red-100 text-red-700 border-red-200"
                                   }`}>
                                     {String(row.agreement)}
                                   </span>
@@ -847,7 +968,7 @@ export default function ReviewQueue() {
                     <DetailSidebar
                       row={currentItem}
                       reviewerId={reviewerId}
-                      onAction={load}
+                      onAction={() => load(true)}
                       mode={mode}
                       setMode={setMode}
                       correctLabel={correctLabel}
