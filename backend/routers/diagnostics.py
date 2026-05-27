@@ -63,6 +63,19 @@ async def inspect_image(file: UploadFile = File(...), state: AppState = Depends(
             except Exception as e:
                 result["bioclip"] = {"error": str(e)}
 
+        # Google SpeciesNet top-5
+        if state.speciesnet_model:
+            try:
+                from PIL import Image
+                img = Image.open(tmp.name).convert("RGB")
+                predictions = state.speciesnet_model.classify_crop(img, top_k=5)
+                result["speciesnet"] = [
+                    {"label": label, "score": round(float(score), 4)}
+                    for label, score in predictions
+                ]
+            except Exception as e:
+                result["speciesnet"] = {"error": str(e)}
+
         return result
 
     finally:

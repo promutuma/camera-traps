@@ -163,6 +163,9 @@ export default function Diagnostics() {
           {result.bioclip != null && (
             <Section title="3. BioClip Top-20 Predictions" data={result.bioclip as object} />
           )}
+          {result.speciesnet != null && (
+            <Section title="4. Google SpeciesNet Predictions" data={result.speciesnet as object} />
+          )}
         </div>
       )}
     </div>
