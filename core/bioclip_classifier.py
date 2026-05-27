@@ -275,7 +275,10 @@ class BioClipClassifier:
         if not self.model:
             return
         self.species_list = species_list
-        prompts = [f"a photo of a {s}" for s in species_list]
+        prompts = [
+            f"a wildlife camera trap photo of a {s} in African savanna or bush"
+            for s in species_list
+        ]
         try:
             text = self.tokenizer(prompts).to(self.device)
             with torch.no_grad():

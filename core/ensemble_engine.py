@@ -17,11 +17,13 @@ _AGREEMENT_BONUS = 0.08
 
 # Classifier weights [bioclip, speciesnet].
 # SpeciesNet trained on 65 M camera-trap images → higher weight overall.
-_DEFAULT_WEIGHTS: Tuple[float, float] = (0.40, 0.60)
+# BioClip is a general CLIP model not trained on camera-trap imagery, so we
+# trust it less than SpeciesNet for this domain.
+_DEFAULT_WEIGHTS: Tuple[float, float] = (0.30, 0.70)
 
 # Night-time weights: SpeciesNet was explicitly trained on nocturnal/IR camera
-# trap images; BioCLIP has no such specialisation.
-_NIGHT_WEIGHTS: Tuple[float, float] = (0.25, 0.75)
+# trap images; BioCLIP has no such specialisation and is nearly blind to IR.
+_NIGHT_WEIGHTS: Tuple[float, float] = (0.15, 0.85)
 
 
 # ---------------------------------------------------------------------------
