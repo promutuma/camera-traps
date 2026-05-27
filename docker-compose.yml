@@ -7,9 +7,13 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - wildlife_data:/app/wildlife_data.db
+      - wildlife_data:/app/data
+      - /tmp/megadetector_models:/tmp/megadetector_models
+      - ${HOME}/.EasyOCR:/root/.EasyOCR
+      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
     environment:
       - PYTHONUNBUFFERED=1
+      - DB_PATH=/app/data/wildlife_data.db
     restart: unless-stopped
     deploy:
       resources:

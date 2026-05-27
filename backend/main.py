@@ -126,16 +126,18 @@ async def lifespan(app: FastAPI):
         state.dn_model = DayNightClassifier()
 
         # Services
-        state.db_manager = DatabaseManager()
-        state.station_manager = StationManager()
-        state.review_engine = ReviewEngine()
+        import os
+        db_path = os.environ.get("DB_PATH", "wildlife_data.db")
+        state.db_manager = DatabaseManager(db_path)
+        state.station_manager = StationManager(db_path)
+        state.review_engine = ReviewEngine(db_path)
         state.scrubber = PrivacyScrubber(blur_strength=cfg.blur_strength)
-        state.community_observer = CommunityObserver()
-        state.species_library = SpeciesLibrary()
+        state.community_observer = CommunityObserver(db_path)
+        state.species_library = SpeciesLibrary(db_path)
         state.spatial_exporter = SpatialExporter()
         state.corridor_analyzer = CorridorAnalyzer()
-        state.project_config = ProjectConfig()
-        state.arcgis_sync = ArcGISSync()
+        state.project_config = ProjectConfig(db_path)
+        state.arcgis_sync = ArcGISSync(db_path=db_path)
         state.independence_engine = IndependenceEngine(window_minutes=cfg.independence_window)
         state.qc_engine = QCEngine()
 
