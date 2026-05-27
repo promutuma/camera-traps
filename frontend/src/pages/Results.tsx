@@ -127,6 +127,7 @@ function ModelBreakdown({
   detected,
   modelBreakdown,
   onTaxonClick,
+  compact,
 }: {
   method: string;
   bioclipConf?: number;
@@ -135,6 +136,7 @@ function ModelBreakdown({
   detected?: string;
   modelBreakdown?: unknown;
   onTaxonClick?: (taxon: string) => void;
+  compact?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const models = method ? method.split(" + ").filter(Boolean) : [];
@@ -171,7 +173,7 @@ function ModelBreakdown({
             </>
           )}
         </div>
-        {hasDetail && (
+        {!compact && hasDetail && (
           <button
             onClick={() => setExpanded(!expanded)}
             className="text-[10px] text-emerald-600 hover:text-emerald-700 dark:text-emerald-450 dark:hover:text-emerald-350 font-bold tracking-wider uppercase cursor-pointer hover:underline inline-flex items-center gap-0.5 select-none"
@@ -185,7 +187,7 @@ function ModelBreakdown({
       </div>
 
       {/* Expanded details accordion */}
-      {expanded && parsedBreakdown && (
+      {!compact && expanded && parsedBreakdown && (
         <div className="bg-slate-100/50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 text-[10px] space-y-2.5 shadow-inner w-full">
           {/* Detectors Candidates */}
           {(parsedBreakdown.MDv5a?.length > 0 || parsedBreakdown.MDv1000?.length > 0) && (
@@ -1011,60 +1013,67 @@ export default function Results() {
   const [lightbox, setLightbox] = useState<ImageGroup | null>(null);
   const [sort, setSort] = useState<{ col: string; dir: SortDir }>({ col: "", dir: null });
   const [page, setPage] = useState(1);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState<"verify" | "flag" | null>(null);
   const speciesInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setPage(1);
+    setSelectedIds(new Set());
     try {
       const params: Record<string, string> = {};
-      if (filter.species)   params.species   = filter.species;
-      if (filter.day_night) params.day_night = filter.day_night;
-      if (filter.min_conf)  params.min_conf  = filter.min_conf;
-      if (filter.max_conf)  params.max_conf  = filter.max_conf;
-      if (filter.station)   params.station   = filter.station;
+      // Confidence range goes to server; text filters are applied client-side
+      if (filter.min_conf) params.min_conf = filter.min_conf;
+      if (filter.max_conf) params.max_conf = filter.max_conf;
       setRows(await getResults(params));
     } finally {
       setLoading(false);
     }
-  }, [filter]);
+  }, [filter.min_conf, filter.max_conf]);
 
   useEffect(() => { load(); }, []);
 
   const filteredRows = useMemo(() => {
-    if (!selectedTaxon) return rows;
-    const taxonLower = selectedTaxon.toLowerCase();
     return rows.filter((r) => {
-      let breakdown: any = null;
-      try {
-        if (typeof r.model_breakdown === "string") {
-          breakdown = JSON.parse(r.model_breakdown);
-        } else if (r.model_breakdown) {
-          breakdown = r.model_breakdown;
-        }
-      } catch {}
-      
-      const snetEvent = breakdown?.SpeciesNet;
-      const top5 = snetEvent?.top5 || [];
-      const hasTaxonInBreakdown = top5.some(([label]: [string, number]) => {
-        if (label.startsWith("{") && label.endsWith("}")) {
-          try {
-            const parsed = JSON.parse(label);
-            const inCommon = (parsed.common_name ?? "").toLowerCase().includes(taxonLower);
-            const inSci = (parsed.scientific_name ?? "").toLowerCase().includes(taxonLower);
-            const inHierarchy = (parsed.hierarchy ?? []).some((h: string) => h.toLowerCase() === taxonLower);
-            return inCommon || inSci || inHierarchy;
-          } catch {}
-        }
-        return label.toLowerCase().includes(taxonLower);
-      });
+      // Live client-side text filters
+      if (filter.species) {
+        const s = filter.species.toLowerCase();
+        if (!String(r.detected_animal ?? "").toLowerCase().includes(s)) return false;
+      }
+      if (filter.station) {
+        const s = filter.station.toLowerCase();
+        if (!String(r.station_id ?? "").toLowerCase().includes(s)) return false;
+      }
+      if (filter.day_night && r.day_night !== filter.day_night) return false;
 
-      const inDetected = String(r.detected_animal ?? "").toLowerCase().includes(taxonLower);
-      const inSpeciesLabel = String(r.species_label ?? "").toLowerCase().includes(taxonLower);
-
-      return hasTaxonInBreakdown || inDetected || inSpeciesLabel;
+      // Taxon drill-down from ModelBreakdown clicks
+      if (selectedTaxon) {
+        const taxonLower = selectedTaxon.toLowerCase();
+        let breakdown: any = null;
+        try {
+          if (typeof r.model_breakdown === "string") breakdown = JSON.parse(r.model_breakdown);
+          else if (r.model_breakdown) breakdown = r.model_breakdown;
+        } catch {}
+        const top5: [string, number][] = breakdown?.SpeciesNet?.top5 ?? [];
+        const hasTaxon = top5.some(([label]) => {
+          if (label.startsWith("{") && label.endsWith("}")) {
+            try {
+              const p = JSON.parse(label);
+              return (p.common_name ?? "").toLowerCase().includes(taxonLower)
+                || (p.scientific_name ?? "").toLowerCase().includes(taxonLower)
+                || (p.hierarchy ?? []).some((h: string) => h.toLowerCase() === taxonLower);
+            } catch {}
+          }
+          return label.toLowerCase().includes(taxonLower);
+        });
+        const inDetected = String(r.detected_animal ?? "").toLowerCase().includes(taxonLower);
+        const inLabel = String(r.species_label ?? "").toLowerCase().includes(taxonLower);
+        if (!hasTaxon && !inDetected && !inLabel) return false;
+      }
+      return true;
     });
-  }, [rows, selectedTaxon]);
+  }, [rows, filter.species, filter.station, filter.day_night, selectedTaxon]);
 
   const sorted = [...filteredRows].sort((a, b) => {
     if (!sort.col || !sort.dir) return 0;
@@ -1119,10 +1128,61 @@ export default function Results() {
     load();
   };
 
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const allPageSelected = paginated.length > 0 && paginated.every((r) => {
+    const id = Number(r.detection_id ?? r.id ?? 0);
+    return selectedIds.has(id);
+  });
+
+  const toggleSelectAll = () => {
+    if (allPageSelected) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        paginated.forEach((r) => next.delete(Number(r.detection_id ?? r.id ?? 0)));
+        return next;
+      });
+    } else {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        paginated.forEach((r) => next.add(Number(r.detection_id ?? r.id ?? 0)));
+        return next;
+      });
+    }
+  };
+
+  const bulkVerify = async () => {
+    setBulkBusy("verify");
+    try {
+      await Promise.all([...selectedIds].map((id) => confirmDetection(id, { reviewer_id: "viewer", action: "accept" })));
+      setSelectedIds(new Set());
+      load();
+    } finally { setBulkBusy(null); }
+  };
+
+  const bulkFlag = async () => {
+    setBulkBusy("flag");
+    try {
+      await Promise.all([...selectedIds].map((id) => flagDetection(id, { reviewer_id: "viewer", notes: "" })));
+      setSelectedIds(new Set());
+      load();
+    } finally { setBulkBusy(null); }
+  };
+
   const totalAnimals = rows.filter((r) => String(r.primary_label ?? r.detected_animal ?? "").toLowerCase() !== "empty").length;
   const dayCount = rows.filter((r) => r.day_night === "Day").length;
   const nightCount = rows.filter((r) => r.day_night === "Night").length;
   const uniqueSpecies = new Set(rows.map((r) => r.detected_animal)).size;
+  const lowConfCount = rows.filter((r) => {
+    const v = typeof r.detection_confidence === "number" ? r.detection_confidence as number : parseFloat(String(r.detection_confidence ?? "1"));
+    return !isNaN(v) && v < 0.4;
+  }).length;
 
   const COLS: { key: string; label: string; sortable: boolean }[] = [
     { key: "filename",             label: "Filename",   sortable: true  },
@@ -1177,12 +1237,13 @@ export default function Results() {
 
       {/* Summary stats */}
       {rows.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
             ["Total Images", rows.length, "text-slate-700 dark:text-slate-200"],
             ["Animals", totalAnimals, "text-green-700 dark:text-emerald-400"],
             ["Unique Species", uniqueSpecies, "text-indigo-700 dark:text-indigo-400"],
             ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700 dark:text-amber-450"],
+            ["Needs Review", lowConfCount, lowConfCount > 0 ? "text-red-600 dark:text-red-400" : "text-slate-400 dark:text-slate-500"],
           ].map(([label, val, cls]) => (
             <div key={String(label)} className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 px-4 py-3 shadow-sm">
               <p className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-wide">{label}</p>
@@ -1194,13 +1255,11 @@ export default function Results() {
 
       {/* Filters */}
       <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 p-3 flex flex-wrap gap-2 items-end shadow-sm">
-        <input ref={speciesInputRef} placeholder="Species…" value={filter.species}
+        <input ref={speciesInputRef} placeholder="Species (live)…" value={filter.species}
           onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
-          onKeyDown={(e) => e.key === "Enter" && load()}
           className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
-        <input placeholder="Station…" value={filter.station}
+        <input placeholder="Station (live)…" value={filter.station}
           onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
-          onKeyDown={(e) => e.key === "Enter" && load()}
           className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         <select value={filter.day_night}
           onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
@@ -1212,13 +1271,15 @@ export default function Results() {
         <div className="flex items-center gap-1">
           <input placeholder="Min conf" value={filter.min_conf}
             onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value }))}
+            onKeyDown={(e) => e.key === "Enter" && load()}
             className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
           <span className="text-slate-450 dark:text-slate-600 text-sm">–</span>
           <input placeholder="Max conf" value={filter.max_conf}
             onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value }))}
+            onKeyDown={(e) => e.key === "Enter" && load()}
             className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         </div>
-        <button onClick={load} className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply</button>
+        <button onClick={load} title="Apply confidence range filter" className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply Conf</button>
         {selectedTaxon && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50 rounded-lg text-xs font-bold leading-none h-[34px] tracking-wide uppercase select-none">
             <span>Taxon: {selectedTaxon}</span>
@@ -1236,6 +1297,33 @@ export default function Results() {
           >Clear</button>
         )}
       </div>
+
+      {/* Bulk action bar */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center gap-3 px-4 py-2.5 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50 rounded-xl shadow-sm">
+          <span className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{selectedIds.size} selected</span>
+          <button
+            onClick={bulkVerify}
+            disabled={bulkBusy !== null}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold disabled:opacity-50 cursor-pointer transition shadow-sm"
+          >
+            <span className="material-symbols-outlined text-xs">check_circle</span>
+            {bulkBusy === "verify" ? "Verifying…" : "Verify All"}
+          </button>
+          <button
+            onClick={bulkFlag}
+            disabled={bulkBusy !== null}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold disabled:opacity-50 cursor-pointer transition shadow-sm"
+          >
+            <span className="material-symbols-outlined text-xs">flag</span>
+            {bulkBusy === "flag" ? "Flagging…" : "Flag All"}
+          </button>
+          <button
+            onClick={() => setSelectedIds(new Set())}
+            className="ml-auto px-3 py-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs cursor-pointer transition"
+          >Clear selection</button>
+        </div>
+      )}
 
       {/* Content */}
       {loading ? (
@@ -1267,6 +1355,15 @@ export default function Results() {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-950/80 border-b border-slate-200 dark:border-slate-800">
                 <tr>
+                  <th className="px-3 py-3 w-8">
+                    <input
+                      type="checkbox"
+                      checked={allPageSelected}
+                      onChange={toggleSelectAll}
+                      className="accent-emerald-600 cursor-pointer w-4 h-4 rounded"
+                      title="Select all on this page"
+                    />
+                  </th>
                   <th className="text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-450 w-20">Image</th>
                   {COLS.map(({ key, label, sortable }) => (
                     <th
@@ -1283,8 +1380,33 @@ export default function Results() {
                 {paginated.map((row, i) => {
                   const id = Number(row.detection_id ?? row.id ?? i);
                   const filename = String(row.filename ?? "");
+                  const rowConf = typeof row.detection_confidence === "number"
+                    ? row.detection_confidence as number
+                    : parseFloat(String(row.detection_confidence ?? "1"));
+                  const isLowConf = !isNaN(rowConf) && rowConf < 0.4;
+                  const isSelected = selectedIds.has(id);
+
                   return (
-                    <tr key={id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/20 group">
+                    <tr
+                      key={id}
+                      className={`group transition ${
+                        isSelected
+                          ? "bg-emerald-50/60 dark:bg-emerald-950/15"
+                          : isLowConf
+                          ? "bg-amber-50/50 dark:bg-amber-950/10 hover:bg-amber-50 dark:hover:bg-amber-950/20"
+                          : "hover:bg-slate-50/50 dark:hover:bg-slate-900/20"
+                      }`}
+                    >
+                      {/* Checkbox */}
+                      <td className="px-3 py-2">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelect(id)}
+                          className="accent-emerald-600 cursor-pointer w-4 h-4 rounded"
+                        />
+                      </td>
+
                       {/* Thumbnail */}
                       <td className="px-3 py-2">
                         <button
@@ -1292,7 +1414,7 @@ export default function Results() {
                             const g = galleryGroups.find((g) => g.filename === filename);
                             setLightbox(g ?? { filename, rows: [row] });
                           }}
-                          className="block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 hover:ring-2 hover:ring-green-500 transition shrink-0 cursor-pointer"
+                          className="relative block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 hover:ring-2 hover:ring-green-500 transition shrink-0 cursor-pointer"
                           title="View image"
                         >
                           <img
@@ -1305,6 +1427,11 @@ export default function Results() {
                               el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-550 flex items-center justify-center h-full w-full">No img</span>';
                             }}
                           />
+                          {isLowConf && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-amber-500/20">
+                              <span className="material-symbols-outlined text-amber-500 text-sm drop-shadow">warning</span>
+                            </div>
+                          )}
                         </button>
                       </td>
 
@@ -1314,8 +1441,49 @@ export default function Results() {
                         const val = row[key];
 
                         return (
-                          <td key={key} className="px-3 py-2 max-w-[200px] text-slate-700 dark:text-slate-300">
-                            {isEditing ? (
+                          <td key={key} className="px-3 py-2 max-w-[220px] text-slate-700 dark:text-slate-300">
+                            {isEditing && key === "detected_animal" ? (
+                              /* ── Inline species correction with candidate dropdown ── */
+                              <div className="min-w-[200px] space-y-1.5">
+                                {getCandidates(row).length > 0 && (
+                                  <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
+                                    {getCandidates(row).slice(0, 4).map((c, ci) => (
+                                      <button
+                                        key={ci}
+                                        onClick={() => setEditVal(c.label)}
+                                        className={`w-full flex items-center justify-between px-2 py-1 text-xs text-left cursor-pointer border-b last:border-b-0 border-slate-100 dark:border-slate-800 transition ${
+                                          editVal === c.label
+                                            ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400"
+                                            : "bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+                                        }`}
+                                      >
+                                        <span className="truncate font-medium">{c.label}</span>
+                                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                                          <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
+                                          <span className={`text-[8px] font-bold px-1 rounded ${
+                                            c.source === "BioClip"
+                                              ? "bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400"
+                                              : "bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400"
+                                          }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className="flex gap-1 items-center">
+                                  <input
+                                    autoFocus={getCandidates(row).length === 0}
+                                    value={editVal}
+                                    onChange={(e) => setEditVal(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === "Enter") saveEdit(id); if (e.key === "Escape") setEditing(null); }}
+                                    placeholder="Type species name…"
+                                    className="flex-1 min-w-0 border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-xs focus:outline-none bg-white dark:bg-slate-900 text-slate-800 dark:text-white"
+                                  />
+                                  <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer">✓</button>
+                                  <button onClick={() => setEditing(null)} className="text-slate-400 shrink-0 cursor-pointer">✕</button>
+                                </div>
+                              </div>
+                            ) : isEditing ? (
                               <div className="flex gap-1 items-center">
                                 <input autoFocus value={editVal}
                                   onChange={(e) => setEditVal(e.target.value)}
@@ -1335,7 +1503,21 @@ export default function Results() {
                                 speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
                                 agreement={row.agreement as string | null}
                                 detected={String(row.detected_animal ?? "")}
+                                compact
                               />
+                            ) : key === "detected_animal" ? (
+                              <div className="flex items-center gap-1.5">
+                                {isLowConf && (
+                                  <span className="material-symbols-outlined text-amber-400 text-sm shrink-0" title="Low confidence">warning</span>
+                                )}
+                                <span
+                                  className="block truncate font-semibold cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2"
+                                  title={`${String(val ?? "")} — click to correct`}
+                                  onClick={() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); }}
+                                >
+                                  {String(val ?? "")}
+                                </span>
+                              </div>
                             ) : (
                               <span
                                 className={`block truncate font-medium ${editable ? "cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2" : "text-slate-700 dark:text-slate-300"}`}
@@ -1354,8 +1536,8 @@ export default function Results() {
               </tbody>
             </table>
             <div className="px-4 py-2 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between select-none">
-              <span>{sorted.length} record(s) · Click thumbnail to view · Click species/station/notes to edit</span>
-              <span className="text-slate-350 dark:text-slate-700">Click column headers to sort</span>
+              <span>{filteredRows.length} record(s){filteredRows.length !== rows.length ? ` (filtered from ${rows.length})` : ""} · Checkbox to select · Click species to correct · Click thumbnail to open</span>
+              <span className="text-slate-350 dark:text-slate-700">Column headers to sort</span>
             </div>
           </div>
           <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
