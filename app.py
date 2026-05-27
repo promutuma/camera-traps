@@ -184,7 +184,7 @@ def load_models_v2(low_spec: bool = False, cpu_threads: int = 1):
 
 # Page configuration
 st.set_page_config(
-    page_title="WildlifeID Pro",
+    page_title="ViumbeLens",
     page_icon="line-chart",
     layout="wide",
     initial_sidebar_state="expanded"

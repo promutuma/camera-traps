@@ -197,7 +197,7 @@ def create_app() -> FastAPI:
     app_state = AppState()
 
     application = FastAPI(
-        title="WildlifeID Pro API",
+        title="ViumbeLens API",
         version="2.0.0",
         lifespan=lifespan,
     )

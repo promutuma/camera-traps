@@ -91,7 +91,7 @@ export default function Sidebar() {
           nature_people
         </span>
         <div>
-          <h1 className="text-md font-bold tracking-tight text-white">WildlifeID Pro</h1>
+          <h1 className="text-md font-bold tracking-tight text-white">ViumbeLens</h1>
           <p className="text-xs text-emerald-500 font-medium">Camera Trap Auto-Analyzer</p>
         </div>
       </div>

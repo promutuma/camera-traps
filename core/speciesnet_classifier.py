@@ -112,7 +112,14 @@ class SpeciesNetWrapper:
             scores: List[float] = classifications.get("scores", [])
 
             pairs = sorted(zip(classes, scores), key=lambda x: x[1], reverse=True)
-            return [(label, float(score)) for label, score in pairs[:top_k]]
+            
+            cleaned_pairs = []
+            for label, score in pairs[:top_k]:
+                if "::::::" in label:
+                    label = label.split("::::::")[-1].strip()
+                cleaned_pairs.append((label, float(score)))
+                
+            return cleaned_pairs
 
         except Exception as exc:
             print(f"SpeciesNet classify_crop error: {exc}")
