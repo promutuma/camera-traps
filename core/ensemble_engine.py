@@ -6,6 +6,7 @@ Classification fusion: weighted score merge across BioClip + SpeciesNet.
 """
 from __future__ import annotations
 
+import json
 from typing import Dict, List, Optional, Tuple
 
 # IoU threshold for considering two boxes the same object
@@ -15,8 +16,12 @@ _NMS_IOU = 0.50
 _AGREEMENT_BONUS = 0.08
 
 # Classifier weights [bioclip, speciesnet].
-# SpeciesNet trained on 65 M camera-trap images → slightly higher weight.
-_DEFAULT_WEIGHTS: Tuple[float, float] = (0.45, 0.55)
+# SpeciesNet trained on 65 M camera-trap images → higher weight overall.
+_DEFAULT_WEIGHTS: Tuple[float, float] = (0.40, 0.60)
+
+# Night-time weights: SpeciesNet was explicitly trained on nocturnal/IR camera
+# trap images; BioCLIP has no such specialisation.
+_NIGHT_WEIGHTS: Tuple[float, float] = (0.25, 0.75)
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +45,62 @@ def _iou(a: List[float], b: List[float]) -> float:
     area_a = a[2] * a[3]
     area_b = b[2] * b[3]
     return inter / (area_a + area_b - inter)
+
+
+def _parse_snet_meta(label: str) -> Dict:
+    """
+    Parse a SpeciesNet label string into structured metadata.
+
+    SpeciesNet labels are JSON-encoded dicts with keys:
+      display, common_name, scientific_name, hierarchy, id
+    Falls back to a plain display dict when the label isn't JSON.
+    """
+    if label.startswith("{"):
+        try:
+            return json.loads(label)
+        except Exception:
+            pass
+    return {"display": label.strip(), "common_name": label.strip()}
+
+
+def _taxonomy_agreement(bc_name: str, sn_meta: Dict) -> str:
+    """
+    Compare a BioCLIP label against SpeciesNet's full taxonomy metadata.
+
+    Returns 'High', 'Medium', or 'Low'.
+
+    High   – common name / display name match (exact or contained)
+    Medium – shared meaningful word OR BioCLIP word found in the taxonomic
+             hierarchy (family / genus level agreement)
+    Low    – no detectable overlap
+    """
+    bc = bc_name.lower().strip()
+
+    sn_display  = sn_meta.get("display", "").lower().strip()
+    sn_common   = sn_meta.get("common_name", "").lower().strip()
+    sn_hierarchy: List[str] = [h.lower() for h in sn_meta.get("hierarchy", [])]
+
+    # ── High: name-level agreement ─────────────────────────────────────────
+    for sn_name in (sn_display, sn_common):
+        if not sn_name:
+            continue
+        if bc == sn_name or bc in sn_name or sn_name in bc:
+            return "High"
+
+    # Word-level overlap on meaningful tokens (len > 3)
+    bc_words = {w for w in bc.split() if len(w) > 3}
+    for sn_name in (sn_display, sn_common):
+        sn_words = {w for w in sn_name.split() if len(w) > 3}
+        if bc_words & sn_words:
+            return "High"
+
+    # ── Medium: taxonomy hierarchy match ──────────────────────────────────
+    if bc_words and sn_hierarchy:
+        hierarchy_str = " ".join(sn_hierarchy)
+        if any(word in hierarchy_str for word in bc_words):
+            return "Medium"
+
+    return "Low"
 
 
 # ---------------------------------------------------------------------------
@@ -106,36 +167,42 @@ def fuse_species(
     bioclip: List[Tuple[str, float]],
     speciesnet: List[Tuple[str, float]],
     weights: Tuple[float, float] = _DEFAULT_WEIGHTS,
+    is_night: bool = False,
 ) -> Dict:
     """
     Merge species predictions from BioClip and SpeciesNet.
 
-    Returns:
-        species       – display name of the top prediction
-        confidence    – fused confidence score (0–1)
-        agreement     – 'High' | 'Medium' | 'Low'
-        bioclip_top   – (label, conf) from BioClip or None
-        speciesnet_top – (label, conf) from SpeciesNet or None
-        all_candidates – top-5 fused (label, conf) pairs
-    """
-    w_bio, w_snet = weights
-    import json
+    Parameters
+    ----------
+    bioclip     : list of (label, confidence) from BioCLIP
+    speciesnet  : list of (label, confidence) from SpeciesNet
+                  Labels may be JSON-encoded dicts with taxonomy metadata.
+    weights     : (w_bioclip, w_speciesnet) — overridden at night.
+    is_night    : when True, applies night-time weights that heavily favour
+                  SpeciesNet (trained on nocturnal/IR camera-trap imagery).
 
-    def _clean_snet_label(label: str) -> str:
-        if label.startswith("{") and label.endswith("}"):
-            try:
-                return json.loads(label).get("display", label)
-            except Exception:
-                pass
-        return label
+    Returns
+    -------
+    dict with keys: species, confidence, agreement, bioclip_top,
+                    speciesnet_top, all_candidates
+    """
+    # Dynamic weights: SpeciesNet dominates at night
+    if is_night:
+        weights = _NIGHT_WEIGHTS
+    w_bio, w_snet = weights
+
+    def _display(label: str) -> str:
+        """Extract human-readable name from a SpeciesNet JSON label."""
+        meta = _parse_snet_meta(label)
+        return meta.get("display") or meta.get("common_name") or label.strip()
 
     bc_top: Optional[Tuple[str, float]] = bioclip[0] if bioclip else None
     sn_top_raw: Optional[Tuple[str, float]] = speciesnet[0] if speciesnet else None
     sn_top: Optional[Tuple[str, float]] = (
-        (_clean_snet_label(sn_top_raw[0]), sn_top_raw[1]) if sn_top_raw else None
+        (_display(sn_top_raw[0]), sn_top_raw[1]) if sn_top_raw else None
     )
 
-    # Accumulate weighted scores; use lower-cased name as key
+    # Accumulate weighted scores; use lower-cased display name as key
     scores: Dict[str, float] = {}
     name_map: Dict[str, str] = {}  # lower → original casing
 
@@ -145,10 +212,10 @@ def fuse_species(
         name_map.setdefault(key, label)
 
     for label, score in speciesnet:
-        clean_label = _clean_snet_label(label)
-        key = clean_label.lower().strip()
+        display = _display(label)
+        key = display.lower().strip()
         scores[key] = scores.get(key, 0.0) + score * w_snet
-        name_map.setdefault(key, clean_label)
+        name_map.setdefault(key, display)
 
     if not scores:
         return {
@@ -163,18 +230,16 @@ def fuse_species(
     ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     top_key, top_score = ranked[0]
 
-    # Determine agreement and apply bonus
+    # ── Taxonomy-aware agreement ───────────────────────────────────────────
     agreement = "Low"
-    if bc_top and sn_top:
-        bc_key = bc_top[0].lower().strip()
-        sn_key = sn_top[0].lower().strip()
-        if bc_key == sn_key or bc_key in sn_key or sn_key in bc_key:
+    if bc_top and sn_top_raw:
+        sn_meta = _parse_snet_meta(sn_top_raw[0])
+        agreement = _taxonomy_agreement(bc_top[0], sn_meta)
+        if agreement == "High":
             top_score = min(1.0, top_score + _AGREEMENT_BONUS)
-            agreement = "High"
-        elif any(word in sn_key for word in bc_key.split() if len(word) > 3):
+        elif agreement == "Medium":
             top_score = min(1.0, top_score + _AGREEMENT_BONUS * 0.5)
-            agreement = "Medium"
-    elif bc_top or sn_top:
+    elif bc_top or sn_top_raw:
         agreement = "Medium"
 
     display_name = name_map.get(top_key, top_key.title())

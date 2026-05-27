@@ -105,7 +105,8 @@ class ImageProcessor:
                 if progress_callback:
                     progress_callback(f"Detecting animal in {base_result['filename']}...")
                 
-                detections = self.animal_detector.detect(image_path)
+                is_night = base_result.get("day_night") == "Night"
+                detections = self.animal_detector.detect(image_path, is_night=is_night)
                 # detections is now a List[Dict], ensuring at least one 'Empty' or valid detections
                 
                 for det in detections:

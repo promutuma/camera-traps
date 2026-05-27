@@ -301,9 +301,16 @@ class AnimalDetector:
     # Public API
     # ------------------------------------------------------------------
 
-    def detect(self, image_path: str) -> List[Dict]:
+    def detect(self, image_path: str, is_night: bool = False) -> List[Dict]:
         """
         Full pipeline for one image.
+
+        Parameters
+        ----------
+        image_path : path to the image file
+        is_night   : when True, the ensemble engine applies night-time weights
+                     that favour SpeciesNet over BioCLIP (SpeciesNet was trained
+                     on nocturnal/IR camera-trap images; BioCLIP was not).
 
         Returns a list of result dicts — one per detected subject.
         The first result also carries '_model_events' for SSE streaming.
@@ -419,8 +426,8 @@ class AnimalDetector:
                     "top5": [[s, round(c, 3)] for s, c in sn_results[:5]],
                 } if sn_results else {"model": "SpeciesNet", "top5": [], "skipped": True}
 
-                # Stage 2b: Fuse
-                fusion = fuse_species(bc_results, sn_results)
+                # Stage 2b: Fuse (pass night context for dynamic weighting)
+                fusion = fuse_species(bc_results, sn_results, is_night=is_night)
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]
                 agreement = fusion["agreement"]

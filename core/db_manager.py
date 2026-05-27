@@ -70,6 +70,19 @@ class DatabaseManager:
             )
         ''')
 
+        # Jobs table — lightweight metadata so completed jobs survive restarts
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                total INTEGER DEFAULT 0,
+                completed INTEGER DEFAULT 0,
+                error TEXT,
+                created_at REAL,
+                finished_at REAL
+            )
+        ''')
+
         # Add new columns to existing tables if this is a schema migration
         self._migrate_columns(cursor, "images", [
             ("station_id", "TEXT DEFAULT 'Station-1'"),
@@ -274,6 +287,62 @@ class DatabaseManager:
         except Exception as e:
             print(f"Error fetching independence events: {e}")
             return pd.DataFrame()
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Job persistence
+    # ------------------------------------------------------------------
+
+    def save_job(self, job) -> None:
+        """Upsert a job's metadata row (called on completion or error)."""
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO jobs (job_id, status, total, completed, error, created_at, finished_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status     = excluded.status,
+                    total      = excluded.total,
+                    completed  = excluded.completed,
+                    error      = excluded.error,
+                    finished_at= excluded.finished_at
+                """,
+                (
+                    job.job_id,
+                    job.status,
+                    job.total,
+                    job.completed,
+                    job.error,
+                    job.created_at,
+                    job.finished_at,
+                ),
+            )
+            conn.commit()
+        except Exception as exc:
+            print(f"Warning: could not persist job {job.job_id}: {exc}")
+        finally:
+            conn.close()
+
+    def load_recent_jobs(self, limit: int = 50) -> list:
+        """Return metadata for the most recent completed/errored jobs."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT job_id, status, total, completed, error, created_at, finished_at
+                FROM jobs
+                ORDER BY finished_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor.fetchall()]
+        except Exception as exc:
+            print(f"Warning: could not load jobs: {exc}")
+            return []
         finally:
             conn.close()
 

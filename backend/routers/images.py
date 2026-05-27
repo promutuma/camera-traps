@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import sys
@@ -22,6 +23,28 @@ import traceback
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
+
+logger = logging.getLogger(__name__)
+
+# Magic bytes for accepted image formats
+_ALLOWED_MAGIC: List[tuple] = [
+    (b"\xff\xd8\xff",),          # JPEG
+    (b"\x89PNG\r\n\x1a\n",),    # PNG
+    (b"II\x2a\x00", b"MM\x00\x2a"),  # TIFF (LE and BE)
+    (b"BM",),                    # BMP
+    (b"GIF87a", b"GIF89a"),      # GIF
+    (b"RIFF",),                  # WebP (RIFF container; checked further below)
+]
+
+def _is_allowed_image(data: bytes) -> bool:
+    """Return True if data starts with a known image magic-byte sequence."""
+    for signatures in _ALLOWED_MAGIC:
+        if any(data.startswith(sig) for sig in signatures):
+            # WebP: RIFF....WEBP
+            if data.startswith(b"RIFF") and data[8:12] != b"WEBP":
+                continue
+            return True
+    return False
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
@@ -67,6 +90,12 @@ async def upload_images(files: List[UploadFile] = File(...)):
             raise HTTPException(
                 status_code=413,
                 detail=f"'{upload.filename}' exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+            )
+
+        if not _is_allowed_image(contents):
+            raise HTTPException(
+                status_code=415,
+                detail=f"'{upload.filename}' is not a supported image file (JPEG, PNG, TIFF, BMP, WebP)",
             )
 
         safe_name = _safe_filename(upload.filename or "upload")
@@ -188,8 +217,8 @@ def _run_processing(job_id: str, state: AppState) -> None:
             df = pd.DataFrame(results)
             try:
                 state.db_manager.save_results(df)
-            except Exception:
-                pass
+            except Exception as db_exc:
+                logger.error("Failed to persist results to DB for job %s: %s", job_id, db_exc)
 
         job.status = "done"
 
@@ -199,6 +228,11 @@ def _run_processing(job_id: str, state: AppState) -> None:
 
     finally:
         job.finished_at = time.time()
+        if state.db_manager:
+            try:
+                state.db_manager.save_job(job)
+            except Exception as persist_exc:
+                logger.error("Could not persist job metadata for %s: %s", job_id, persist_exc)
 
 
 @router.post("/process/{job_id}")
