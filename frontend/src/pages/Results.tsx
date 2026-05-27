@@ -560,12 +560,12 @@ function Lightbox({
                   return (
                     <g key={i}>
                       <rect
-                        x={bbox[1] * imgNatural.w} y={bbox[0] * imgNatural.h}
-                        width={bbox[3] * imgNatural.w} height={bbox[2] * imgNatural.h}
+                        x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
+                        width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
                         fill="none" stroke={color} strokeWidth={sw}
                       />
                       <text
-                        x={bbox[1] * imgNatural.w + 4} y={bbox[0] * imgNatural.h - 8}
+                        x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 8}
                         fill={color} fontWeight="bold" fontSize={fs}
                         style={{ filter: "drop-shadow(0 1px 2px #000)" }}
                       >
@@ -912,12 +912,12 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
               return (
                 <g key={i}>
                   <rect
-                    x={bbox[1] * imgNatural.w} y={bbox[0] * imgNatural.h}
-                    width={bbox[3] * imgNatural.w} height={bbox[2] * imgNatural.h}
+                    x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
+                    width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
                     fill="none" stroke={color} strokeWidth={sw}
                   />
                   <text
-                    x={bbox[1] * imgNatural.w + 4} y={bbox[0] * imgNatural.h - 6}
+                    x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 6}
                     fill={color} fontWeight="bold" fontSize={fs}
                     style={{ filter: "drop-shadow(0 1px 3px #000)" }}
                   >
