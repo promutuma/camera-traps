@@ -254,17 +254,31 @@ class AnimalDetector:
 
     def _classify_parallel(
         self, crop: Image.Image
-    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
-        """Run BioClip and SpeciesNet concurrently; return (bc, sn)."""
+    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], Optional[Dict]]:
+        """
+        Run BioCLIP and SpeciesNet concurrently.
+
+        Returns (bc_pairs, sn_pairs, bc_taxonomy) where:
+          bc_pairs    – [(species, conf), ...] for score accumulation
+          sn_pairs    – [(label_json, conf), ...] from SpeciesNet
+          bc_taxonomy – full dict from predict_taxonomy(), used for
+                        genus/family-level agreement in fuse_species()
+        """
+        if not self.bioclip:
+            return [], [], None
+
         if not self.speciesnet or self.speciesnet.classifier is None:
-            bc = self.bioclip.predict_list(crop, threshold=self._threshold) if self.bioclip else []
-            return bc, []
+            tax = self.bioclip.predict_taxonomy(crop, threshold=self._threshold)
+            bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
+            return bc, [], tax
 
         future_bc = _executor.submit(
-            self.bioclip.predict_list, crop, self._threshold
+            self.bioclip.predict_taxonomy, crop, self._threshold
         )
         future_sn = _executor.submit(self.speciesnet.classify_crop, crop)
-        return future_bc.result(), future_sn.result()
+        tax = future_bc.result()
+        bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
+        return bc, future_sn.result(), tax
 
     # ------------------------------------------------------------------
     # Crop helpers
@@ -410,11 +424,14 @@ class AnimalDetector:
                     continue
 
                 # Stage 2a: Parallel classification
-                bc_results, sn_results = self._classify_parallel(crop)
+                bc_results, sn_results, bc_taxonomy = self._classify_parallel(crop)
 
-                # BioClip fallback if nothing above threshold
+                # BioCLIP fallback if nothing above threshold
                 if not bc_results and self.bioclip:
-                    bc_results = self.bioclip.predict_list(crop, threshold=0.0, top_k=1)
+                    fb = self.bioclip.predict_taxonomy(crop, threshold=0.0, top_k=1)
+                    bc_results = [(c["species"], c["confidence"]) for c in fb.get("candidates", [])]
+                    if bc_taxonomy is None:
+                        bc_taxonomy = fb
 
                 # Classification events
                 ev_bc = {
@@ -426,8 +443,13 @@ class AnimalDetector:
                     "top5": [[s, round(c, 3)] for s, c in sn_results[:5]],
                 } if sn_results else {"model": "SpeciesNet", "top5": [], "skipped": True}
 
-                # Stage 2b: Fuse (pass night context for dynamic weighting)
-                fusion = fuse_species(bc_results, sn_results, is_night=is_night)
+                # Stage 2b: Fuse (night weights + full taxonomy for agreement)
+                fusion = fuse_species(
+                    bc_results,
+                    sn_results,
+                    is_night=is_night,
+                    bioclip_taxonomy=bc_taxonomy,
+                )
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]
                 agreement = fusion["agreement"]

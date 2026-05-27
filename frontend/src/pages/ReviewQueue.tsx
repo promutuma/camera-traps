@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedImageUrl } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
@@ -93,18 +93,6 @@ function ModelBreakdown({
   );
 }
 
-function ConfBar({ value }: { value: unknown }) {
-  const v = typeof value === "number" ? value : parseFloat(String(value ?? "0"));
-  const pct = isNaN(v) ? 0 : Math.round(v * 100);
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
-        <div className={`h-full rounded-full ${confColor(v)}`} style={{ width: `${pct}%` }} />
-      </div>
-      <span className="text-xs font-mono text-slate-400 w-8 text-right shrink-0">{pct}%</span>
-    </div>
-  );
-}
 
 function DayNightBadge({ value }: { value: unknown }) {
   const v = String(value ?? "");
@@ -833,7 +821,7 @@ export default function ReviewQueue() {
                                     row.agreement === "Medium" ? "bg-amber-100 text-amber-700" :
                                     "bg-red-100 text-red-700"
                                   }`}>
-                                    {row.agreement}
+                                    {String(row.agreement)}
                                   </span>
                                 )}
                               </div>

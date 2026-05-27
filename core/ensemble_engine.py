@@ -65,40 +65,84 @@ def _parse_snet_meta(label: str) -> Dict:
 
 def _taxonomy_agreement(bc_name: str, sn_meta: Dict) -> str:
     """
-    Compare a BioCLIP label against SpeciesNet's full taxonomy metadata.
+    Compare a BioCLIP species name against SpeciesNet's full taxonomy metadata.
+    Fallback used when no structured BioCLIP taxonomy is available.
 
-    Returns 'High', 'Medium', or 'Low'.
-
-    High   – common name / display name match (exact or contained)
-    Medium – shared meaningful word OR BioCLIP word found in the taxonomic
-             hierarchy (family / genus level agreement)
+    High   – common/display name match (exact or contained)
+    Medium – shared meaningful word OR species word in hierarchy
     Low    – no detectable overlap
     """
     bc = bc_name.lower().strip()
-
     sn_display  = sn_meta.get("display", "").lower().strip()
     sn_common   = sn_meta.get("common_name", "").lower().strip()
     sn_hierarchy: List[str] = [h.lower() for h in sn_meta.get("hierarchy", [])]
 
-    # ── High: name-level agreement ─────────────────────────────────────────
     for sn_name in (sn_display, sn_common):
         if not sn_name:
             continue
         if bc == sn_name or bc in sn_name or sn_name in bc:
             return "High"
 
-    # Word-level overlap on meaningful tokens (len > 3)
     bc_words = {w for w in bc.split() if len(w) > 3}
     for sn_name in (sn_display, sn_common):
         sn_words = {w for w in sn_name.split() if len(w) > 3}
         if bc_words & sn_words:
             return "High"
 
-    # ── Medium: taxonomy hierarchy match ──────────────────────────────────
     if bc_words and sn_hierarchy:
         hierarchy_str = " ".join(sn_hierarchy)
         if any(word in hierarchy_str for word in bc_words):
             return "Medium"
+
+    return "Low"
+
+
+def _taxonomy_agreement_structured(bc_tax: Dict, sn_meta: Dict, bc_family_override: Optional[str] = None) -> str:
+    """
+    Taxonomy-aware agreement using BioCLIP's full taxonomic path.
+
+    Compares BioCLIP's family / genus / species against SpeciesNet's hierarchy
+    and common/display names — much more reliable than word matching.
+
+    High   – genus match in hierarchy, OR species common-name match
+    Medium – family match in hierarchy (same ecological group)
+    Low    – no shared taxon
+    """
+    sn_hierarchy = [h.lower() for h in sn_meta.get("hierarchy", [])]
+    sn_common    = sn_meta.get("common_name", "").lower().strip()
+    sn_display   = sn_meta.get("display", "").lower().strip()
+
+    bc_species = bc_tax.get("species", "").lower()
+    bc_genus   = bc_tax.get("genus", "").lower()
+    bc_family  = bc_tax.get("family", "").lower()
+    bc_order   = bc_tax.get("order", "").lower()
+
+    # High: species name matches common/display
+    for sn_name in (sn_common, sn_display):
+        if not sn_name:
+            continue
+        if bc_species == sn_name or bc_species in sn_name or sn_name in bc_species:
+            return "High"
+        bc_words = {w for w in bc_species.split() if len(w) > 3}
+        sn_words = {w for w in sn_name.split() if len(w) > 3}
+        if bc_words & sn_words:
+            return "High"
+
+    # High: genus appears in SpeciesNet's taxonomy hierarchy
+    if bc_genus and bc_genus in sn_hierarchy:
+        return "High"
+
+    # Medium: family matches (same ecological group)
+    if bc_family and bc_family in sn_hierarchy:
+        return "Medium"
+
+    # Medium: independent family-level BioCLIP prediction also matches
+    if bc_family_override and bc_family_override.lower() in sn_hierarchy:
+        return "Medium"
+
+    # Medium: order matches (broad agreement, e.g. both Carnivora)
+    if bc_order and bc_order in sn_hierarchy:
+        return "Medium"
 
     return "Low"
 
@@ -168,18 +212,22 @@ def fuse_species(
     speciesnet: List[Tuple[str, float]],
     weights: Tuple[float, float] = _DEFAULT_WEIGHTS,
     is_night: bool = False,
+    bioclip_taxonomy: Optional[Dict] = None,
 ) -> Dict:
     """
     Merge species predictions from BioClip and SpeciesNet.
 
     Parameters
     ----------
-    bioclip     : list of (label, confidence) from BioCLIP
-    speciesnet  : list of (label, confidence) from SpeciesNet
-                  Labels may be JSON-encoded dicts with taxonomy metadata.
-    weights     : (w_bioclip, w_speciesnet) — overridden at night.
-    is_night    : when True, applies night-time weights that heavily favour
-                  SpeciesNet (trained on nocturnal/IR camera-trap imagery).
+    bioclip          : list of (label, confidence) from BioCLIP
+    speciesnet       : list of (label, confidence) from SpeciesNet
+                       Labels may be JSON-encoded dicts with taxonomy metadata.
+    weights          : (w_bioclip, w_speciesnet) — overridden at night.
+    is_night         : when True, applies night-time weights that heavily favour
+                       SpeciesNet (trained on nocturnal/IR camera-trap imagery).
+    bioclip_taxonomy : structured dict from BioClipClassifier.predict_taxonomy().
+                       When present, enables genus/family-level agreement
+                       instead of word matching.
 
     Returns
     -------
@@ -234,7 +282,15 @@ def fuse_species(
     agreement = "Low"
     if bc_top and sn_top_raw:
         sn_meta = _parse_snet_meta(sn_top_raw[0])
-        agreement = _taxonomy_agreement(bc_top[0], sn_meta)
+        if bioclip_taxonomy and bioclip_taxonomy.get("top"):
+            agreement = _taxonomy_agreement_structured(
+                bioclip_taxonomy["top"],
+                sn_meta,
+                bc_family_override=bioclip_taxonomy.get("family_prediction"),
+            )
+        else:
+            agreement = _taxonomy_agreement(bc_top[0], sn_meta)
+
         if agreement == "High":
             top_score = min(1.0, top_score + _AGREEMENT_BONUS)
         elif agreement == "Medium":
