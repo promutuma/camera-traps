@@ -35,7 +35,8 @@ router = APIRouter(prefix="/images", tags=["images"])
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
-UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads"
+db_path = os.environ.get("DB_PATH", "wildlife_data.db")
+UPLOADS_DIR = Path(db_path).parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
 _MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "50")) * 1024 * 1024
