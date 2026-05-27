@@ -1,13 +1,18 @@
 """
 Tab 1 — Upload & Process
-POST /api/images/upload        save files, return job_id
-POST /api/images/process/{id}  start background job
-GET  /api/images/job/{id}      poll progress
-GET  /api/images/results/{id}  get finished results
-GET  /api/images/file/{filename} serve image file
+POST /api/images/upload            save files immediately, return job_id
+POST /api/images/process/{id}      start background AI pipeline
+GET  /api/images/job/{id}          poll progress (JSON)
+GET  /api/images/job/{id}/stream   real-time SSE (progress + per-model events)
+GET  /api/images/results/{id}      get finished results
+GET  /api/images/stored/{filename} serve persistent image file
+GET  /api/images/file/{id}/{name}  serve temp image file
 """
 
 from __future__ import annotations
+
+import asyncio
+import json
 import os
 import re
 import sys
@@ -19,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.models.state import AppState
 from backend.models.schemas import JobStatus
@@ -30,7 +35,6 @@ router = APIRouter(prefix="/images", tags=["images"])
 
 _executor = ThreadPoolExecutor(max_workers=2)
 
-# Persistent uploads directory — survives server restarts
 UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
@@ -38,19 +42,18 @@ _MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "50")) * 1024 * 1024
 
 
 def _safe_filename(name: str) -> str:
-    """Strip path components and replace characters unsafe on any OS."""
     name = Path(name or "upload").name
     name = re.sub(r"[^\w.\-]", "_", name)
     return name or "upload"
 
 
 # ---------------------------------------------------------------------------
-# Upload
+# Upload — called immediately on file selection (before "Start" is clicked)
 # ---------------------------------------------------------------------------
 
 @router.post("/upload")
 async def upload_images(files: List[UploadFile] = File(...)):
-    """Save uploaded files to temp dir AND persistent uploads/, return job_id."""
+    """Save uploaded files; return job_id immediately so SSE can attach."""
     job = job_manager.create()
     temp_dir = tempfile.mkdtemp()
     job.temp_dir = temp_dir
@@ -62,18 +65,16 @@ async def upload_images(files: List[UploadFile] = File(...)):
         if len(contents) > _MAX_UPLOAD_BYTES:
             raise HTTPException(
                 status_code=413,
-                detail=f"File '{upload.filename}' exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+                detail=f"'{upload.filename}' exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
             )
 
         safe_name = _safe_filename(upload.filename or "upload")
 
-        # Temp copy for processing
         dest = os.path.join(temp_dir, safe_name)
         with open(dest, "wb") as f:
             f.write(contents)
         job.image_paths.append(dest)
 
-        # Persistent copy so Results page can always serve the image
         persistent = UPLOADS_DIR / safe_name
         with open(persistent, "wb") as f:
             f.write(contents)
@@ -82,12 +83,11 @@ async def upload_images(files: List[UploadFile] = File(...)):
 
 
 # ---------------------------------------------------------------------------
-# Serve stored images (persistent — works after server restart)
+# Serve images
 # ---------------------------------------------------------------------------
 
 @router.get("/stored/{filename}")
 def serve_stored_image(filename: str):
-    """Serve an image from the persistent uploads directory."""
     safe_name = _safe_filename(filename)
     file_path = UPLOADS_DIR / safe_name
     if not file_path.is_file():
@@ -95,12 +95,23 @@ def serve_stored_image(filename: str):
     return FileResponse(str(file_path))
 
 
+@router.get("/file/{job_id}/{filename}")
+def serve_image(job_id: str, filename: str):
+    job = job_manager.get(job_id)
+    if not job or not job.temp_dir:
+        raise HTTPException(status_code=404, detail="Job not found")
+    safe_name = _safe_filename(filename)
+    file_path = os.path.join(job.temp_dir, safe_name)
+    if not os.path.isfile(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
+
+
 # ---------------------------------------------------------------------------
-# Start processing (background)
+# Processing worker (blocking — runs in thread)
 # ---------------------------------------------------------------------------
 
 def _run_processing(job_id: str, state: AppState) -> None:
-    """Blocking worker — runs in ThreadPoolExecutor."""
     job = job_manager.get(job_id)
     if not job:
         return
@@ -116,16 +127,19 @@ def _run_processing(job_id: str, state: AppState) -> None:
         from core.animal_detector import AnimalDetector
         from core.image_processor import ImageProcessor
 
-        # Apply current config to the already-loaded models
         if state.md_model:
             state.md_model.set_confidence_threshold(cfg.detection_confidence)
+        if state.md_v1000_model:
+            state.md_v1000_model.set_confidence_threshold(cfg.detection_confidence)
         if state.dn_model:
             state.dn_model.brightness_threshold = cfg.brightness_threshold
 
         animal_detector = AnimalDetector(
-            state.md_model,
-            state.bio_model,
+            megadetector=state.md_model,
+            bioclip=state.bio_model,
             confidence_threshold=cfg.detection_confidence,
+            megadetector_v1000=state.md_v1000_model,
+            speciesnet=state.speciesnet_model,
         )
 
         processor = ImageProcessor(
@@ -141,27 +155,33 @@ def _run_processing(job_id: str, state: AppState) -> None:
         results = []
         for idx, image_path in enumerate(job.image_paths):
             result = processor.process_single_image(image_path)
-            if isinstance(result, list):
-                results.extend(result)
-            else:
-                results.append(result)
+            result_list = result if isinstance(result, list) else [result]
+
+            # Extract per-image model events from the first result
+            image_events = result_list[0].pop("_model_events", []) if result_list else []
+            image_name = os.path.basename(image_path)
+            for ev in image_events:
+                job.model_events.append({
+                    "type": "model_event",
+                    "image": image_name,
+                    "image_index": idx,
+                    **ev,
+                })
+
+            results.extend(result_list)
             job.completed = idx + 1
 
-        # Stamp default station_id where missing
         for r in results:
             if not r.get("station_id"):
                 r["station_id"] = cfg.default_station_id
 
         job.results = results
 
-        # Auto-scrub privacy if enabled
         if cfg.enable_scrubbing and state.scrubber:
             import pandas as pd
             df = pd.DataFrame(results)
-            audit = state.scrubber.scrub_batch(df)
-            job.scrub_audit = audit
+            job.scrub_audit = state.scrubber.scrub_batch(df)
 
-        # Persist to DB
         if state.db_manager:
             import pandas as pd
             df = pd.DataFrame(results)
@@ -181,7 +201,11 @@ def _run_processing(job_id: str, state: AppState) -> None:
 
 
 @router.post("/process/{job_id}")
-def start_processing(job_id: str, background_tasks: BackgroundTasks, state: AppState = Depends(get_state)):
+def start_processing(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    state: AppState = Depends(get_state),
+):
     job = job_manager.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -195,7 +219,7 @@ def start_processing(job_id: str, background_tasks: BackgroundTasks, state: AppS
 
 
 # ---------------------------------------------------------------------------
-# Poll job progress
+# Poll progress (JSON)
 # ---------------------------------------------------------------------------
 
 @router.get("/job/{job_id}", response_model=JobStatus)
@@ -210,6 +234,64 @@ def get_job_status(job_id: str):
         completed=job.completed,
         error=job.error,
     )
+
+
+# ---------------------------------------------------------------------------
+# SSE stream — progress + per-model events
+# ---------------------------------------------------------------------------
+
+@router.get("/job/{job_id}/stream")
+async def stream_job_progress(job_id: str):
+    """
+    Server-Sent Events stream.
+
+    Yields two event types:
+      {"type": "model_event", "image": "...", "model": "...", ...}
+      {"type": "progress",    "status": "...", "total": N, "completed": N}
+    """
+    async def event_gen():
+        event_cursor = 0
+        while True:
+            job = job_manager.get(job_id)
+            if not job:
+                yield _sse({"type": "progress", "status": "error",
+                             "error": "Job not found", "total": 0, "completed": 0})
+                return
+
+            # Flush any new model events accumulated since last tick
+            new_events = job.model_events[event_cursor:]
+            for ev in new_events:
+                yield _sse(ev)
+            event_cursor += len(new_events)
+
+            # Always send a progress heartbeat
+            yield _sse({
+                "type": "progress",
+                "job_id": job.job_id,
+                "status": job.status,
+                "total": job.total,
+                "completed": job.completed,
+                "error": job.error,
+            })
+
+            if job.status in ("done", "error"):
+                return
+
+            await asyncio.sleep(0.3)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
 
 
 # ---------------------------------------------------------------------------
@@ -229,19 +311,3 @@ def get_job_results(job_id: str):
         "scrub_audit": job.scrub_audit,
         "total": job.total,
     }
-
-
-# ---------------------------------------------------------------------------
-# Serve image files
-# ---------------------------------------------------------------------------
-
-@router.get("/file/{job_id}/{filename}")
-def serve_image(job_id: str, filename: str):
-    job = job_manager.get(job_id)
-    if not job or not job.temp_dir:
-        raise HTTPException(status_code=404, detail="Job/temp dir not found")
-    safe_name = _safe_filename(filename)
-    file_path = os.path.join(job.temp_dir, safe_name)
-    if not os.path.isfile(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)

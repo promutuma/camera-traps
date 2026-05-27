@@ -2,15 +2,178 @@
 
 A **FastAPI + React platform** for automated analysis of wildlife camera trap images, designed for the **Gambella Wetland Landscape Baseline Survey** and similar conservation programmes.
 
-The system handles the full pipeline from raw images to publication-ready outputs: OCR metadata extraction, AI animal detection (**MegaDetector V5a**), species identification (**BioClip**), independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard.
+The system runs a full multi-model AI ensemble pipeline — OCR metadata extraction, parallel animal detection (**MegaDetector V5a + V1000**), species identification (**BioClip + SpeciesNet**), detection fusion, independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard with real-time per-model output streaming.
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green)
 ![React](https://img.shields.io/badge/React-19-blue)
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange)
-![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a-blue)
-![BioClip](https://img.shields.io/badge/BioClip-Enabled-green)
+![MegaDetector](https://img.shields.io/badge/MegaDetector-V5a%20%2B%20V1000-blue)
+![BioClip](https://img.shields.io/badge/BioClip-Enabled-violet)
+![SpeciesNet](https://img.shields.io/badge/SpeciesNet-Google-teal)
 ![Python](https://img.shields.io/badge/Python-3.11--3.13-blue)
 ![Recommended Python](https://img.shields.io/badge/Recommended-Python%203.12-brightgreen)
+
+---
+
+## AI Models — Detectors & Classifiers Explained
+
+Understanding what each model does is important for configuring the pipeline correctly and diagnosing issues.
+
+### The distinction: Detectors vs Classifiers
+
+| | Detector | Classifier |
+|---|---|---|
+| **Question answered** | *Is there an animal here, and where?* | *What species is this animal?* |
+| **Output** | Bounding box + coarse label (Animal / Person / Vehicle) | Species name + confidence score |
+| **Works on** | The full image | A cropped region of the detected animal |
+| **Speed** | Fast (object detection) | Slower (fine-grained recognition) |
+| **Example** | "There is an Animal at [0.2, 0.1, 0.4, 0.3] with 94% confidence" | "Lion 89%, Leopard 5%, Cheetah 3%…" |
+
+The pipeline always runs in order: **Detect first → then Classify the crop**. A classifier cannot run without a detector first finding the animal.
+
+---
+
+### Model 1 — MegaDetector V5a (Detector)
+
+**Source:** [agentmorris/MegaDetector](https://github.com/agentmorris/MegaDetector) (formerly Microsoft AI for Earth)  
+**Architecture:** YOLOv5  
+**Install:** `pip install megadetector` (weights auto-download on first run, ~600 MB)
+
+MegaDetector is the primary detector. It scans every full image and returns bounding boxes for anything it identifies as an **animal**, **person**, or **vehicle**. It does not attempt to identify species — that is the classifier's job.
+
+**What it needs to run:**
+- The `megadetector` Python package
+- ~600 MB disk for the model weights (downloaded automatically to `~/megadetector_models/`)
+- ~600 MB RAM while loaded
+- No GPU required (CPU inference works well)
+
+**Output format:**
+```
+detections: [
+  { category: "1", conf: 0.94, bbox: [x, y, w, h] }   ← normalised 0–1, top-left origin
+]
+category "1" = Animal,  "2" = Person,  "3" = Vehicle
+```
+
+**Confidence threshold:** 0.15–0.25 is the recommended range for V5a. The app defaults to 0.35 — lower it in the sidebar if animals are being missed on dark or distant shots.
+
+---
+
+### Model 2 — MegaDetector V1000 / Redwood (Detector)
+
+**Source:** [agentmorris/MegaDetector](https://github.com/agentmorris/MegaDetector), July 2024 release  
+**Architecture:** YOLOv5 (newer training data than V5a)  
+**Install:** Same `megadetector` package. Weights downloaded automatically on first run.  
+**Model string used:** `"redwood"` (one of five V1000 variants: redwood, spruce, cedar, larch, sorrel)
+
+MDv1000 is the second detector running **in parallel** with MDv5a. Because each was trained on a different dataset partition, they have complementary blind spots — an animal missed by one is often caught by the other.
+
+After both detectors run, the pipeline applies **Non-Maximum Suppression (NMS)** to merge their bounding boxes:
+- Boxes from both detectors that overlap (IoU ≥ 0.5) → merge into one, keep the higher-confidence geometry
+- Boxes unique to one detector → kept if confidence ≥ threshold
+- Result: better recall without duplicate detections
+
+**What it needs to run:**
+- Same `megadetector` package as V5a
+- Additional ~600 MB disk + ~600 MB RAM (both models loaded simultaneously)
+- Automatically skipped when **Low-Spec Mode** is enabled
+
+---
+
+### Model 3 — BioClip (Classifier)
+
+**Source:** [Imageomics/bioclip](https://github.com/Imageomics/BioCLIP) — OpenCLIP foundation model  
+**Architecture:** CLIP (Contrastive Language–Image Pre-Training), vision transformer  
+**Install:** `pip install open_clip_torch` (weights auto-download, ~850 MB)
+
+BioClip is a **zero-shot** classifier. Unlike trained classifiers, it does not have a fixed set of species it was trained to recognise. Instead, it compares the animal crop against a text description of every species in a custom label list (`WILDLIFE_CLASSES`, ~100 entries for African wildlife). The species whose text description best matches the image wins.
+
+This makes BioClip flexible — you can add new species to the label list without retraining. The trade-off is that it is less accurate than trained classifiers for common species.
+
+**What it needs to run:**
+- `open_clip_torch` package
+- ~850 MB disk + ~850 MB RAM
+- GPU recommended but not required (CPU works, just slower)
+
+**How it receives input:** The pipeline extracts a padded crop (10% padding around the bounding box) and passes it as a PIL image.
+
+---
+
+### Model 4 — SpeciesNet (Classifier)
+
+**Source:** [google/cameratrapai](https://github.com/google/cameratrapai)  
+**Architecture:** EfficientNetV2-M trained on **65 million** camera trap images  
+**Install:** `pip install speciesnet`  
+**Model download:** Requires **Kaggle credentials** (free account) — see setup below.
+
+SpeciesNet is Google's purpose-built camera trap classifier. Unlike BioClip (zero-shot), SpeciesNet was directly trained on camera trap images across diverse global ecosystems. It classifies into **2 000+ labels** covering individual species, higher taxonomic ranks (Felidae, Mammalia), and non-animal classes (blank, vehicle, human).
+
+Because it was trained specifically on camera trap imagery, it outperforms general-purpose CLIP models on common species and gives the ensemble its strongest species-level signal.
+
+**What it needs to run:**
+- `speciesnet` Python package
+- A free [Kaggle account](https://www.kaggle.com/) with API credentials
+- Model weights downloaded automatically from Kaggle on first run
+- ~1 GB disk + ~1 GB RAM
+
+**Kaggle credentials setup:**
+
+```bash
+# 1. Create a free account at https://www.kaggle.com/
+# 2. Go to: Account → Settings → API → Create New Token
+#    This downloads a kaggle.json file.
+# 3. Add to your .env file (in the project root):
+KAGGLE_USERNAME=your_kaggle_username
+KAGGLE_KEY=your_kaggle_api_key
+```
+
+If credentials are absent, SpeciesNet logs a warning at startup and the pipeline continues with BioClip only — no crash, no manual intervention needed.
+
+---
+
+### How the ensemble combines all four models
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STAGE 1: DETECTION                        │
+│                                                             │
+│  Full image → MDv5a   ─────────┐                           │
+│                                 ├──► NMS Fusion             │
+│  Full image → MDv1000 ─────────┘    (IoU ≥ 0.5)            │
+│                                        │                    │
+│                              merged bounding boxes          │
+└─────────────────────────────────────────────────────────────┘
+                                         │  Animal boxes only
+                                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│               STAGE 2: CROP + CLASSIFY (parallel)           │
+│                                                             │
+│  Crop + 10% padding → BioClip    → [(Lion, 0.89), ...]     │
+│                     → SpeciesNet → [(Panthera leo, 0.82)]  │
+│                                                             │
+│  Fusion (weighted avg):                                     │
+│    score = 0.45 × BioClip + 0.55 × SpeciesNet              │
+│    + 0.08 agreement bonus when both pick the same species   │
+└─────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   FINAL OUTPUT per detection                 │
+│                                                             │
+│  species     = "Lion"                                       │
+│  confidence  = 0.91                                         │
+│  agreement   = "High"   ← both classifiers agreed          │
+│  breakdown   = { MDv5a: …, MDv1000: …,                     │
+│                  BioClip: …, SpeciesNet: … }                │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Agreement levels:**
+- **High** — both classifiers pick the same top species (or genus match). Confidence bonus applied.
+- **Medium** — classifiers share a keyword (e.g. "leopard" vs "African leopard"). Partial bonus.
+- **Low** — classifiers disagree. Result is the weighted average; image sent to Review Queue.
+
+**Low-Spec Mode** (sidebar toggle) disables MDv1000 and SpeciesNet, reverting to the original single-detector + BioClip pipeline to stay within ~2 GB RAM.
 
 ---
 
@@ -18,18 +181,18 @@ The system handles the full pipeline from raw images to publication-ready output
 
 | Tab | Feature |
 |-----|---------|
-| Upload & Process | Batch upload with real-time progress bar, OCR, MegaDetector + BioClip pipeline |
+| Upload & Process | Auto-upload on file selection; real-time per-model output panel (MDv5a · MDv1000 · BioClip · SpeciesNet · Fusion); SSE progress stream |
 | Review Results | Table and gallery views; bounding box overlays; multi-animal grouping; sortable columns; inline per-detection species editing; confidence bars; Excel/CSV export |
 | Statistics | Per-species bar charts, day/night pie chart, confidence distribution |
-| History | Long-term trends from the SQLite database, CSV export |
-| Diagnostics | OCR strip debugger, raw model output viewer (MegaDetector + BioClip top-20) |
+| History | Long-term trends from SQLite database, CSV export |
+| Diagnostics | OCR strip debugger, raw model output viewer (all four models) |
 | Ecological Analytics | IDE computation, RAI, species richness, accumulation curve, group size, visitation rate |
 | QC Dashboard | Automated quality-control checks with colour-coded severity flags |
 | Stations & Deployments | Camera registry, GPS coordinates, deployment history, trap-night calculator |
-| Review Queue | Responsive grid of image cards with bounding boxes; confirm / correct / flag inline; reviewer logging and privacy audit |
+| Review Queue | Responsive card grid with bounding boxes; confirm / correct / flag inline; agreement badge; reviewer logging |
 | Community Observer | Field observer sighting entry, cross-verification against camera data |
 | Spatial & Map | Interactive Leaflet map, GeoJSON / Shapefile / KML / CSV export |
-| Species Library | Pre-loaded mammal reference library, synonym resolver, quick lookup |
+| Species Library | 159 African wildlife species with full scientific names, IUCN status, synonym resolver |
 | Corridor Analysis | Directional flow detection, passage frequency, bottleneck identification |
 | Project Config | Multi-project support, indicator thresholds, baseline locking, JSON export |
 | ArcGIS Sync | Offline file exports (GeoJSON, Shapefile, KML) + live push to ArcGIS Online / Enterprise |
@@ -44,7 +207,7 @@ camera-traps/
 │   ├── main.py                   # App factory, CORS, lifespan model loading
 │   ├── routers/                  # One router per feature tab (16 total)
 │   │   ├── config.py             # GET/PATCH /api/config
-│   │   ├── images.py             # Upload, background processing, job polling
+│   │   ├── images.py             # Upload (auto), processing, SSE stream
 │   │   ├── results.py            # Review, edit, export
 │   │   ├── statistics.py         # Stats summary
 │   │   ├── history.py            # History, CSV export
@@ -60,29 +223,33 @@ camera-traps/
 │   │   ├── project.py            # Project configuration
 │   │   └── arcgis.py             # ArcGIS push and exports
 │   ├── models/
-│   │   ├── state.py              # AppState + AppConfig dataclasses
+│   │   ├── state.py              # AppState (md_model, md_v1000_model, bio_model,
+│   │   │                         #           speciesnet_model, …) + AppConfig
 │   │   └── schemas.py            # Pydantic request/response models
 │   └── services/
-│       └── job_manager.py        # In-memory background job tracker
+│       └── job_manager.py        # In-memory job tracker with model_events queue
 │
 ├── frontend/                     # React + TypeScript + Vite application
 │   ├── vite.config.ts            # Vite dev proxy: /api → localhost:8000
-│   ├── src/
-│   │   ├── App.tsx               # React Router with 15 routes
-│   │   ├── api/client.ts         # Typed API client (axios)
-│   │   ├── store/configStore.ts  # Zustand global config store
-│   │   ├── components/Layout/
-│   │   │   ├── Sidebar.tsx       # Live config sidebar (replaces st.sidebar)
-│   │   │   └── TabNav.tsx        # Top tab navigation
-│   │   └── pages/                # One page component per tab (15 total)
+│   └── src/
+│       ├── App.tsx               # React Router with 15 routes
+│       ├── api/client.ts         # Typed axios client
+│       ├── store/configStore.ts  # Zustand global config store
+│       └── pages/
+│           ├── Upload.tsx        # Auto-upload + live model output panel
+│           └── …                 # 14 other page components
 │
-├── core/                         # UNCHANGED — all AI/ML business logic
-│   ├── animal_detector.py        # MegaDetector + BioClip ensemble
-│   ├── bioclip_classifier.py     # OpenCLIP species classifier
+├── core/                         # AI/ML business logic
+│   ├── animal_detector.py        # MegaDetectorWrapper (v5a + v1000) + AnimalDetector
+│   │                             # orchestrator with parallel inference
+│   ├── ensemble_engine.py        # NMS detection fusion + weighted species fusion
+│   ├── speciesnet_classifier.py  # Google SpeciesNet wrapper (EfficientNetV2-M)
+│   ├── bioclip_classifier.py     # OpenCLIP zero-shot species classifier
+│   ├── species_library.py        # 159-species African wildlife DB + synonyms
 │   ├── day_night_classifier.py   # Brightness-based day/night
 │   ├── ocr_processor.py          # EasyOCR metadata extraction
 │   ├── image_processor.py        # Unified processing pipeline
-│   ├── db_manager.py             # SQLite schema and persistence
+│   ├── db_manager.py             # SQLite schema and persistence (WAL mode)
 │   ├── independence_engine.py    # 30-min IDE grouping + RAI
 │   ├── qc_engine.py              # QC flag system
 │   ├── station_manager.py        # Station registry + deployments
@@ -90,7 +257,6 @@ camera-traps/
 │   ├── review_engine.py          # HITL accept/correct/reject queue
 │   ├── community_observer.py     # Field observer sighting store
 │   ├── spatial_exporter.py       # GeoJSON, Shapefile, KML export
-│   ├── species_library.py        # Species reference library
 │   ├── corridor_analyzer.py      # Directional corridor flow analysis
 │   ├── project_config.py         # Multi-project config + baselines
 │   └── arcgis_sync.py            # ArcGIS REST API sync
@@ -98,11 +264,13 @@ camera-traps/
 ├── dev.sh                        # One command: starts both servers
 ├── wildlife_data.db              # SQLite database (auto-created on first run)
 ├── requirements.txt              # Python ML dependencies
+├── backend/requirements.txt      # FastAPI/server dependencies
 ├── Dockerfile                    # Multi-stage build (Node → React → Python)
-├── docker-compose.yml            # Container orchestration
-├── install.sh                    # Mac / Linux one-click installer (creates venv)
+├── docker-compose.yml            # Container orchestration with named volumes
+├── .env.example                  # Environment variable template
+├── install.sh                    # Mac / Linux one-click installer
 ├── install.bat                   # Windows one-click installer
-└── force_download.py             # Pre-downloads AI models (~1.5 GB)
+└── force_download.py             # Pre-downloads AI models
 ```
 
 ---
@@ -111,16 +279,13 @@ camera-traps/
 
 ### Step 1 — Install Python dependencies
 
-> **Python version:** Python 3.12 is strongly recommended. Python 3.14+ is **not supported** — key packages (`megadetector`, `yolov5`) have no pre-built wheels for 3.14 and will fail to compile.
+> **Python version:** Python 3.12 is strongly recommended. Python 3.14+ is **not supported** — key packages (`megadetector`, `yolov5`) have no pre-built wheels for 3.14.
 
-**Option A — Use the existing installer (recommended)**
-
-The installer creates a `venv/` with all Python dependencies and pre-downloads the AI models:
+**Option A — Use the installer (recommended)**
 
 ```bash
 # macOS / Linux
-chmod +x install.sh
-./install.sh
+chmod +x install.sh && ./install.sh
 
 # Windows
 install.bat
@@ -129,38 +294,43 @@ install.bat
 **Option B — Manual setup**
 
 ```bash
-# Create venv with Python 3.12
 python3.12 -m venv venv
 source venv/bin/activate          # Windows: venv\Scripts\activate.bat
-
-# Install Python dependencies
 pip install -r requirements.txt
 pip install -r backend/requirements.txt
-
-# Pre-download AI models (one-time, ~1.5 GB)
-python force_download.py
+python force_download.py          # pre-downloads MDv5a + BioClip (~1.5 GB)
 ```
 
-### Step 2 — Install frontend dependencies
+### Step 2 — Set up SpeciesNet credentials (optional but recommended)
+
+SpeciesNet downloads its weights from Kaggle on first run. Without credentials the pipeline falls back to BioClip-only — still functional, just less accurate on common species.
 
 ```bash
-cd frontend
-npm install
-cd ..
+# 1. Create a free account at https://www.kaggle.com/
+# 2. Go to: Account → Settings → API → Create New Token
+# 3. Copy your username and key into .env:
+cp .env.example .env
+# Edit .env and add:
+# KAGGLE_USERNAME=your_username
+# KAGGLE_KEY=your_api_key
 ```
 
-### Step 3 — Run
+### Step 3 — Install frontend dependencies
+
+```bash
+cd frontend && npm install && cd ..
+```
+
+### Step 4 — Run
 
 ```bash
 bash dev.sh
 ```
 
-Then open **http://localhost:5173** in your browser.
+Open **http://localhost:5173** in your browser.
 
 - Frontend (React) → `http://localhost:5173`
 - API docs (Swagger) → `http://localhost:8000/docs`
-
-`dev.sh` automatically activates the `venv/` if it exists, then starts both the FastAPI backend (port 8000) and the Vite dev server (port 5173) together. Press `Ctrl+C` to stop both.
 
 ---
 
@@ -171,25 +341,23 @@ Then open **http://localhost:5173** in your browser.
 ```bash
 git clone <repository-url>
 cd camera-traps
-chmod +x install.sh
-./install.sh
+chmod +x install.sh && ./install.sh
 cd frontend && npm install && cd ..
 bash dev.sh
 ```
 
 For a clean reinstall: `./install.sh --fresh`
 
-**What the Linux installer does automatically:**
-
-- Installs `python3.12-venv` via apt so the venv works even when the system default Python is newer (e.g. 3.14 on Ubuntu 25.04+).
-- Probes for an NVIDIA GPU via `nvidia-smi`. If none is found, installs the **CPU-only** PyTorch wheel (~300 MB) instead of the full CUDA build (~3 GB), saving both download time and disk space.
-- Downloads all other packages in parallel with live progress, speed, and ETA — with automatic retry (up to 3 attempts) on transient failures.
+The Linux installer automatically:
+- Installs `python3.12-venv` via apt (needed on Ubuntu 25.04+ where system Python is 3.14)
+- Detects NVIDIA GPU via `nvidia-smi` — installs CPU-only PyTorch (~300 MB) if no GPU found
+- Downloads packages in parallel with live progress, speed, ETA, and auto-retry
 
 ---
 
 ### Option B — Windows (one-click)
 
-**Requirements:** Python 3.12 from [python.org](https://www.python.org/downloads/) (check "Add Python to PATH"). Node.js from [nodejs.org](https://nodejs.org/).
+**Requirements:** Python 3.12 from [python.org](https://www.python.org/downloads/). Node.js from [nodejs.org](https://nodejs.org/).
 
 ```bat
 git clone <repository-url>
@@ -199,7 +367,7 @@ cd frontend && npm install && cd ..
 bash dev.sh
 ```
 
-> **Tip:** If you have Python 3.14 installed, you do **not** need to uninstall it. Install Python 3.12 alongside it — `install.bat` uses the Windows Python Launcher (`py -3.12`) to pick the right version automatically.
+> Python 3.14 does not need to be uninstalled — `install.bat` uses the Windows Python Launcher (`py -3.12`) to pick the right version automatically.
 
 For a clean reinstall: `install.bat --fresh`
 
@@ -218,53 +386,37 @@ cd frontend && npm install && cd ..
 bash dev.sh
 ```
 
-To update after `git pull`:
-```bash
-conda env update -f environment.yml --prune
-```
-
 ---
 
 ### Option D — Docker (production, single server)
 
-In production the FastAPI backend serves the built React app as static files — one server, one port.
-
 ```bash
 git clone <repository-url>
 cd camera-traps
-
-# Build and run (first time — downloads and compiles everything)
+cp .env.example .env          # add KAGGLE_USERNAME and KAGGLE_KEY for SpeciesNet
 docker compose up --build
-
-# Subsequent runs (uses cached image)
-docker compose up
 ```
 
-Access the app at `http://localhost:8000`.
+Access the app at **http://localhost:8000**.
 
-> **Note:** Newer Docker versions (19+) ship Compose as a built-in plugin. Use `docker compose` (space, not hyphen). The old standalone `docker-compose` binary is no longer installed by default. If you get `bash: docker-compose: command not found`, either use `docker compose` or add an alias:
+> Use `docker compose` (space, not hyphen). If you get `command not found`:
 > ```bash
 > echo "alias docker-compose='docker compose'" >> ~/.bashrc && source ~/.bashrc
 > ```
 
-The `docker-compose.yml` mounts three model cache directories from your host into the container so the AI models do not need to be re-downloaded on every build:
-
+Named volumes prevent model re-downloads on rebuild:
 ```
-~/.EasyOCR                → /root/.EasyOCR          (EasyOCR model weights)
-~/.cache/huggingface      → /root/.cache/huggingface (BioClip / HuggingFace)
-/tmp/megadetector_models  → /tmp/megadetector_models (MegaDetector V5a)
+easyocr_cache       → /root/.EasyOCR
+huggingface_cache   → /root/.cache/huggingface
 ```
-
-On a fresh machine with no local cache Docker will download the models at first startup (~1.5 GB total) since it has internet access by default. Subsequent restarts use the cached volumes and are fast.
+MegaDetector and SpeciesNet weights are stored inside the container layer on first build.
 
 ---
 
 ### Option E — VS Code Dev Container
 
-The repository includes `.devcontainer/devcontainer.json` for a pre-configured container.
-
-1. Install the **Dev Containers** extension in VS Code.
-2. Open the repository folder and click **"Reopen in Container"** when prompted.
+1. Install the **Dev Containers** extension.
+2. Open the repository and click **"Reopen in Container"**.
 3. The container installs all Python and Node dependencies automatically.
 4. Run `bash dev.sh` in the integrated terminal.
 
@@ -272,61 +424,36 @@ The repository includes `.devcontainer/devcontainer.json` for a pre-configured c
 
 ## How the Dev Setup Works
 
-In development, two processes run simultaneously:
-
 ```
 Browser → http://localhost:5173  →  Vite dev server (React, HMR)
-                                         ↓ proxy /api/*
+                                         ↓  proxy /api/*
                                     FastAPI  (http://localhost:8000)
                                          ↓
-                                    core/ (AI models, SQLite)
+                                    core/ (MDv5a + MDv1000 + BioClip + SpeciesNet)
+                                         ↓
+                                    wildlife_data.db (SQLite, WAL mode)
 ```
-
-Vite's proxy (`/api → localhost:8000`) means you only ever open one URL. All API calls from the frontend transparently reach FastAPI. In production (Docker), FastAPI serves the built React `dist/` directly — no Vite needed.
 
 ---
 
 ## Configuration
 
-The left sidebar in the app exposes all runtime settings. Changes are sent to `PATCH /api/config` instantly and take effect on the next image processing run — no restart required.
+All runtime settings are in the left sidebar. Changes POST to `PATCH /api/config` and take effect on the next processing run — no restart needed.
 
 | Setting | Description |
 |---------|-------------|
-| Detection Confidence | Score cutoff (default 0.35). Lower = more detections, higher = fewer false positives. |
+| Detection Confidence | Score cutoff (default 0.35). Lower for dark/distant shots. |
 | Brightness Threshold | Day/Night classification sensitivity (0–255). |
-| Metadata Strip (%) | % of image bottom scanned for date/time text. |
-| Auto-Scrub Person/Vehicle | Apply Gaussian blur to privacy-sensitive detections. |
+| Metadata Strip (%) | % of image bottom scanned for date/time OCR text. |
+| Auto-Scrub Person/Vehicle | Apply Gaussian blur to privacy-sensitive bounding boxes. |
 | Blur Strength | Gaussian kernel size (11–101, odd numbers). |
-| Independence Window (min) | Same species + same station within this window = one IDE (default 30 min). |
+| Independence Window (min) | Same species + station within this window = one IDE (default 30 min). |
 | Default Station ID | Fallback when filename doesn't encode a station. |
 | Default Trap Nights | Used for RAI when no deployment records exist. |
-| Review Queue Threshold | Images below this confidence appear in the Review Queue for expert review. |
+| Review Queue Threshold | Images below this confidence go to the Review Queue. |
 | Reviewer ID | Name/ID logged against review actions. |
-| Low-Spec Mode | INT8 dynamic quantization — halves model memory on machines with < 8 GB RAM. |
-| CPU Threads (Windows only) | PyTorch intra-op threads (default ¼ of core count — the stable sweet spot on Windows). |
-
----
-
-## Spatial File Exports
-
-The **Spatial & Map** and **ArcGIS Sync** tabs provide offline GIS formats — no ArcGIS account required:
-
-| Format | File | Best used with |
-|--------|------|----------------|
-| **GeoJSON** | `.geojson` | ArcGIS Online, QGIS, Mapbox, web apps |
-| **Shapefile** | `.zip` (`.shp`, `.dbf`, `.shx`, `.prj`) | ArcGIS Pro / Desktop, QGIS, any desktop GIS |
-| **KML** | `.kml` | Google Earth, ArcGIS Earth, ArcGIS Pro |
-| **CSV** | `.csv` | Excel, R, Python — georeferenced detections |
-
----
-
-## ArcGIS Live Sync Setup
-
-1. In ArcGIS Online, create a hosted **Feature Layer** (Point geometry) with fields: `station_id`, `species`, `detection_confidence`, `capture_date`, `day_night`.
-2. Copy the layer's REST endpoint URL from **Item Details → URL** (ends in `/FeatureServer/0`).
-3. In the **ArcGIS Sync** tab, enter the URL and your ArcGIS token, then click **Push to ArcGIS**.
-
-For ArcGIS Enterprise, use your portal root URL (e.g. `https://gis.yourorg.com/portal`).
+| Low-Spec Mode | Disables MDv1000 + SpeciesNet; INT8-quantizes MDv5a + BioClip. Keeps RAM under ~2 GB. |
+| CPU Threads (Windows only) | PyTorch intra-op threads (default ¼ of core count). |
 
 ---
 
@@ -334,101 +461,93 @@ For ArcGIS Enterprise, use your portal root URL (e.g. `https://gis.yourorg.com/p
 
 ### Model memory footprint
 
-AI models are loaded once at startup (FastAPI lifespan) and held in memory for the lifetime of the server — not reloaded per request.
+All models load once at startup and stay resident. The ensemble runs four models simultaneously.
 
-| Component | RAM | Disk |
-|-----------|-----|------|
-| PyTorch runtime | ~1.2 GB | ~2 GB |
-| MegaDetector V5a | ~600 MB | ~600 MB |
-| BioClip (OpenCLIP) | ~850 MB | ~850 MB |
-| **Total** | **~2.6 GB** | **~3.5 GB** |
+| Component | RAM | Disk | Notes |
+|-----------|-----|------|-------|
+| PyTorch runtime | ~1.2 GB | ~2 GB | Shared across all models |
+| MegaDetector V5a | ~600 MB | ~600 MB | Always loaded |
+| MegaDetector V1000 | ~600 MB | ~600 MB | Skipped in Low-Spec Mode |
+| BioClip (OpenCLIP) | ~850 MB | ~850 MB | Always loaded |
+| SpeciesNet (EfficientNetV2-M) | ~1.0 GB | ~1.0 GB | Skipped without Kaggle credentials or in Low-Spec Mode |
+| EasyOCR | ~200 MB | ~200 MB | Always loaded |
+| **Full ensemble total** | **~4.5 GB** | **~5.5 GB** | |
+| **Low-Spec total** | **~2.3 GB** | **~3.5 GB** | MDv1000 + SpeciesNet disabled |
 
 ### Minimum recommended specs
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
+| Resource | Low-Spec Mode | Full Ensemble |
+|----------|--------------|---------------|
 | RAM | 8 GB | 16 GB |
-| CPU | Any modern dual-core | 4+ cores |
-| GPU | Not required | CUDA GPU speeds up BioClip on Linux/Mac |
+| CPU | 2-core | 4+ cores (parallel inference benefits significantly) |
+| GPU | Not required | CUDA GPU speeds up BioClip + SpeciesNet |
 | Disk | 5 GB free | 10 GB free |
 | OS | Windows 10 / macOS 12 / Ubuntu 20.04 | — |
 
-> **GPU detection:** On all platforms the installer probes for an NVIDIA GPU via `nvidia-smi`. If found, the full CUDA PyTorch build is used; if not, the CPU-only build is installed automatically. AMD and Intel GPUs are not CUDA-capable and always fall back to CPU.
-
-### Running on a low-RAM machine
-
-Enable **Low-Spec / Low-Memory Mode** in the sidebar. This applies INT8 dynamic quantization to all models, roughly halving memory use. Detection accuracy may decrease slightly on borderline images.
+> GPU detection is automatic on all platforms. AMD and Intel GPUs are not CUDA-capable and always fall back to CPU.
 
 ---
 
-## VS Code Interpreter Setup
+## Spatial File Exports
 
-If VS Code shows "Cannot find module" for `cv2`, `torch`, etc., it is checking the wrong Python:
-
-1. Press `Ctrl+Shift+P` → **Python: Select Interpreter**
-2. Choose `./venv/bin/python` (venv) or the `wildlife-analyzer` conda env
+| Format | File | Best used with |
+|--------|------|----------------|
+| **GeoJSON** | `.geojson` | ArcGIS Online, QGIS, Mapbox |
+| **Shapefile** | `.zip` (`.shp`, `.dbf`, `.shx`, `.prj`) | ArcGIS Pro / Desktop, QGIS |
+| **KML** | `.kml` | Google Earth, ArcGIS Earth |
+| **CSV** | `.csv` | Excel, R, Python |
 
 ---
 
-## Troubleshooting: Linux — venv Creation Fails (`ensurepip` error)
+## ArcGIS Live Sync Setup
 
-On Ubuntu 25.04+ the system default Python is 3.14, so `python3-venv` installs the venv module for 3.14 — not for Python 3.12 that the installer picks. The symptom is:
+1. Create a hosted **Feature Layer** in ArcGIS Online (Point geometry) with fields: `station_id`, `species`, `detection_confidence`, `capture_date`, `day_night`.
+2. Copy the REST endpoint URL (ends in `/FeatureServer/0`).
+3. In the **ArcGIS Sync** tab, enter the URL and your token, then click **Push to ArcGIS**.
 
-```
-Error: Command '['.../python3.12', '-m', 'ensurepip', '--upgrade']' returned non-zero exit status 1.
-```
+---
 
-The installer now handles this automatically by also installing `python3.12-venv`. If you hit this on an older installer version, fix it manually:
+## Troubleshooting: SpeciesNet Not Loading
 
+**Symptom:** Startup log shows `"SpeciesNet failed to load"` and the live panel shows `"not loaded"` for SpeciesNet predictions.
+
+**Cause:** Kaggle credentials are missing or incorrect.
+
+**Fix:**
 ```bash
-sudo apt-get install python3.12-venv
-rm -rf venv
-bash install.sh
+# 1. Verify credentials exist in .env
+cat .env | grep KAGGLE
+
+# 2. If missing, add them:
+echo "KAGGLE_USERNAME=your_username" >> .env
+echo "KAGGLE_KEY=your_api_key" >> .env
+
+# 3. Restart the backend
 ```
 
----
-
-## Troubleshooting: Linux — Disk Quota Exceeded During Install
-
-By default, `pip download` fetches every wheel regardless of what is already installed in the venv. Without GPU auto-detection, this includes the full CUDA PyTorch build (~2.5 GB for torch alone) plus NVIDIA libraries (`nvidia_cublas`, `nvidia_cufft`, `triton`, etc.) even on CPU-only machines — easily exceeding per-user disk quotas.
-
-The current installer avoids this by:
-1. Detecting the GPU with `nvidia-smi` before the parallel download phase.
-2. Pre-installing the CPU-only PyTorch wheel if no GPU is found.
-3. Excluding `torch` and `torchvision` from the parallel download queue so the CUDA builds are never fetched.
-
-If you hit the quota error on an older version, upgrade and reinstall:
-
-```bash
-git pull
-rm -rf venv temp_packages_download
-bash install.sh
-```
+The pipeline continues to work without SpeciesNet — it falls back to BioClip only. Agreement will show "Medium" instead of "High" for most detections.
 
 ---
 
 ## Troubleshooting: Models Not Loading
 
-If the API returns `"models_loaded": false` at `GET /api/config/status`, the backend started but failed to import one or more packages. Check the uvicorn terminal output for the specific error.
+If `GET /api/config/status` returns `"models_loaded": false`, the backend started but a model import failed.
 
 **Most common cause:** uvicorn is using the system Python, not the venv.
 
 ```bash
-# Always activate the venv before running manually
-source venv/bin/activate          # Windows: venv\Scripts\activate.bat
+source venv/bin/activate
 uvicorn backend.main:app --reload --port 8000
 ```
 
-`bash dev.sh` handles this automatically — it activates `venv/` if present.
+`bash dev.sh` handles this automatically.
 
 **Missing packages:**
 ```bash
 source venv/bin/activate
-pip install megadetector open_clip_torch
+pip install megadetector open_clip_torch speciesnet
 python force_download.py
 ```
-
-Then restart the backend. Models reload automatically on next startup.
 
 ---
 
@@ -440,214 +559,138 @@ Then restart the backend. Models reload automatically on next startup.
 GET http://localhost:8000/api/config/status
 ```
 
-Should return `{"models_loaded": true, "error": null}`. If `models_loaded` is `false`, fix the model loading issue first (see above).
+Should return `{"models_loaded": true}`.
 
-### Step 2 — Use the Diagnostics tab
+### Step 2 — Watch the live panel
 
-Upload a failing image to the **Diagnostics** tab and click **Run Deep Inspection**. This shows:
-- Raw OCR extraction output
-- MegaDetector candidates at all confidence levels
-- BioClip top-20 species scores
+The **Upload & Process** page streams per-model output cards as each image is analysed. If both MDv5a and MDv1000 show `—` (no detections), the animal was not detected by either detector regardless of threshold.
 
-If MegaDetector returns no candidates, the animal was not detected regardless of threshold.
+### Step 3 — Lower confidence threshold
 
-### Step 3 — Lower the confidence threshold
-
-The sidebar **Detection Confidence** defaults to **0.35**. Night/IR shots and distant animals often score 0.15–0.25. Try **0.10–0.15** and reprocess.
+The sidebar defaults to **0.35**. Night/IR shots and distant animals often score 0.15–0.25. Try **0.10–0.15**.
 
 ### Step 4 — Check image quality
 
 | Condition | Action |
 |-----------|--------|
 | Very dark / underexposed | Check camera flash settings |
-| Animal < 2% of frame | Reposition the camera closer to the path |
+| Animal < 2% of frame | Move camera closer to the path |
 | Heavy motion blur | Increase camera shutter speed |
-| Corrupted or zero-byte file | Re-export from SD card |
+| Corrupted file | Re-export from SD card |
 
-### Step 5 — Disable Low-Spec mode
+### Step 5 — Disable Low-Spec Mode
 
-INT8 quantization can drop borderline detections (scores 0.20–0.35) below the threshold. Uncheck **Low-Spec Mode** in the sidebar and restart the backend.
-
----
-
-## Troubleshooting: Windows — Machine Restarts During Processing
-
-This is a GPU driver TDR failure, not a RAM crash.
-
-The app sets `CUDA_VISIBLE_DEVICES=-1` and probes for NVIDIA GPUs via `nvidia-smi` (a lightweight CLI that does not open a CUDA context). On machines without a healthy NVIDIA driver, CUDA is disabled entirely before any model loads.
-
-If you are on an older version and seeing restarts, update and restart:
-
-```bat
-git pull
-install.bat
-```
-
-### Windows stability fixes included in the current version
-
-| Fix | What it prevents |
-|-----|-----------------|
-| `nvidia-smi` probe + conditional `CUDA_VISIBLE_DEVICES=-1` | GPU TDR crash on machines without a healthy NVIDIA GPU |
-| `OMP_NUM_THREADS=1`, `MKL_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` | OpenMP deadlock from PyTorch + OpenCV + EasyOCR loading duplicate DLLs |
-| `torch.set_num_threads(¼ cores)` on Windows | Thread-stack exhaustion when all three models compete for threads |
-| `multiprocessing.freeze_support()` | Crash when EasyOCR or YOLO spawn worker processes |
+INT8 quantization can drop borderline detections (scores 0.20–0.35) below the threshold.
 
 ---
 
-## Troubleshooting: Windows — SSL Certificate Error During Install
+## Troubleshooting: Linux — venv Creation Fails
 
-If `install.bat` fails with `ssl.SSLCertVerificationError`, your network performs SSL inspection with a corporate root CA that Python does not trust.
-
-**Option 1 — Re-run the updated installer** (pulls the latest version which handles this):
-```bat
-git pull
-install.bat
-```
-
-**Option 2 — Manual override:**
-```bat
-set PYTHONHTTPSVERIFY=0
-venv\Scripts\activate.bat
-pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --no-cache-dir -r requirements.txt
-```
-
-**Option 3 — Ask IT** to export the corporate root CA certificate and:
-```bat
-set REQUESTS_CA_BUNDLE=C:\path\to\corporate-ca.pem
-set SSL_CERT_FILE=C:\path\to\corporate-ca.pem
-pip install --no-cache-dir -r requirements.txt
-```
-
----
-
-## Troubleshooting: Docker — Permission Denied Connecting to Docker Socket
-
-If you see this error when running `docker compose up`:
-
-```
-permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock
-```
-
-Your user is not in the `docker` group. Fix it with:
+**Symptom:** `ensurepip` error on Ubuntu 25.04+ where system Python is 3.14.
 
 ```bash
-# 1 — Create the docker group (may already exist on some distros)
-sudo groupadd docker
-
-# 2 — Add yourself to the group
-sudo usermod -aG docker $USER
-
-# 3 — Fix the socket ownership so the group can access it
-sudo chown root:docker /var/run/docker.sock
-
-# 4 — Activate the new group in your current terminal session
-newgrp docker
+sudo apt-get install python3.12-venv
+rm -rf venv
+bash install.sh
 ```
 
-Step 4 (`newgrp docker`) applies the group membership immediately without requiring a logout. For all future terminal sessions it works automatically — you may need to log out and back in (or reboot) once to make it fully permanent.
+---
+
+## Troubleshooting: Docker — Permission Denied
+
+```bash
+sudo groupadd docker
+sudo usermod -aG docker $USER
+sudo chown root:docker /var/run/docker.sock
+newgrp docker
+```
 
 ---
 
 ## Troubleshooting: Docker — Port 8000 Already in Use
 
-```
-failed to bind host port 0.0.0.0:8000/tcp: address already in use
-```
-
-The local development server (`dev.sh` / uvicorn) is still running on port 8000. Find and stop it:
-
 ```bash
-# Find the process
-lsof -ti :8000
-
-# Kill it (replace PID with the number returned above)
-kill <PID>
-
-# Then start Docker
+lsof -ti :8000 | xargs kill
 docker compose up
 ```
 
-Alternatively, change the Docker port mapping in `docker-compose.yml` to run both simultaneously (e.g. `"8080:8000"` for Docker, keeping 8000 for local dev).
+Or change the Docker port mapping in `docker-compose.yml` to `"8080:8000"`.
+
+---
+
+## Troubleshooting: Windows — Machine Restarts During Processing
+
+This is a GPU driver TDR failure. The app probes for NVIDIA GPUs via `nvidia-smi` before loading any model, and sets `CUDA_VISIBLE_DEVICES=-1` if no healthy GPU is found. Update to the latest version if you see this on an older install:
+
+```bat
+git pull && install.bat
+```
 
 ---
 
 ## Technical Notes
 
-- **MegaDetector V5a** — Microsoft AI for Earth model detecting Animal / Person / Vehicle classes.
-- **BioClip (OpenCLIP)** — Imageomics foundation model for fine-grained species classification from cropped detections.
-- **EasyOCR** — Reads date, time, and temperature from camera metadata strips via regex.
-- **Independence rule** — Same species + same station + detections within the window → one IDE. RAI = IDEs / trap nights.
-- **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes. Originals are never modified.
-- **Background jobs** — Image processing runs in a `ThreadPoolExecutor` background task. The frontend polls `GET /api/images/job/{id}` every 1.5 s and updates the progress bar in real time.
-- **SQLite** (`wildlife_data.db`) — All persistent data (stations, IDEs, review actions, community observations, project config, ArcGIS sync log) stored in a single local database.
+### Pipeline
+
+- **MegaDetector V5a + V1000** run in parallel threads per image. Bounding boxes are NMS-merged (IoU ≥ 0.5).
+- **BioClip + SpeciesNet** run in parallel threads per animal crop. Scores are fused with weights 0.45/0.55 (SpeciesNet weighted higher due to camera-trap training data). Agreement bonus of +0.08 applied when both classifiers pick the same top species.
+- Images upload automatically in the browser (400 ms debounce) on file selection — the server receives files before the user clicks "Start".
+- SSE stream (`GET /api/images/job/{id}/stream`) emits both `model_event` messages (per model per image) and `progress` heartbeats. The frontend renders each image's results as a live card as they arrive.
+- All processing runs in a `ThreadPoolExecutor` background task to keep the FastAPI event loop free.
+
+### Data
+
+- **EasyOCR** reads date, time, and temperature from camera metadata strips (bottom 10% of image) via regex.
+- **Independence rule** — same species + same station + detections within the window = one IDE. RAI = IDEs / trap nights.
+- **Privacy scrubbing** — Gaussian blur applied to Person/Vehicle bounding boxes. Original files are never modified.
+- **SQLite** (`wildlife_data.db`) in WAL mode — all stations, IDEs, review actions, community observations, project config, and ArcGIS sync log stored in one local file.
+- **Species library** — 159 African wildlife species with full scientific names (e.g. *Panthera leo*), family, order, IUCN status, and 59 synonym mappings (e.g. "painted wolf" → "African Wild Dog").
 
 ---
 
 ## Recent Changes
 
+### Multi-Model Ensemble Pipeline (May 2026)
+
+**Core:**
+- `core/ensemble_engine.py` (new) — IoU-based NMS to merge MDv5a + MDv1000 detections; weighted score fusion (0.45/0.55) for BioClip + SpeciesNet species predictions; agreement scoring (High / Medium / Low) with +0.08 confidence bonus on agreement.
+- `core/speciesnet_classifier.py` (new) — thin wrapper around Google's `SpeciesNetClassifier` (EfficientNetV2-M); saves crops to temp JPEG for the filepath-based API, classifies, cleans up.
+- `core/animal_detector.py` — `MegaDetectorWrapper` now accepts `model_version` param, supporting any MD model string. `AnimalDetector` accepts `megadetector_v1000` and `speciesnet` as optional second detector/classifier. Both detector pairs and classifier pairs run in parallel via `ThreadPoolExecutor`. Result dicts carry a `_model_events` list for SSE streaming.
+- `core/species_library.py` — expanded from 33 Gambella-specific entries to **159 pan-African species** with full scientific names, families, IUCN status, and **59 synonym mappings**.
+
+**Backend:**
+- `backend/services/job_manager.py` — `Job` dataclass gains `model_events: List[Dict]` queue.
+- `backend/routers/images.py` — SSE stream tracks an event cursor and yields `model_event` messages (per-model per-image) before each `progress` heartbeat. `_run_processing` extracts `_model_events` from each result and appends them to `job.model_events`.
+- `backend/models/state.py` — adds `md_v1000_model` and `speciesnet_model` fields.
+- `backend/main.py` — loads MDv1000 (redwood) and SpeciesNet in `_load_all_models()`. Both are skipped when `enable_low_spec=True`. `pin_memory` PyTorch warning suppressed.
+- `backend/requirements.txt` — adds `speciesnet>=4.0.2`.
+
+**Frontend:**
+- `frontend/src/pages/Upload.tsx` — files auto-upload with 400 ms debounce on select/drop. "Start AI Analysis" button only calls `startProcessing()` (files already on server). Live model output panel replaces the plain text log with per-image cards showing MDv5a → MDv1000 → Detection fusion → BioClip → SpeciesNet → final result with agreement badge.
+
+---
+
 ### Review Results & Review Queue Overhaul (May 2026)
 
-**Review Results page:**
-- Added **Table ↔ Gallery view toggle** — gallery shows a 4-column image grid.
-- **Bounding box SVG overlays** on both gallery cards and the lightbox. Gallery uses `preserveAspectRatio="xMidYMid slice"` (matching CSS `object-cover`); lightbox uses `meet` (letterbox). Multi-animal images render each box in a distinct colour (green, blue, amber, red, purple, cyan).
-- **Multi-animal grouping** — when an image contains several detections (multiple rows in the `detections` table), the gallery shows a single card with all boxes overlaid. The lightbox lists every detection with its colour swatch and confidence chip.
-- **Per-detection inline editing** in the lightbox — click a species label to edit it; saves to the correct `detections` table row via `detection_id`. Shared fields (Station, Notes) write to the `images` table.
-- **Summary stats bar** — Total Images, Animals, Unique Species, Day/Night counts.
-- **Sortable columns** — click any column header to cycle ascending/descending/off.
-- **Confidence bars** with colour coding: green ≥ 70 %, amber ≥ 40 %, red < 40 %.
-- **Day/Night badges** (☀ / 🌙) throughout table, gallery, and lightbox.
-- Lightbox keyboard navigation (← → Esc) blocked while an edit input is active.
-
-**Review Queue page:**
-- Redesigned as a **responsive grid** (2 → 3 → 4 columns at md/lg breakpoints).
-- Each card shows a full-width image with a **bounding box SVG overlay**, day/night badge, station chip, confidence bar, and capture date.
-- Actions (Confirm / Correct / Flag) appear as a tab-bar footer on idle cards. Clicking one expands an inline coloured panel with a notes/reason field and a Save button — no modal, no page reload.
-- **Tab count badges** on the Queue, Correction Log, and Privacy Audit tabs.
-- Correction Log uses proper column labels and colour-coded action badges (green = accept, blue = correct, red = flag).
-
-**Backend fixes:**
-- `core/db_manager.py` — added missing `update_detection(detection_id, fields)` method. It routes `detected_animal` updates to the `detections` table and `station_id` / `user_notes` updates to the `images` table via the detection's `image_id`.
-- `get_history_df()` now includes `d.id as detection_id` so the frontend can target individual detection rows.
-- `PATCH /api/results/{detection_id}` — renamed parameter from `image_id` to `detection_id` to match the new routing semantics.
-- **SPA routing fix** in production — replaced the bare `StaticFiles(html=True)` mount with a `/assets` static mount plus a `GET /{full_path:path}` catch-all that returns `index.html`. Previously, direct navigation to any React route (e.g. `/results`, `/review-queue`) returned **404** in production.
+- Table ↔ Gallery view toggle with bounding box SVG overlays (multi-colour per detection).
+- Multi-animal grouping in gallery — single card per image with all boxes overlaid.
+- Per-detection inline editing in lightbox — edits route to correct `detections` table row via `detection_id`.
+- Sortable columns, confidence colour bars, day/night badges.
+- Redesigned Review Queue as responsive card grid with bounding boxes, inline confirm/correct/flag panels, and agreement badges.
+- Pagination on both Results (50 per page) and Review Queue (20 per page) with keyboard navigation (J/K or arrow keys, A/C/F shortcuts on focused card).
 
 ---
 
 ### FastAPI + React Migration (May 2026)
 
-- Replaced the Streamlit monolith (`app.py`) with a **FastAPI REST backend** (`backend/`) and a **React + TypeScript frontend** (`frontend/`).
-- All `core/` modules are unchanged — they are called directly by FastAPI route handlers.
-- AI models now load once at server startup via FastAPI's lifespan context (replaces `@st.cache_resource`).
-- Image processing moved to background tasks with a polling API (`POST /process → GET /job/{id}`) giving real-time progress in the browser.
-- Config sidebar changes now call `PATCH /api/config` and take effect immediately without a page reload.
-- Added `dev.sh` — one command to start both servers with automatic venv activation.
-- Updated `Dockerfile` to a multi-stage build: Node stage builds the React app, Python stage serves everything via FastAPI on port 8000.
-- Interactive API documentation available at `http://localhost:8000/docs`.
-
-### Linux Installer & Download Engine (May 2026)
-
-- `install.sh` now installs `python3.12-venv` explicitly on Debian/Ubuntu, fixing venv creation failures on systems where the default Python is 3.14+ (e.g. Ubuntu 25.04).
-- Added NVIDIA GPU auto-detection via `nvidia-smi`: CPU-only PyTorch is installed when no GPU is present, reducing the download from ~3 GB to ~300 MB and preventing disk quota errors.
-- Rewrote the parallel download engine (`install_dependencies.py`):
-  - Live dashboard showing every package with phase badges: `[Queued]` → `[Resolving]` → `[Downloading]` → `[Done]`
-  - Real-time bytes downloaded / total, speed (MB/s), and ETA parsed from pip's output
-  - Automatic retry with exponential back-off — up to 3 attempts at 5 s → 15 s → 30 s delays
-  - Dynamic worker count scaled to `min(8, cpu_count ÷ 2)` instead of a hardcoded 5
-  - Install phase now streams pip output live (package-by-package) instead of running silently
-
-### Windows Installer & Dependency Fixes (May 2026)
-
-- `install.bat` now uses the Windows Python Launcher to prefer Python 3.12 → 3.11 → 3.13, avoiding the Python 3.14 wheel-compilation failure for `megadetector` and `yolov5`.
-- Replaced blanket `CUDA_VISIBLE_DEVICES=-1` with `nvidia-smi` GPU probe — CUDA is now automatically enabled on machines with a working NVIDIA GPU.
-- Pinned `megadetector>=5.0.0,<6.0.0` to avoid the breaking API changes in version 10.x.
-- Added `--fresh` flag to both `install.sh` and `install.bat` for clean-slate reinstalls.
-
-### Earlier Changes (May 2026)
-
-- Removed `numpy<2.0.0` upper-bound constraint to allow NumPy 2.x wheels on Python 3.14.
-- Fixed `TypeError` in Excel report generation on newer Pandas/Arrow string backends.
-- Added **Low-Spec / Low-Memory Mode** for INT8 quantization on machines with < 8 GB RAM.
-- Added `OMP_NUM_THREADS=1`, `KMP_DUPLICATE_LIB_OK=TRUE` and `torch.set_num_threads(1)` on Windows to fix OpenMP deadlocks and thread-stack exhaustion.
+- Replaced the Streamlit monolith with a FastAPI REST backend and React + TypeScript frontend.
+- AI models load once at startup via FastAPI lifespan (off the event loop via `asyncio.to_thread`).
+- Real-time SSE progress stream replaced 1.5 s polling.
+- Pipeline Ready badge on Upload page polls `/api/config/status` until models are loaded.
+- SQLite WAL mode for concurrent reads during processing.
+- Job TTL eviction cleans up temp dirs after 2 hours.
+- File upload size limit (50 MB, configurable via `MAX_UPLOAD_MB` env var), path-traversal sanitization.
+- `.env` support with fallbacks for `DB_PATH`, `CORS_ORIGINS`, `MAX_UPLOAD_MB`, `JOB_TTL_HOURS`.
 
 ---
 

@@ -30,6 +30,8 @@ class Job:
     image_paths: List[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     finished_at: Optional[float] = None
+    # Per-image model events — appended during processing, read by SSE stream
+    model_events: List[Dict] = field(default_factory=list)
 
 
 class JobManager:

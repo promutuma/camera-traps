@@ -80,6 +80,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _load_all_models(state: AppState, project_root: Path) -> None:
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        message=".*pin_memory.*no accelerator.*",
+        category=UserWarning,
+    )
+
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
@@ -123,6 +130,25 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
         species_list=AnimalDetector.WILDLIFE_CLASSES,
         low_spec=cfg.enable_low_spec,
     )
+
+    if not cfg.enable_low_spec:
+        logger.info("Loading MegaDetector v1000 (redwood)...")
+        try:
+            from core.animal_detector import MegaDetectorWrapper as _MDWrapper
+            state.md_v1000_model = _MDWrapper(
+                model_version="redwood",
+                confidence_threshold=cfg.detection_confidence,
+                low_spec=False,
+            )
+        except Exception as exc:
+            logger.warning("MDv1000 failed to load (non-fatal): %s", exc)
+
+        logger.info("Loading SpeciesNet classifier...")
+        try:
+            from core.speciesnet_classifier import SpeciesNetWrapper
+            state.speciesnet_model = SpeciesNetWrapper(low_spec=False)
+        except Exception as exc:
+            logger.warning("SpeciesNet failed to load (non-fatal): %s", exc)
 
     logger.info("Loading Day/Night classifier...")
     state.dn_model = DayNightClassifier()

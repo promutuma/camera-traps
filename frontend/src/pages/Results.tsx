@@ -424,9 +424,61 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
   );
 }
 
+// ── Pagination control ────────────────────────────────────────────────────────
+
+function Pagination({ page, totalPages, total, onPage }: {
+  page: number; totalPages: number; total: number; onPage: (p: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between pt-1">
+      <p className="text-xs text-slate-400">{total} total · page {page} of {totalPages}</p>
+      <div className="flex gap-1">
+        <button
+          disabled={page === 1}
+          onClick={() => onPage(1)}
+          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
+        >«</button>
+        <button
+          disabled={page === 1}
+          onClick={() => onPage(page - 1)}
+          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
+        >‹ Prev</button>
+        {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+          const start = Math.max(1, Math.min(page - 2, totalPages - 4));
+          const p = start + i;
+          return (
+            <button
+              key={p}
+              onClick={() => onPage(p)}
+              className={`px-3 py-1 text-xs rounded border transition ${
+                p === page
+                  ? "bg-green-600 text-white border-green-600"
+                  : "border-slate-200 hover:bg-slate-50 text-slate-600"
+              }`}
+            >{p}</button>
+          );
+        })}
+        <button
+          disabled={page === totalPages}
+          onClick={() => onPage(page + 1)}
+          className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
+        >Next ›</button>
+        <button
+          disabled={page === totalPages}
+          onClick={() => onPage(totalPages)}
+          className="px-2 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50"
+        >»</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Results() {
+  const PAGE_SIZE = 50;
+
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
@@ -435,10 +487,12 @@ export default function Results() {
   const [editVal, setEditVal] = useState("");
   const [lightbox, setLightbox] = useState<ImageGroup | null>(null);
   const [sort, setSort] = useState<{ col: string; dir: SortDir }>({ col: "", dir: null });
+  const [page, setPage] = useState(1);
   const speciesInputRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
+    setPage(1);
     try {
       const params: Record<string, string> = {};
       if (filter.species)   params.species   = filter.species;
@@ -463,7 +517,10 @@ export default function Results() {
     return sort.dir === "asc" ? cmp : -cmp;
   });
 
-  // Group by filename for gallery view (one card per image, multiple detections)
+  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const paginated = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  // All groups (for lightbox prev/next)
   const galleryGroups = useMemo<ImageGroup[]>(() => {
     const map = new Map<string, Row[]>();
     for (const row of sorted) {
@@ -473,6 +530,17 @@ export default function Results() {
     }
     return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
   }, [sorted]);
+
+  // Page slice for gallery
+  const pagedGalleryGroups = useMemo<ImageGroup[]>(() => {
+    const map = new Map<string, Row[]>();
+    for (const row of paginated) {
+      const fn = String(row.filename ?? "");
+      if (!map.has(fn)) map.set(fn, []);
+      map.get(fn)!.push(row);
+    }
+    return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
+  }, [paginated]);
 
   const toggleSort = (col: string) => {
     setSort((s) =>
@@ -644,103 +712,109 @@ export default function Results() {
         </div>
       ) : viewMode === "gallery" ? (
         // ── Gallery grid ──
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {galleryGroups.map((group) => (
-            <GalleryCard key={group.filename} rows={group.rows} onClick={() => setLightbox(group)} />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {pagedGalleryGroups.map((group) => (
+              <GalleryCard key={group.filename} rows={group.rows} onClick={() => setLightbox(group)} />
+            ))}
+          </div>
+          <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
+        </>
       ) : (
         // ── Table view ──
-        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 border-b border-slate-200">
-              <tr>
-                <th className="text-left px-3 py-3 font-medium text-slate-500 w-20">Image</th>
-                {COLS.map(({ key, label, sortable }) => (
-                  <th
-                    key={key}
-                    className={`text-left px-3 py-3 font-medium text-slate-500 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800" : ""}`}
-                    onClick={() => sortable && toggleSort(key)}
-                  >
-                    {label}{sortable && sortIcon(key)}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {sorted.map((row, i) => {
-                const id = Number(row.id ?? row.image_id ?? i);
-                const filename = String(row.filename ?? "");
-                return (
-                  <tr key={id} className="hover:bg-slate-50 group">
-                    {/* Thumbnail */}
-                    <td className="px-3 py-2">
-                      <button
-                        onClick={() => {
-                          const g = galleryGroups.find((g) => g.filename === filename);
-                          setLightbox(g ?? { filename, rows: [row] });
-                        }}
-                        className="block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 hover:ring-2 hover:ring-green-500 transition shrink-0"
-                        title="View image"
-                      >
-                        <img
-                          src={storedImageUrl(filename)}
-                          alt={filename}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            const el = e.currentTarget as HTMLImageElement;
-                            el.style.display = "none";
-                            el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 flex items-center justify-center h-full w-full">No img</span>';
+        <>
+          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 border-b border-slate-200">
+                <tr>
+                  <th className="text-left px-3 py-3 font-medium text-slate-500 w-20">Image</th>
+                  {COLS.map(({ key, label, sortable }) => (
+                    <th
+                      key={key}
+                      className={`text-left px-3 py-3 font-medium text-slate-500 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800" : ""}`}
+                      onClick={() => sortable && toggleSort(key)}
+                    >
+                      {label}{sortable && sortIcon(key)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {paginated.map((row, i) => {
+                  const id = Number(row.id ?? row.image_id ?? i);
+                  const filename = String(row.filename ?? "");
+                  return (
+                    <tr key={id} className="hover:bg-slate-50 group">
+                      {/* Thumbnail */}
+                      <td className="px-3 py-2">
+                        <button
+                          onClick={() => {
+                            const g = galleryGroups.find((g) => g.filename === filename);
+                            setLightbox(g ?? { filename, rows: [row] });
                           }}
-                        />
-                      </button>
-                    </td>
+                          className="block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 hover:ring-2 hover:ring-green-500 transition shrink-0"
+                          title="View image"
+                        >
+                          <img
+                            src={storedImageUrl(filename)}
+                            alt={filename}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              const el = e.currentTarget as HTMLImageElement;
+                              el.style.display = "none";
+                              el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 flex items-center justify-center h-full w-full">No img</span>';
+                            }}
+                          />
+                        </button>
+                      </td>
 
-                    {COLS.map(({ key }) => {
-                      const editable = EDITABLE.has(key);
-                      const isEditing = editing?.id === id && editing?.field === key;
-                      const val = row[key];
+                      {COLS.map(({ key }) => {
+                        const editable = EDITABLE.has(key);
+                        const isEditing = editing?.id === id && editing?.field === key;
+                        const val = row[key];
 
-                      return (
-                        <td key={key} className="px-3 py-2 max-w-[180px]">
-                          {isEditing ? (
-                            <div className="flex gap-1 items-center">
-                              <input
-                                autoFocus
-                                value={editVal}
-                                onChange={(e) => setEditVal(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
-                                className="border border-green-400 rounded px-2 py-0.5 text-sm w-full focus:outline-none"
-                              />
-                              <button onClick={() => saveEdit(id)} className="text-green-600 font-bold shrink-0">✓</button>
-                              <button onClick={() => setEditing(null)} className="text-slate-300 shrink-0">✕</button>
-                            </div>
-                          ) : key === "detection_confidence" ? (
-                            <ConfBar value={val} />
-                          ) : key === "day_night" ? (
-                            <DayNightBadge value={val} />
-                          ) : (
-                            <span
-                              className={`block truncate ${editable ? "cursor-pointer group-hover:text-green-700 hover:underline underline-offset-2" : "text-slate-700"}`}
-                              title={String(val ?? "")}
-                              onClick={() => editable && (() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); })()}
-                            >
-                              {String(val ?? "")}
-                            </span>
-                          )}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          <div className="px-4 py-2 text-xs text-slate-400 border-t border-slate-100 flex items-center justify-between">
-            <span>{sorted.length} record(s) · Click thumbnail to view · Click species/station/notes to edit</span>
-            <span className="text-slate-300">Click column headers to sort</span>
+                        return (
+                          <td key={key} className="px-3 py-2 max-w-[180px]">
+                            {isEditing ? (
+                              <div className="flex gap-1 items-center">
+                                <input
+                                  autoFocus
+                                  value={editVal}
+                                  onChange={(e) => setEditVal(e.target.value)}
+                                  onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
+                                  className="border border-green-400 rounded px-2 py-0.5 text-sm w-full focus:outline-none"
+                                />
+                                <button onClick={() => saveEdit(id)} className="text-green-600 font-bold shrink-0">✓</button>
+                                <button onClick={() => setEditing(null)} className="text-slate-300 shrink-0">✕</button>
+                              </div>
+                            ) : key === "detection_confidence" ? (
+                              <ConfBar value={val} />
+                            ) : key === "day_night" ? (
+                              <DayNightBadge value={val} />
+                            ) : (
+                              <span
+                                className={`block truncate ${editable ? "cursor-pointer group-hover:text-green-700 hover:underline underline-offset-2" : "text-slate-700"}`}
+                                title={String(val ?? "")}
+                                onClick={() => editable && (() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); })()}
+                              >
+                                {String(val ?? "")}
+                              </span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="px-4 py-2 text-xs text-slate-400 border-t border-slate-100 flex items-center justify-between">
+              <span>{sorted.length} record(s) · Click thumbnail to view · Click species/station/notes to edit</span>
+              <span className="text-slate-300">Click column headers to sort</span>
+            </div>
           </div>
-        </div>
+          <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
+        </>
       )}
     </div>
   );

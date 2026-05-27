@@ -1,6 +1,8 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadImages, startProcessing, pollJob, getJobResults } from "../api/client";
+import { uploadImages, startProcessing, getJobResults, getModelStatus } from "../api/client";
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 type JobState = {
   jobId: string;
@@ -10,275 +12,614 @@ type JobState = {
   error?: string;
 };
 
+type ModelStatus = { models_loaded: boolean; error: string | null } | null;
+
+type Detection = { label: string; conf: number };
+
+type ModelEvent = {
+  type: "model_event";
+  image: string;
+  image_index: number;
+  model: string;
+  // Detection models
+  detections?: Detection[];
+  merged_count?: number;
+  sources_used?: string[];
+  // Classification models
+  top5?: [string, number][];
+  skipped?: boolean;
+  // Final result
+  species?: string;
+  confidence?: number;
+  agreement?: "High" | "Medium" | "Low";
+  all_candidates?: [string, number][];
+};
+
+// Group events by image name for display
+type ImageRow = {
+  name: string;
+  index: number;
+  events: ModelEvent[];
+};
+
+// ── Small components ──────────────────────────────────────────────────────────
+
+function PipelineBadge({ status }: { status: ModelStatus }) {
+  if (!status)
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-1 bg-slate-50 rounded-full border border-slate-200">
+        <span className="w-2 h-2 rounded-full bg-slate-300 animate-pulse" />
+        <span className="text-xs font-semibold text-slate-500">Checking…</span>
+      </div>
+    );
+  if (status.error)
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-1 bg-red-50 rounded-full border border-red-200" title={status.error}>
+        <span className="w-2 h-2 rounded-full bg-red-500" />
+        <span className="text-xs font-semibold text-red-700">Load Error</span>
+      </div>
+    );
+  if (!status.models_loaded)
+    return (
+      <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 rounded-full border border-amber-200">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <span className="text-xs font-semibold text-amber-700">Loading Models…</span>
+      </div>
+    );
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 rounded-full border border-emerald-200">
+      <span className="w-2 h-2 rounded-full bg-emerald-500" />
+      <span className="text-xs font-semibold text-emerald-700">Pipeline Ready</span>
+    </div>
+  );
+}
+
+function AgreementBadge({ level }: { level?: string }) {
+  if (!level) return null;
+  const styles =
+    level === "High"
+      ? "bg-emerald-100 text-emerald-700"
+      : level === "Medium"
+      ? "bg-amber-100 text-amber-700"
+      : "bg-red-100 text-red-700";
+  return (
+    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${styles}`}>
+      {level}
+    </span>
+  );
+}
+
+function ModelTag({ name }: { name: string }) {
+  const color =
+    name === "MDv5a" || name === "MDv1000"
+      ? "bg-blue-100 text-blue-700"
+      : name === "BioClip"
+      ? "bg-violet-100 text-violet-700"
+      : name === "SpeciesNet"
+      ? "bg-teal-100 text-teal-700"
+      : name === "Detection"
+      ? "bg-slate-100 text-slate-600"
+      : "bg-emerald-100 text-emerald-700";
+  return (
+    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${color}`}>
+      {name}
+    </span>
+  );
+}
+
+/** One processed-image card in the live panel */
+function ImageResultCard({ row }: { row: ImageRow }) {
+  const detMDv5a = row.events.find((e) => e.model === "MDv5a");
+  const detMDv1000 = row.events.find((e) => e.model === "MDv1000");
+  const detFusion = row.events.find((e) => e.model === "Detection");
+  const evBC = row.events.find((e) => e.model === "BioClip");
+  const evSN = row.events.find((e) => e.model === "SpeciesNet");
+  const evResult = row.events.find((e) => e.model === "Result");
+
+  const isEmpty = !evResult || evResult.confidence === 0;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+      {/* Header */}
+      <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-b border-slate-100">
+        <p className="text-[10px] font-bold text-slate-700 truncate max-w-[180px]">{row.name}</p>
+        {evResult && !isEmpty && (
+          <AgreementBadge level={evResult.agreement} />
+        )}
+      </div>
+
+      {/* Body */}
+      <div className="p-3 space-y-2 text-[10px]">
+        {/* Detection row */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <ModelTag name="MDv5a" />
+          <span className="text-slate-600">
+            {detMDv5a?.detections?.length
+              ? detMDv5a.detections.map((d) => `${d.label} ${d.conf.toFixed(2)}`).join(", ")
+              : "—"}
+          </span>
+          {detMDv1000 && (
+            <>
+              <span className="text-slate-300">|</span>
+              <ModelTag name="MDv1000" />
+              <span className="text-slate-600">
+                {detMDv1000.detections?.length
+                  ? detMDv1000.detections.map((d) => `${d.label} ${d.conf.toFixed(2)}`).join(", ")
+                  : "—"}
+              </span>
+            </>
+          )}
+          {detFusion && (
+            <span className="text-slate-400 italic">
+              → {detFusion.merged_count} merged
+            </span>
+          )}
+        </div>
+
+        {/* Classification row */}
+        {!isEmpty && (
+          <>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <ModelTag name="BioClip" />
+              <span className="text-slate-600">
+                {evBC?.top5?.length
+                  ? evBC.top5.slice(0, 3).map(([s, c]) => `${s} ${c.toFixed(2)}`).join(", ")
+                  : "—"}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <ModelTag name="SpeciesNet" />
+              {evSN?.skipped ? (
+                <span className="text-slate-400 italic">not loaded</span>
+              ) : (
+                <span className="text-slate-600">
+                  {evSN?.top5?.length
+                    ? evSN.top5.slice(0, 3).map(([s, c]) => `${s} ${c.toFixed(2)}`).join(", ")
+                    : "—"}
+                </span>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Final result */}
+        <div className={`flex items-center gap-2 pt-1 border-t border-slate-100 ${isEmpty ? "text-slate-400" : "text-slate-800"}`}>
+          <span className="material-symbols-outlined text-sm select-none">
+            {isEmpty ? "help_outline" : "check_circle"}
+          </span>
+          {isEmpty ? (
+            <span className="italic">No animal detected</span>
+          ) : (
+            <span className="font-bold">
+              {evResult?.species}{" "}
+              <span className="font-normal text-slate-500">
+                {((evResult?.confidence ?? 0) * 100).toFixed(0)}%
+              </span>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+
 export default function Upload() {
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
+
+  // Upload phase: idle → uploading → ready (files on server, job_id known)
+  type UploadPhase = "idle" | "uploading" | "ready" | "upload_error";
+  const [uploadPhase, setUploadPhase] = useState<UploadPhase>("idle");
+  const [uploadedJobId, setUploadedJobId] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Processing phase
   const [job, setJob] = useState<JobState | null>(null);
-  const [log, setLog] = useState<string[]>([]);
+  const [modelStatus, setModelStatus] = useState<ModelStatus>(null);
+
+  // Live model output
+  const [imageRows, setImageRows] = useState<ImageRow[]>([]);
+
   const inputRef = useRef<HTMLInputElement>(null);
+  const sseRef = useRef<EventSource | null>(null);
+  const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
 
-  const addLog = (msg: string) => setLog((prev) => [...prev, msg]);
+  // Poll model status until ready
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const s = await getModelStatus();
+        if (!cancelled) {
+          setModelStatus(s);
+          if (!s.models_loaded && !s.error) setTimeout(check, 3000);
+        }
+      } catch {
+        if (!cancelled) setTimeout(check, 5000);
+      }
+    };
+    check();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Cleanup SSE on unmount
+  useEffect(() => { return () => sseRef.current?.close(); }, []);
+
+  // ── Auto-upload whenever files change (debounced 400 ms) ─────────────────
+
+  const doUpload = useCallback(async (toUpload: File[]) => {
+    if (!toUpload.length) return;
+    setUploadPhase("uploading");
+    setUploadError(null);
+    setUploadedJobId(null);
+    try {
+      const { job_id } = await uploadImages(toUpload);
+      setUploadedJobId(job_id);
+      setUploadPhase("ready");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setUploadError(msg);
+      setUploadPhase("upload_error");
+    }
+  }, []);
+
+  const scheduleUpload = useCallback((updatedFiles: File[]) => {
+    if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+    uploadTimerRef.current = setTimeout(() => doUpload(updatedFiles), 400);
+  }, [doUpload]);
+
+  const addFiles = useCallback((incoming: File[]) => {
+    const valid = incoming.filter((f) => /\.(jpe?g|png)$/i.test(f.name));
+    if (!valid.length) return;
+    setFiles((prev) => {
+      const merged = [...prev, ...valid];
+      scheduleUpload(merged);
+      return merged;
+    });
+  }, [scheduleUpload]);
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setDragging(false);
-    const dropped = Array.from(e.dataTransfer.files).filter((f) =>
-      /\.(jpe?g|png)$/i.test(f.name)
-    );
-    setFiles((prev) => [...prev, ...dropped]);
-  }, []);
+    addFiles(Array.from(e.dataTransfer.files));
+  }, [addFiles]);
 
   const onFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const selected = Array.from(e.target.files).filter((f) =>
-        /\.(jpe?g|png)$/i.test(f.name)
-      );
-      setFiles((prev) => [...prev, ...selected]);
-    }
+    if (e.target.files) addFiles(Array.from(e.target.files));
   };
 
-  const removeFile = (i: number) =>
-    setFiles((prev) => prev.filter((_, idx) => idx !== i));
+  const removeFile = (i: number) => {
+    setFiles((prev) => {
+      const next = prev.filter((_, idx) => idx !== i);
+      scheduleUpload(next);
+      return next;
+    });
+  };
+
+  const clearAll = () => {
+    setFiles([]);
+    setUploadPhase("idle");
+    setUploadedJobId(null);
+    setUploadError(null);
+    setJob(null);
+    setImageRows([]);
+    if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+  };
+
+  // ── Start processing ──────────────────────────────────────────────────────
 
   const handleProcess = async () => {
-    if (!files.length) return;
-    setLog([]);
+    if (!uploadedJobId) return;
+
+    sseRef.current?.close();
+    setJob({ jobId: uploadedJobId, status: "running", total: files.length, completed: 0 });
+    setImageRows([]);
+
     try {
-      addLog(`Uploading ${files.length} file(s)…`);
-      const { job_id } = await uploadImages(files);
-      addLog("Files saved. Starting AI analysis pipeline…");
+      await startProcessing(uploadedJobId);
 
-      await startProcessing(job_id);
-      setJob({ jobId: job_id, status: "running", total: files.length, completed: 0 });
+      const sse = new EventSource(`/api/images/job/${uploadedJobId}/stream`);
+      sseRef.current = sse;
 
-      const interval = setInterval(async () => {
-        const status = await pollJob(job_id);
-        setJob(status);
-        if (status.status === "done") {
-          clearInterval(interval);
-          addLog("Processing complete! Storing results…");
-          await getJobResults(job_id);
-          addLog("Done. Redirecting to Results view…");
-          setTimeout(() => navigate("/results"), 1200);
-        } else if (status.status === "error") {
-          clearInterval(interval);
-          addLog(`Error: ${status.error}`);
+      sse.onmessage = (e) => {
+        const data = JSON.parse(e.data) as { type: string } & Record<string, unknown>;
+
+        if (data.type === "progress") {
+          const prog = data as unknown as { status: string; total: number; completed: number; error?: string };
+          setJob({ jobId: uploadedJobId, ...prog });
+
+          if (prog.status === "done") {
+            sse.close();
+            getJobResults(uploadedJobId).then(() => {
+              setTimeout(() => navigate("/results"), 1200);
+            });
+          } else if (prog.status === "error") {
+            sse.close();
+          }
+        } else if (data.type === "model_event") {
+          const ev = data as unknown as ModelEvent;
+          setImageRows((prev) => {
+            const idx = prev.findIndex((r) => r.name === ev.image);
+            if (idx === -1) {
+              return [...prev, { name: ev.image, index: ev.image_index, events: [ev] }];
+            }
+            const updated = [...prev];
+            updated[idx] = { ...updated[idx], events: [...updated[idx].events, ev] };
+            return updated;
+          });
         }
-      }, 1500);
+      };
+
+      sse.onerror = () => {
+        sse.close();
+        setJob((prev) => prev ? { ...prev, status: "error", error: "Stream connection lost." } : prev);
+      };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      addLog(`Pipeline failed: ${msg}`);
+      setJob((prev) => prev ? { ...prev, status: "error", error: msg } : prev);
     }
   };
 
-  const pct = job && job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+  // ── Derived state ─────────────────────────────────────────────────────────
+
   const processing = job?.status === "running";
+  const pct = job && job.total > 0 ? Math.round((job.completed / job.total) * 100) : 0;
+
+  const uploadStatusLabel = () => {
+    if (uploadPhase === "uploading") return "Uploading…";
+    if (uploadPhase === "ready") return `${files.length} file(s) ready`;
+    if (uploadPhase === "upload_error") return `Upload failed: ${uploadError}`;
+    return null;
+  };
+
+  const canStart =
+    uploadPhase === "ready" &&
+    !!uploadedJobId &&
+    !processing &&
+    !!modelStatus?.models_loaded;
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
-      {/* Page Header */}
+    <div className="max-w-5xl mx-auto space-y-8">
+      {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">
-            Upload & Process
-          </h1>
+          <h1 className="text-3xl font-extrabold tracking-tight text-slate-900">Upload & Process</h1>
           <p className="text-slate-500 mt-1.5 text-sm">
-            Import images from camera trap deployments to run detection, OCR, and classification.
+            Images upload automatically on selection. Click Start when ready.
           </p>
         </div>
-        <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 rounded-full border border-emerald-200">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-xs font-semibold text-emerald-700">Pipeline Active</span>
-        </div>
+        <PipelineBadge status={modelStatus} />
       </div>
 
-      {/* Main Grid: Upload Area & Log Dashboard */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        <div className="lg:col-span-2 space-y-6">
+        {/* ── Left: drop zone + file list + button ── */}
+        <div className="lg:col-span-1 space-y-5">
           {/* Drop zone */}
           <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             onClick={() => inputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all duration-300 relative overflow-hidden group ${
+            className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 group ${
               dragging
                 ? "border-emerald-500 bg-emerald-50/60 shadow-inner scale-[0.99]"
                 : "border-slate-300 bg-white hover:border-emerald-400 hover:bg-emerald-50/20 hover:shadow-md"
             }`}
           >
-            <div className="flex flex-col items-center">
-              <span
-                className={`material-symbols-outlined text-5xl mb-3 select-none transition-transform duration-300 ${
-                  dragging ? "scale-110 text-emerald-600 animate-bounce" : "text-slate-400 group-hover:text-emerald-500"
-                }`}
-              >
-                cloud_upload
-              </span>
-              <p className="text-slate-700 font-semibold text-base">
-                Drag & drop camera images here
-              </p>
-              <p className="text-slate-400 text-xs mt-1.5">
-                Supports JPG, JPEG, and PNG formats. Multi-file selection enabled.
-              </p>
-              <button
-                type="button"
-                className="mt-5 px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 transition-colors shadow-sm"
-              >
-                Browse Files
-              </button>
-            </div>
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".jpg,.jpeg,.png"
-              multiple
-              className="hidden"
-              onChange={onFileInput}
-            />
+            <span
+              className={`material-symbols-outlined text-4xl mb-2 block select-none transition-transform duration-300 ${
+                dragging ? "scale-110 text-emerald-600 animate-bounce" : "text-slate-400 group-hover:text-emerald-500"
+              }`}
+            >
+              cloud_upload
+            </span>
+            <p className="text-slate-700 font-semibold text-sm">Drop camera images here</p>
+            <p className="text-slate-400 text-xs mt-1">JPG / JPEG / PNG</p>
+            <button
+              type="button"
+              className="mt-4 px-4 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 transition-colors shadow-sm"
+            >
+              Browse Files
+            </button>
+            <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png" multiple className="hidden" onChange={onFileInput} />
           </div>
 
-          {/* Selected File Grid */}
+          {/* Upload status badge */}
+          {uploadPhase !== "idle" && (
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold border ${
+              uploadPhase === "uploading"
+                ? "bg-amber-50 border-amber-200 text-amber-700"
+                : uploadPhase === "ready"
+                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
+                : "bg-red-50 border-red-200 text-red-700"
+            }`}>
+              {uploadPhase === "uploading" && (
+                <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+              )}
+              {uploadPhase === "ready" && (
+                <span className="material-symbols-outlined text-base select-none">check_circle</span>
+              )}
+              {uploadPhase === "upload_error" && (
+                <span className="material-symbols-outlined text-base select-none">error</span>
+              )}
+              {uploadStatusLabel()}
+            </div>
+          )}
+
+          {/* File list */}
           {files.length > 0 && (
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-5 py-3.5 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-                <span className="font-semibold text-slate-700 text-sm flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-lg text-slate-500 select-none">
-                    photo_library
-                  </span>
-                  {files.length} image(s) selected
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+                <span className="font-semibold text-slate-700 text-xs flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-base text-slate-500 select-none">photo_library</span>
+                  {files.length} image(s)
                 </span>
                 <button
-                  onClick={() => setFiles([])}
+                  onClick={clearAll}
                   disabled={processing}
                   className="text-xs font-semibold text-slate-400 hover:text-red-500 transition-colors disabled:opacity-50"
                 >
                   Clear All
                 </button>
               </div>
-              <div className="p-4 max-h-72 overflow-y-auto custom-scrollbar">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {files.map((f, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center justify-between p-2.5 rounded-xl border border-slate-100 bg-slate-50/50 hover:bg-slate-50 transition-colors group"
-                    >
-                      <div className="flex items-center gap-2.5 overflow-hidden">
-                        <span className="material-symbols-outlined text-slate-400 select-none shrink-0 text-xl">
-                          image
-                        </span>
-                        <div className="overflow-hidden">
-                          <p className="text-xs font-semibold text-slate-700 truncate max-w-[160px]">
-                            {f.name}
-                          </p>
-                          <p className="text-[10px] text-slate-400">
-                            {(f.size / 1024).toFixed(0)} KB
-                          </p>
-                        </div>
+              <div className="p-3 max-h-48 overflow-y-auto custom-scrollbar space-y-1.5">
+                {files.map((f, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between p-2 rounded-lg border border-slate-100 bg-slate-50/50 hover:bg-slate-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-2 overflow-hidden">
+                      <span className="material-symbols-outlined text-slate-400 select-none shrink-0 text-lg">image</span>
+                      <div className="overflow-hidden">
+                        <p className="text-[10px] font-semibold text-slate-700 truncate max-w-[140px]">{f.name}</p>
+                        <p className="text-[9px] text-slate-400">{(f.size / 1024).toFixed(0)} KB</p>
                       </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeFile(i);
-                        }}
-                        disabled={processing}
-                        className="text-slate-300 hover:text-red-500 p-1 rounded-full hover:bg-red-50 transition-all shrink-0 disabled:opacity-50"
-                      >
-                        <span className="material-symbols-outlined text-base select-none leading-none block">
-                          close
-                        </span>
-                      </button>
                     </div>
-                  ))}
-                </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeFile(i); }}
+                      disabled={processing}
+                      className="text-slate-300 hover:text-red-500 p-0.5 rounded-full hover:bg-red-50 transition-all shrink-0 disabled:opacity-50"
+                    >
+                      <span className="material-symbols-outlined text-sm select-none leading-none block">close</span>
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* Action button */}
+          {/* Start button */}
           <button
             onClick={handleProcess}
-            disabled={!files.length || processing}
-            className="w-full py-3.5 px-6 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-2xl transition-all duration-150 shadow-md hover:shadow-lg flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+            disabled={!canStart}
+            className="w-full py-3 px-6 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 disabled:text-slate-400 text-white font-semibold rounded-2xl transition-all duration-150 shadow-md hover:shadow-lg flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
           >
             {processing ? (
               <>
-                <span className="material-symbols-outlined text-lg select-none animate-spin">
-                  sync
-                </span>
-                Processing Pipeline...
+                <span className="material-symbols-outlined text-lg select-none animate-spin">sync</span>
+                Analysing…
+              </>
+            ) : !modelStatus?.models_loaded ? (
+              <>
+                <span className="material-symbols-outlined text-lg select-none">hourglass_empty</span>
+                {modelStatus?.error ? "Models failed to load" : "Waiting for models…"}
+              </>
+            ) : uploadPhase === "idle" || !files.length ? (
+              <>
+                <span className="material-symbols-outlined text-lg select-none">upload_file</span>
+                Select files to begin
+              </>
+            ) : uploadPhase === "uploading" ? (
+              <>
+                <span className="material-symbols-outlined text-lg select-none animate-spin">sync</span>
+                Uploading…
               </>
             ) : (
               <>
-                <span className="material-symbols-outlined text-lg select-none">
-                  play_circle
-                </span>
+                <span className="material-symbols-outlined text-lg select-none">play_circle</span>
                 Start AI Analysis
               </>
             )}
           </button>
-        </div>
 
-        {/* Console / Log panel */}
-        <div className="space-y-6">
           {/* Progress widget */}
           {job && (
-            <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3.5 shadow-sm">
+            <div className="bg-white rounded-2xl border border-slate-200 p-4 space-y-3 shadow-sm">
               <div className="flex justify-between items-center text-xs">
                 <span className="font-bold text-slate-700">
-                  {job.status === "done"
-                    ? "Analysis Complete"
-                    : job.status === "error"
-                    ? "Process Failed"
-                    : "Running Inference..."}
+                  {job.status === "done" ? "Complete" : job.status === "error" ? "Failed" : "Running…"}
                 </span>
-                <span className="font-mono font-bold text-emerald-600 text-sm">{pct}%</span>
+                <span className="font-mono font-bold text-emerald-600">{pct}%</span>
               </div>
-              <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
+              <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
                 <div
-                  className={`h-2 rounded-full transition-all duration-300 ${
+                  className={`h-1.5 rounded-full transition-all duration-300 ${
                     job.status === "error" ? "bg-red-500" : "bg-emerald-500"
                   }`}
                   style={{ width: `${job.status === "done" ? 100 : pct}%` }}
                 />
               </div>
-              <div className="flex justify-between items-center text-[10px] text-slate-400 font-medium">
-                <span>Total: {job.total} images</span>
-                <span>Processed: {job.completed}</span>
+              <div className="flex justify-between text-[10px] text-slate-400 font-medium">
+                <span>Total: {job.total}</span>
+                <span>Done: {job.completed}</span>
               </div>
-            </div>
-          )}
-
-          {/* Log panel */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden flex flex-col h-80 shadow-md">
-            <div className="px-4 py-2.5 bg-slate-950 border-b border-slate-800/80 flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                Pipeline Logs
-              </span>
-              <button
-                onClick={() => setLog([])}
-                className="text-[10px] text-slate-500 hover:text-slate-300 font-semibold"
-              >
-                Clear
-              </button>
-            </div>
-            <div className="p-4 flex-1 overflow-y-auto custom-scrollbar font-mono text-[11px] text-emerald-400 space-y-1.5 bg-slate-900/90 leading-relaxed">
-              {log.length === 0 ? (
-                <div className="text-slate-500 italic">Logs will appear here once processing begins...</div>
-              ) : (
-                log.map((l, i) => (
-                  <div key={i} className="flex gap-2">
-                    <span className="text-emerald-700 select-none">&gt;</span>
-                    <span>{l}</span>
-                  </div>
-                ))
+              {job.error && (
+                <p className="text-[10px] text-red-600 font-medium break-all">{job.error}</p>
               )}
             </div>
+          )}
+        </div>
+
+        {/* ── Right: live model output panel ── */}
+        <div className="lg:col-span-2">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-full min-h-[520px]">
+            {/* Panel header */}
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-slate-500 select-none text-lg">model_training</span>
+                <span className="font-bold text-slate-700 text-sm">Live Model Output</span>
+              </div>
+              <div className="flex items-center gap-3 text-[10px] font-semibold">
+                <span className="flex items-center gap-1 text-blue-600">
+                  <span className="w-2 h-2 rounded bg-blue-200" /> Detectors
+                </span>
+                <span className="flex items-center gap-1 text-violet-600">
+                  <span className="w-2 h-2 rounded bg-violet-200" /> BioClip
+                </span>
+                <span className="flex items-center gap-1 text-teal-600">
+                  <span className="w-2 h-2 rounded bg-teal-200" /> SpeciesNet
+                </span>
+                <span className="flex items-center gap-1 text-emerald-600">
+                  <span className="w-2 h-2 rounded bg-emerald-200" /> Result
+                </span>
+              </div>
+            </div>
+
+            {/* Scrollable card grid */}
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-4">
+              {imageRows.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-3">
+                  <span className="material-symbols-outlined text-5xl select-none">analytics</span>
+                  <p className="text-sm font-medium">
+                    {processing
+                      ? "Processing… results will appear here"
+                      : "Model results will stream here as images are analysed"}
+                  </p>
+                  {processing && (
+                    <div className="flex gap-1">
+                      {[0, 1, 2].map((i) => (
+                        <span
+                          key={i}
+                          className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce"
+                          style={{ animationDelay: `${i * 0.15}s` }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {imageRows.map((row) => (
+                    <ImageResultCard key={row.name} row={row} />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Summary footer */}
+            {imageRows.length > 0 && (
+              <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                <span>{imageRows.length} image(s) processed</span>
+                <span>
+                  {imageRows.filter((r) => r.events.find((e) => e.model === "Result" && e.confidence && e.confidence > 0)).length} animal(s) found
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>

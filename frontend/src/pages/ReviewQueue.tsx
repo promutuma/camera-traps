@@ -395,15 +395,19 @@ export default function ReviewQueue() {
   const reviewerId = config?.reviewer_id ?? "anonymous";
   const threshold = config?.review_confidence_threshold ?? 0.9;
 
+  const QUEUE_PAGE_SIZE = 20;
+
   const [queue, setQueue] = useState<Row[]>([]);
   const [log, setLog] = useState<Row[]>([]);
   const [audit, setAudit] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("queue");
   const [focusedIdx, setFocusedIdx] = useState(0);
+  const [queuePage, setQueuePage] = useState(1);
 
   const load = async () => {
     setLoading(true);
+    setQueuePage(1);
     const [q, l, a] = await Promise.all([getReviewQueue(), getReviewLog(), getPrivacyAudit()]);
     setQueue(Array.isArray(q) ? q : []);
     setLog(Array.isArray(l) ? l : []);
@@ -483,27 +487,45 @@ export default function ReviewQueue() {
         </div>
       ) : (
         <>
-          {tab === "queue" && (
-            queue.length === 0
-              ? <EmptyState icon="✅" title="Queue is clear" sub="All detections are above the confidence threshold." />
-              : (
-                <div className="space-y-3">
-                  <p className="text-xs text-slate-400 font-medium">{queue.length} item(s) pending review</p>
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                    {queue.map((row, i) => (
+          {tab === "queue" && (() => {
+            if (queue.length === 0) {
+              return <EmptyState icon="✅" title="Queue is clear" sub="All detections are above the confidence threshold." />;
+            }
+            const qTotalPages = Math.max(1, Math.ceil(queue.length / QUEUE_PAGE_SIZE));
+            const pagedQueue = queue.slice((queuePage - 1) * QUEUE_PAGE_SIZE, queuePage * QUEUE_PAGE_SIZE);
+            const pageOffset = (queuePage - 1) * QUEUE_PAGE_SIZE;
+            return (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400 font-medium">{queue.length} item(s) pending review</p>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {pagedQueue.map((row, i) => {
+                    const absIdx = pageOffset + i;
+                    return (
                       <QueueCard
-                        key={Number(row.id ?? row.image_id ?? i)}
+                        key={Number(row.id ?? row.image_id ?? absIdx)}
                         row={row}
                         reviewerId={reviewerId}
                         onAction={load}
-                        isFocused={i === focusedIdx}
-                        onFocused={() => setFocusedIdx(i)}
+                        isFocused={absIdx === focusedIdx}
+                        onFocused={() => setFocusedIdx(absIdx)}
                       />
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
-              )
-          )}
+                {qTotalPages > 1 && (
+                  <div className="flex items-center justify-between pt-1">
+                    <p className="text-xs text-slate-400">{queue.length} total · page {queuePage} of {qTotalPages}</p>
+                    <div className="flex gap-1">
+                      <button disabled={queuePage === 1} onClick={() => setQueuePage(p => p - 1)}
+                        className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">‹ Prev</button>
+                      <button disabled={queuePage === qTotalPages} onClick={() => setQueuePage(p => p + 1)}
+                        className="px-3 py-1 text-xs rounded border border-slate-200 disabled:opacity-30 hover:bg-slate-50">Next ›</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {tab === "log" && (
             log.length === 0
