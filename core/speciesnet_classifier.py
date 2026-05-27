@@ -27,7 +27,7 @@ class SpeciesNetWrapper:
     Thin wrapper for SpeciesNet's per-crop classifier.
 
     Usage:
-        wrapper = SpeciesNetWrapper()
+        wrapper = SpeciesNetWrapper(lat=-1.0, lng=37.0, country="KEN")
         results = wrapper.classify_crop(pil_image)
         # → [("panthera leo", 0.82), ("felidae", 0.09), ...]
     """
@@ -36,9 +36,15 @@ class SpeciesNetWrapper:
         self,
         model_name: str = _DEFAULT_MODEL,
         low_spec: bool = False,
+        lat: Optional[float] = None,
+        lng: Optional[float] = None,
+        country: Optional[str] = None,
     ):
         self.model_name = model_name
         self.low_spec = low_spec
+        self.lat = lat
+        self.lng = lng
+        self.country = country
         self.classifier = None
         self.load_error: Optional[str] = None
         self._load()
@@ -75,15 +81,26 @@ class SpeciesNetWrapper:
     # ------------------------------------------------------------------
 
     def get_status(self) -> Dict:
+        geo: Dict = {}
+        if self.lat is not None:
+            geo["lat"] = self.lat
+        if self.lng is not None:
+            geo["lng"] = self.lng
+        if self.country is not None:
+            geo["country"] = self.country
         return {
             "loaded": self.classifier is not None,
             "error": self.load_error,
+            "geo_prior": geo if geo else None,
         }
 
     def classify_crop(
         self,
         crop: Image.Image,
         top_k: int = 5,
+        lat: Optional[float] = None,
+        lng: Optional[float] = None,
+        country: Optional[str] = None,
     ) -> List[Tuple[str, float]]:
         """
         Classify a PIL image crop with SpeciesNet.
@@ -91,10 +108,20 @@ class SpeciesNetWrapper:
         SpeciesNet's public API is filepath-based, so we write the crop
         to a temp JPEG, classify it, then clean up immediately.
 
+        Geographic parameters (lat/lng/country) activate SpeciesNet's
+        built-in geographic prior, which biases predictions toward species
+        known to occur in the target region. Per-call values override the
+        instance-level defaults set at construction time.
+
         Returns list of (label, confidence) sorted descending, up to top_k.
         """
         if self.classifier is None:
             return []
+
+        # Resolve geo params: per-call override → instance default → None
+        _lat = lat if lat is not None else self.lat
+        _lng = lng if lng is not None else self.lng
+        _country = country if country is not None else self.country
 
         tmp_path: Optional[str] = None
         try:
@@ -105,7 +132,20 @@ class SpeciesNetWrapper:
                 crop.save(tmp_path, format="JPEG", quality=92)
 
             preprocessed = self.classifier.preprocess(crop)
-            result = self.classifier.predict(tmp_path, img=preprocessed)
+
+            geo_kwargs: Dict = {}
+            if _lat is not None:
+                geo_kwargs["lat"] = _lat
+            if _lng is not None:
+                geo_kwargs["lng"] = _lng
+            if _country is not None:
+                geo_kwargs["country"] = _country
+
+            try:
+                result = self.classifier.predict(tmp_path, img=preprocessed, **geo_kwargs)
+            except TypeError:
+                # Installed version doesn't accept all geo kwargs — retry without them
+                result = self.classifier.predict(tmp_path, img=preprocessed)
 
             classifications = result.get("classifications", {})
             classes: List[str] = classifications.get("classes", [])
