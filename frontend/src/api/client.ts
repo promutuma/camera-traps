@@ -1,6 +1,23 @@
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 
 const api = axios.create({ baseURL: "/api" });
+
+// Global error handler — surfaces network/server errors as a console warning
+// and re-throws so individual callers can still handle them if needed.
+api.interceptors.response.use(
+  (res) => res,
+  (err: AxiosError) => {
+    const status = err.response?.status;
+    if (status === 503) {
+      console.warn("[API] Server unavailable — AI models may still be loading.");
+    } else if (status === 413) {
+      console.warn("[API] Upload rejected — file too large.");
+    } else if (!err.response) {
+      console.warn("[API] Network error — is the backend running?", err.message);
+    }
+    return Promise.reject(err);
+  }
+);
 
 export default api;
 

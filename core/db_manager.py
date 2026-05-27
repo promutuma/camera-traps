@@ -11,7 +11,9 @@ class DatabaseManager:
         self._init_db()
 
     def get_connection(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        return conn
 
     def _init_db(self):
         """Initialize database with required tables and migrate existing schema."""

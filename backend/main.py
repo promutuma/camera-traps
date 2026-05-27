@@ -7,8 +7,18 @@ Run in production:   uvicorn backend.main:app --host 0.0.0.0 --port 8000
 from __future__ import annotations
 import os
 import sys
+
+# Load .env before anything else so all modules see the right env vars.
+# Falls back silently if python-dotenv is not installed.
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import logging
 from contextlib import asynccontextmanager
+import asyncio
 
 # ---------------------------------------------------------------------------
 # Windows-specific env fixes (must happen before any torch/cv2 import)
@@ -66,90 +76,90 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — load all models once at startup
+# Blocking model loader — runs in a thread so the event loop stays free
+# ---------------------------------------------------------------------------
+
+def _load_all_models(state: AppState, project_root: Path) -> None:
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from core.ocr_processor import OCRProcessor
+    from core.animal_detector import AnimalDetector, MegaDetectorWrapper
+    from core.bioclip_classifier import BioClipClassifier
+    from core.day_night_classifier import DayNightClassifier
+    from core.db_manager import DatabaseManager
+    from core.station_manager import StationManager
+    from core.review_engine import ReviewEngine
+    from core.privacy_scrubber import PrivacyScrubber
+    from core.community_observer import CommunityObserver
+    from core.species_library import SpeciesLibrary
+    from core.spatial_exporter import SpatialExporter
+    from core.corridor_analyzer import CorridorAnalyzer
+    from core.project_config import ProjectConfig
+    from core.arcgis_sync import ArcGISSync
+    from core.independence_engine import IndependenceEngine
+    from core.qc_engine import QCEngine
+
+    cfg = state.config
+
+    try:
+        import torch
+        _threads = 1 if cfg.enable_low_spec else cfg.cpu_threads
+        torch.set_num_threads(_threads)
+    except Exception:
+        pass
+
+    logger.info("Loading OCR...")
+    state.ocr_model = OCRProcessor(low_spec=cfg.enable_low_spec)
+
+    logger.info("Loading MegaDetector...")
+    state.md_model = MegaDetectorWrapper(
+        confidence_threshold=cfg.detection_confidence,
+        low_spec=cfg.enable_low_spec,
+    )
+
+    logger.info("Loading BioClip...")
+    state.bio_model = BioClipClassifier(
+        species_list=AnimalDetector.WILDLIFE_CLASSES,
+        low_spec=cfg.enable_low_spec,
+    )
+
+    logger.info("Loading Day/Night classifier...")
+    state.dn_model = DayNightClassifier()
+
+    db_path = os.environ.get("DB_PATH", "wildlife_data.db")
+    state.db_manager = DatabaseManager(db_path)
+    state.station_manager = StationManager(db_path)
+    state.review_engine = ReviewEngine(db_path)
+    state.scrubber = PrivacyScrubber(blur_strength=cfg.blur_strength)
+    state.community_observer = CommunityObserver(db_path)
+    state.species_library = SpeciesLibrary(db_path)
+    state.spatial_exporter = SpatialExporter()
+    state.corridor_analyzer = CorridorAnalyzer()
+    state.project_config = ProjectConfig(db_path)
+    state.arcgis_sync = ArcGISSync(db_path=db_path)
+    state.independence_engine = IndependenceEngine(window_minutes=cfg.independence_window)
+    state.qc_engine = QCEngine()
+
+    state.models_loaded = True
+    logger.info("All models loaded successfully.")
+
+
+# ---------------------------------------------------------------------------
+# Lifespan — load all models once at startup (off the event loop)
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state: AppState = app.state.app_state
+    project_root = Path(__file__).parent.parent
     logger.info("Loading AI models and services...")
-
     try:
-        # Add project root to sys.path so `core/` is importable
-        project_root = Path(__file__).parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
-
-        from core.ocr_processor import OCRProcessor
-        from core.animal_detector import AnimalDetector, MegaDetectorWrapper
-        from core.bioclip_classifier import BioClipClassifier
-        from core.day_night_classifier import DayNightClassifier
-        from core.db_manager import DatabaseManager
-        from core.station_manager import StationManager
-        from core.review_engine import ReviewEngine
-        from core.privacy_scrubber import PrivacyScrubber
-        from core.community_observer import CommunityObserver
-        from core.species_library import SpeciesLibrary
-        from core.spatial_exporter import SpatialExporter
-        from core.corridor_analyzer import CorridorAnalyzer
-        from core.project_config import ProjectConfig
-        from core.arcgis_sync import ArcGISSync
-        from core.independence_engine import IndependenceEngine
-        from core.qc_engine import QCEngine
-
-        cfg = state.config
-
-        # Set PyTorch thread count
-        try:
-            import torch
-            _threads = 1 if cfg.enable_low_spec else cfg.cpu_threads
-            torch.set_num_threads(_threads)
-        except Exception:
-            pass
-
-        logger.info("Loading OCR...")
-        state.ocr_model = OCRProcessor(low_spec=cfg.enable_low_spec)
-
-        logger.info("Loading MegaDetector...")
-        state.md_model = MegaDetectorWrapper(
-            confidence_threshold=cfg.detection_confidence,
-            low_spec=cfg.enable_low_spec,
-        )
-
-        logger.info("Loading BioClip...")
-        state.bio_model = BioClipClassifier(
-            species_list=AnimalDetector.WILDLIFE_CLASSES,
-            low_spec=cfg.enable_low_spec,
-        )
-
-        logger.info("Loading Day/Night classifier...")
-        state.dn_model = DayNightClassifier()
-
-        # Services
-        import os
-        db_path = os.environ.get("DB_PATH", "wildlife_data.db")
-        state.db_manager = DatabaseManager(db_path)
-        state.station_manager = StationManager(db_path)
-        state.review_engine = ReviewEngine(db_path)
-        state.scrubber = PrivacyScrubber(blur_strength=cfg.blur_strength)
-        state.community_observer = CommunityObserver(db_path)
-        state.species_library = SpeciesLibrary(db_path)
-        state.spatial_exporter = SpatialExporter()
-        state.corridor_analyzer = CorridorAnalyzer()
-        state.project_config = ProjectConfig(db_path)
-        state.arcgis_sync = ArcGISSync(db_path=db_path)
-        state.independence_engine = IndependenceEngine(window_minutes=cfg.independence_window)
-        state.qc_engine = QCEngine()
-
-        state.models_loaded = True
-        logger.info("All models loaded successfully.")
-
+        await asyncio.to_thread(_load_all_models, state, project_root)
     except Exception as exc:
         state.models_error = str(exc)
         logger.exception("Failed to load models: %s", exc)
-
     yield
-
     logger.info("Shutting down.")
 
 
@@ -167,10 +177,14 @@ def create_app() -> FastAPI:
     )
     application.state.app_state = app_state
 
-    # CORS — allow the Vite dev server
+    # CORS — read allowed origins from env; falls back to Vite dev server
+    _cors_raw = os.environ.get(
+        "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    )
+    _cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -198,16 +212,13 @@ def create_app() -> FastAPI:
     # Serve built React app in production
     dist_path = Path(__file__).parent.parent / "frontend" / "dist"
     if dist_path.exists():
-        # Serve static assets (JS/CSS/images) directly
         application.mount("/assets", StaticFiles(directory=str(dist_path / "assets")), name="assets")
 
-        # SPA catch-all: any non-API path returns index.html so React Router works
         from fastapi.responses import FileResponse as _FileResponse
 
         @application.get("/{full_path:path}", include_in_schema=False)
         async def serve_spa(full_path: str):
-            index = dist_path / "index.html"
-            return _FileResponse(str(index))
+            return _FileResponse(str(dist_path / "index.html"))
 
     return application
 

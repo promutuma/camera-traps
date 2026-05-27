@@ -9,7 +9,9 @@ GET  /api/images/file/{filename} serve image file
 
 from __future__ import annotations
 import os
+import re
 import sys
+import time
 import tempfile
 import traceback
 from pathlib import Path
@@ -32,6 +34,15 @@ _executor = ThreadPoolExecutor(max_workers=2)
 UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads"
 UPLOADS_DIR.mkdir(exist_ok=True)
 
+_MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "50")) * 1024 * 1024
+
+
+def _safe_filename(name: str) -> str:
+    """Strip path components and replace characters unsafe on any OS."""
+    name = Path(name or "upload").name
+    name = re.sub(r"[^\w.\-]", "_", name)
+    return name or "upload"
+
 
 # ---------------------------------------------------------------------------
 # Upload
@@ -47,13 +58,23 @@ async def upload_images(files: List[UploadFile] = File(...)):
 
     for upload in files:
         contents = await upload.read()
+
+        if len(contents) > _MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File '{upload.filename}' exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+            )
+
+        safe_name = _safe_filename(upload.filename or "upload")
+
         # Temp copy for processing
-        dest = os.path.join(temp_dir, upload.filename)
+        dest = os.path.join(temp_dir, safe_name)
         with open(dest, "wb") as f:
             f.write(contents)
         job.image_paths.append(dest)
+
         # Persistent copy so Results page can always serve the image
-        persistent = UPLOADS_DIR / upload.filename
+        persistent = UPLOADS_DIR / safe_name
         with open(persistent, "wb") as f:
             f.write(contents)
 
@@ -67,8 +88,7 @@ async def upload_images(files: List[UploadFile] = File(...)):
 @router.get("/stored/{filename}")
 def serve_stored_image(filename: str):
     """Serve an image from the persistent uploads directory."""
-    # Prevent path traversal
-    safe_name = Path(filename).name
+    safe_name = _safe_filename(filename)
     file_path = UPLOADS_DIR / safe_name
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
@@ -156,6 +176,9 @@ def _run_processing(job_id: str, state: AppState) -> None:
         job.status = "error"
         job.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
 
+    finally:
+        job.finished_at = time.time()
+
 
 @router.post("/process/{job_id}")
 def start_processing(job_id: str, background_tasks: BackgroundTasks, state: AppState = Depends(get_state)):
@@ -217,7 +240,8 @@ def serve_image(job_id: str, filename: str):
     job = job_manager.get(job_id)
     if not job or not job.temp_dir:
         raise HTTPException(status_code=404, detail="Job/temp dir not found")
-    file_path = os.path.join(job.temp_dir, filename)
+    safe_name = _safe_filename(filename)
+    file_path = os.path.join(job.temp_dir, safe_name)
     if not os.path.isfile(file_path):
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(file_path)

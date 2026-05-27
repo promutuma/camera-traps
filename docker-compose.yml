@@ -9,8 +9,11 @@ services:
     volumes:
       - wildlife_data:/app/data
       - /tmp/megadetector_models:/tmp/megadetector_models
-      - ${HOME}/.EasyOCR:/root/.EasyOCR
-      - ${HOME}/.cache/huggingface:/root/.cache/huggingface
+      - easyocr_cache:/root/.EasyOCR
+      - huggingface_cache:/root/.cache/huggingface
+    env_file:
+      - path: .env
+        required: false
     environment:
       - PYTHONUNBUFFERED=1
       - DB_PATH=/app/data/wildlife_data.db
@@ -19,6 +22,14 @@ services:
       resources:
         limits:
           memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/config/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
 volumes:
   wildlife_data:
+  easyocr_cache:
+  huggingface_cache:

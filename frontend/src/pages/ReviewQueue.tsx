@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedImageUrl } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
@@ -72,10 +72,14 @@ function QueueCard({
   row,
   reviewerId,
   onAction,
+  isFocused,
+  onFocused,
 }: {
   row: Row;
   reviewerId: string;
   onAction: () => void;
+  isFocused: boolean;
+  onFocused: () => void;
 }) {
   const id = Number(row.id ?? row.image_id ?? 0);
   const filename = String(row.filename ?? "");
@@ -84,6 +88,7 @@ function QueueCard({
     ? (row.detection_confidence as number)
     : parseFloat(String(row.detection_confidence ?? "0"));
 
+  const containerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"idle" | "correct" | "confirm-note" | "flag-note">("idle");
   const [correctLabel, setCorrectLabel] = useState("");
   const [notes, setNotes] = useState("");
@@ -92,14 +97,45 @@ function QueueCard({
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
   const bbox = parseBbox(row.bbox);
 
+  // Move native focus to this card when it becomes keyboard-focused.
+  useEffect(() => {
+    if (isFocused) containerRef.current?.focus();
+  }, [isFocused]);
+
+  // Return focus to the card container after closing a sub-form.
+  useEffect(() => {
+    if (mode === "idle" && isFocused) containerRef.current?.focus();
+  }, [mode, isFocused]);
+
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try { await fn(); onAction(); }
     finally { setBusy(false); setMode("idle"); setNotes(""); setCorrectLabel(""); }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Only handle shortcuts when no text input inside the card is focused.
+    const active = document.activeElement?.tagName;
+    if (active === "INPUT" || active === "TEXTAREA") return;
+
+    if (mode === "idle" && !busy) {
+      if (e.key === "a") { e.preventDefault(); setMode("confirm-note"); }
+      if (e.key === "c") { e.preventDefault(); setMode("correct"); }
+      if (e.key === "f") { e.preventDefault(); setMode("flag-note"); }
+    }
+    if (e.key === "Escape") { e.preventDefault(); setMode("idle"); }
+  };
+
   return (
-    <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
+    <div
+      ref={containerRef}
+      tabIndex={0}
+      onFocus={onFocused}
+      onKeyDown={handleKeyDown}
+      className={`bg-white rounded-xl border shadow-sm overflow-hidden flex flex-col outline-none transition-shadow ${
+        isFocused ? "ring-2 ring-emerald-400 border-emerald-300" : "border-slate-200"
+      }`}
+    >
       {/* Image — full width top */}
       <div className="relative bg-slate-900 aspect-video overflow-hidden">
         {imgError ? (
@@ -149,6 +185,12 @@ function QueueCard({
         {row.station_id != null && String(row.station_id) && (
           <div className="absolute top-2 right-2 bg-black/50 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full">
             {String(row.station_id)}
+          </div>
+        )}
+        {/* Keyboard shortcut hint when card is focused */}
+        {isFocused && mode === "idle" && (
+          <div className="absolute bottom-2 right-2 bg-black/60 text-white text-[9px] font-mono px-1.5 py-0.5 rounded flex gap-1.5">
+            <span>A</span><span>C</span><span>F</span>
           </div>
         )}
       </div>
@@ -358,6 +400,7 @@ export default function ReviewQueue() {
   const [audit, setAudit] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("queue");
+  const [focusedIdx, setFocusedIdx] = useState(0);
 
   const load = async () => {
     setLoading(true);
@@ -369,6 +412,24 @@ export default function ReviewQueue() {
   };
   useEffect(() => { load(); }, []);
 
+  // j/k keyboard navigation between cards
+  useEffect(() => {
+    if (tab !== "queue" || queue.length === 0) return;
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+      if (e.key === "j" || e.key === "ArrowRight") {
+        e.preventDefault();
+        setFocusedIdx((i) => Math.min(i + 1, queue.length - 1));
+      } else if (e.key === "k" || e.key === "ArrowLeft") {
+        e.preventDefault();
+        setFocusedIdx((i) => Math.max(i - 1, 0));
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [tab, queue.length]);
+
   const tabs: { id: Tab; label: string; count?: number }[] = [
     { id: "queue",   label: "Review Queue",   count: queue.length },
     { id: "log",     label: "Correction Log", count: log.length },
@@ -378,12 +439,19 @@ export default function ReviewQueue() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-slate-800">Review Queue</h1>
-        <p className="text-slate-500 text-sm mt-1">
-          Detections with confidence below <span className="font-mono font-semibold text-slate-700">{threshold}</span> need manual review.
-          Reviewing as <span className="font-semibold text-slate-700">{reviewerId}</span>.
-        </p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800">Review Queue</h1>
+          <p className="text-slate-500 text-sm mt-1">
+            Detections with confidence below <span className="font-mono font-semibold text-slate-700">{threshold}</span> need manual review.
+            Reviewing as <span className="font-semibold text-slate-700">{reviewerId}</span>.
+          </p>
+        </div>
+        {tab === "queue" && queue.length > 0 && (
+          <p className="text-[11px] text-slate-400 font-mono bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 shrink-0">
+            ←/→ or J/K navigate · A confirm · C correct · F flag
+          </p>
+        )}
       </div>
 
       {/* Tabs */}
@@ -428,6 +496,8 @@ export default function ReviewQueue() {
                         row={row}
                         reviewerId={reviewerId}
                         onAction={load}
+                        isFocused={i === focusedIdx}
+                        onFocused={() => setFocusedIdx(i)}
                       />
                     ))}
                   </div>
