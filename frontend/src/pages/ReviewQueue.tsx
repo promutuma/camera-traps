@@ -160,13 +160,52 @@ function QueueCard({
     : parseFloat(String(row.detection_confidence ?? "0"));
 
   const containerRef = useRef<HTMLDivElement>(null);
+  const imageContainerRef = useRef<HTMLDivElement>(null);
   const [mode, setMode] = useState<"idle" | "correct" | "confirm-note" | "flag-note">("idle");
   const [correctLabel, setCorrectLabel] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
+  
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [editedBbox, setEditedBbox] = useState<[number, number, number, number] | null>(null);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+
   const bbox = parseBbox(row.bbox);
+  const activeBbox = editedBbox || bbox;
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawing || !imageContainerRef.current) return;
+    const rect = imageContainerRef.current.getBoundingClientRect();
+    const startX = (e.clientX - rect.left) / rect.width;
+    const startY = (e.clientY - rect.top) / rect.height;
+    setDragStart({ x: startX, y: startY });
+    setEditedBbox([startX, startY, 0, 0]);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDrawing || !dragStart || !imageContainerRef.current) return;
+    const rect = imageContainerRef.current.getBoundingClientRect();
+    const currX = (e.clientX - rect.left) / rect.width;
+    const currY = (e.clientY - rect.top) / rect.height;
+
+    const x = Math.min(dragStart.x, currX);
+    const y = Math.min(dragStart.y, currY);
+    const w = Math.abs(dragStart.x - currX);
+    const h = Math.abs(dragStart.y - currY);
+
+    setEditedBbox([
+      Math.max(0, Math.min(1, x)),
+      Math.max(0, Math.min(1, y)),
+      Math.max(0, Math.min(1, w)),
+      Math.max(0, Math.min(1, h)),
+    ]);
+  };
+
+  const handleMouseUp = () => {
+    setDragStart(null);
+  };
 
   // Move native focus to this card when it becomes keyboard-focused.
   useEffect(() => {
@@ -181,7 +220,14 @@ function QueueCard({
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
     try { await fn(); onAction(); }
-    finally { setBusy(false); setMode("idle"); setNotes(""); setCorrectLabel(""); }
+    finally {
+      setBusy(false);
+      setMode("idle");
+      setNotes("");
+      setCorrectLabel("");
+      setIsDrawing(false);
+      setEditedBbox(null);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -194,7 +240,7 @@ function QueueCard({
       if (e.key === "c") { e.preventDefault(); setMode("correct"); }
       if (e.key === "f") { e.preventDefault(); setMode("flag-note"); }
     }
-    if (e.key === "Escape") { e.preventDefault(); setMode("idle"); }
+    if (e.key === "Escape") { e.preventDefault(); setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
   };
 
   return (
@@ -208,7 +254,15 @@ function QueueCard({
       }`}
     >
       {/* Image — full width top */}
-      <div className="relative bg-slate-900 aspect-video overflow-hidden">
+      <div
+        ref={imageContainerRef}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        className={`relative bg-slate-900 aspect-video overflow-hidden select-none ${
+          isDrawing ? "cursor-crosshair" : ""
+        }`}
+      >
         {imgError ? (
           <div className="w-full h-full flex items-center justify-center">
             <span className="material-symbols-outlined text-slate-600 text-4xl select-none">broken_image</span>
@@ -225,25 +279,28 @@ function QueueCard({
               }}
               onError={() => setImgError(true)}
             />
-            {bbox && imgNatural && (
+            {activeBbox && imgNatural && (
               <svg
                 className="absolute inset-0 w-full h-full pointer-events-none"
                 viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
                 preserveAspectRatio="xMidYMid slice"
               >
                 <rect
-                  x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
-                  width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
-                  fill="none" stroke="#22c55e"
+                  x={activeBbox[0] * imgNatural.w} y={activeBbox[1] * imgNatural.h}
+                  width={activeBbox[2] * imgNatural.w} height={activeBbox[3] * imgNatural.h}
+                  fill="none"
+                  stroke={editedBbox ? "#fb923c" : "#22c55e"}
                   strokeWidth={Math.max(3, imgNatural.w / 300)}
+                  strokeDasharray={editedBbox ? "6 4" : undefined}
                 />
                 <text
-                  x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 6}
-                  fill="#22c55e" fontWeight="bold"
+                  x={activeBbox[0] * imgNatural.w + 4} y={activeBbox[1] * imgNatural.h - 6}
+                  fill={editedBbox ? "#fb923c" : "#22c55e"}
+                  fontWeight="bold"
                   fontSize={Math.max(16, imgNatural.w / 50)}
                   style={{ filter: "drop-shadow(0 1px 3px #000)" }}
                 >
-                  {species}
+                  {editedBbox ? "New Box" : species}
                 </text>
               </svg>
             )}
@@ -256,6 +313,12 @@ function QueueCard({
         {row.station_id != null && String(row.station_id) && (
           <div className="absolute top-2 right-2 bg-black/50 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full">
             {String(row.station_id)}
+          </div>
+        )}
+        {/* Active box drawing banner */}
+        {isDrawing && (
+          <div className="absolute bottom-2 left-2 bg-orange-650 text-white text-[9px] font-semibold px-2 py-0.5 rounded-full animate-pulse shadow-sm">
+            Drag to draw box
           </div>
         )}
         {/* Keyboard shortcut hint when card is focused */}
@@ -324,27 +387,38 @@ function QueueCard({
             value={correctLabel}
             onChange={(e) => setCorrectLabel(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setMode("idle")}
-            className="w-full border border-blue-300 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400"
+            className="w-full border border-blue-300 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
           />
           <input
             placeholder="Notes (optional)"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes }));
-              if (e.key === "Escape") setMode("idle");
+              if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
+              if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
             }}
-            className="w-full border border-blue-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300"
+            className="w-full border border-blue-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-300 bg-white"
           />
           <div className="flex gap-2">
             <button
               disabled={busy || !correctLabel.trim()}
-              onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes }))}
+              onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
               className="flex-1 py-1.5 bg-blue-600 text-white text-xs font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50 transition"
             >
               {busy ? "Saving…" : "Save"}
             </button>
-            <button onClick={() => setMode("idle")} className="px-3 py-1.5 text-slate-500 text-xs rounded-lg hover:bg-slate-100">✕</button>
+            <button
+              type="button"
+              onClick={() => setIsDrawing(!isDrawing)}
+              className={`px-2 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                isDrawing
+                  ? "bg-orange-100 text-orange-700 border-orange-200"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+            >
+              {isDrawing ? "Done Box" : "✏️ Box"}
+            </button>
+            <button onClick={() => { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }} className="px-3 py-1.5 text-slate-500 text-xs rounded-lg hover:bg-slate-100">✕</button>
           </div>
         </div>
       )}
@@ -358,20 +432,31 @@ function QueueCard({
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") run(() => confirmDetection(id, { reviewer_id: reviewerId, notes }));
-              if (e.key === "Escape") setMode("idle");
+              if (e.key === "Enter") run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }));
+              if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
             }}
-            className="w-full border border-green-300 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-400"
+            className="w-full border border-green-300 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-400 bg-white"
           />
           <div className="flex gap-2">
             <button
               disabled={busy}
-              onClick={() => run(() => confirmDetection(id, { reviewer_id: reviewerId, notes }))}
+              onClick={() => run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }))}
               className="flex-1 py-1.5 bg-green-600 text-white text-xs font-semibold rounded-lg hover:bg-green-700 disabled:opacity-50 transition"
             >
               {busy ? "Saving…" : "Confirm"}
             </button>
-            <button onClick={() => setMode("idle")} className="px-3 py-1.5 text-slate-500 text-xs rounded-lg hover:bg-slate-100">✕</button>
+            <button
+              type="button"
+              onClick={() => setIsDrawing(!isDrawing)}
+              className={`px-2 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                isDrawing
+                  ? "bg-orange-100 text-orange-700 border-orange-200"
+                  : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+              }`}
+            >
+              {isDrawing ? "Done Box" : "✏️ Box"}
+            </button>
+            <button onClick={() => { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }} className="px-3 py-1.5 text-slate-500 text-xs rounded-lg hover:bg-slate-100">✕</button>
           </div>
         </div>
       )}

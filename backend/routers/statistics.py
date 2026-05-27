@@ -21,6 +21,7 @@ def get_summary(state: AppState = Depends(get_state)):
             "species_distribution": [],
             "day_night_distribution": [],
             "confidence_series": [],
+            "hourly_distribution": [],
         }
 
     animals = df[df["primary_label"] == "Animal"] if "primary_label" in df.columns else df
@@ -40,6 +41,18 @@ def get_summary(state: AppState = Depends(get_state)):
         df["detection_confidence"].fillna(0).tolist()
     ) if "detection_confidence" in df.columns else []
 
+    # Hourly activity distribution (0-23 hours)
+    hourly_counts = [0] * 24
+    if "capture_time" in df.columns:
+        for t in df["capture_time"].dropna():
+            try:
+                h = int(str(t).split(":")[0])
+                if 0 <= h < 24:
+                    hourly_counts[h] += 1
+            except Exception:
+                pass
+    hourly_dist = [{"hour": f"{h:02d}:00", "count": count} for h, count in enumerate(hourly_counts)]
+
     return {
         "total_images": len(df),
         "animals_identified": len(animals),
@@ -48,4 +61,5 @@ def get_summary(state: AppState = Depends(get_state)):
         "species_distribution": species_dist,
         "day_night_distribution": day_night_dist,
         "confidence_series": conf_series,
+        "hourly_distribution": hourly_dist,
     }

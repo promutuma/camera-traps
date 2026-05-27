@@ -171,13 +171,34 @@ export default function Ecological() {
           )}
 
           {/* Export */}
-          <div>
-            <a
-              href="/api/ecological/export"
-              className="inline-block px-4 py-2 bg-slate-700 text-white text-sm rounded-lg hover:bg-slate-800"
-            >
-              Export IDE Summary CSV
-            </a>
+          <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3 shadow-sm">
+            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Standardized Export Profiles</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Download your camera trap detections in standardized formats for research publication or batch uploads.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href="/api/ecological/export"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg transition"
+              >
+                <span className="material-symbols-outlined text-sm">download</span>
+                IDE Summary CSV
+              </a>
+              <a
+                href="/api/exports/darwin-core"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition"
+              >
+                <span className="material-symbols-outlined text-sm">science</span>
+                Darwin Core CSV
+              </a>
+              <a
+                href="/api/exports/wildlife-insights"
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition"
+              >
+                <span className="material-symbols-outlined text-sm">folder_zip</span>
+                Wildlife Insights JSON
+              </a>
+            </div>
           </div>
         </div>
       )}

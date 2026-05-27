@@ -31,6 +31,7 @@ def confirm(image_id: int, action: ReviewAction, state: AppState = Depends(get_s
         image_id=str(image_id),
         reviewer_id=action.reviewer_id,
         notes=action.notes or "",
+        bbox=action.bbox,
     )
     return {"ok": True}
 
@@ -48,6 +49,7 @@ def correct(image_id: int, action: ReviewAction, state: AppState = Depends(get_s
         corrected_label=action.corrected_label,
         reviewer_id=action.reviewer_id,
         notes=action.notes or "",
+        bbox=action.bbox,
     )
     return {"ok": True}
 

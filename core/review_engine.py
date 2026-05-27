@@ -9,6 +9,7 @@ Manages the structured human-in-the-loop review queue:
 
 import sqlite3
 import pandas as pd
+import json
 from datetime import datetime
 from typing import Optional
 
@@ -87,7 +88,7 @@ class ReviewEngine:
         -------
         pd.DataFrame
             One row per unique image (highest-confidence detection kept),
-            sorted confidence ascending so lowest-confidence is first.
+            sorted by classifier disagreement priority (low/medium first) and confidence.
         """
         if df is None or df.empty:
             return pd.DataFrame()
@@ -115,9 +116,23 @@ class ReviewEngine:
                 .first()
             )
 
-        return queue.sort_values(
-            "detection_confidence" if "detection_confidence" in queue.columns else queue.columns[0]
-        ).reset_index(drop=True)
+        if "agreement" in queue.columns:
+            priority_map = {"Low": 0, "Medium": 1, "High": 2}
+            queue["priority_score"] = queue["agreement"].map(lambda x: priority_map.get(x, 3))
+            
+            sort_cols = ["priority_score"]
+            sort_ascending = [True]
+            
+            if "detection_confidence" in queue.columns:
+                sort_cols.append("detection_confidence")
+                sort_ascending.append(True)
+                
+            queue = queue.sort_values(sort_cols, ascending=sort_ascending)
+            queue = queue.drop(columns=["priority_score"])
+        elif "detection_confidence" in queue.columns:
+            queue = queue.sort_values("detection_confidence", ascending=True)
+
+        return queue.reset_index(drop=True)
 
     def queue_size(self, df: pd.DataFrame, confidence_threshold: float = 0.9) -> int:
         return len(self.get_queue(df, confidence_threshold))
@@ -135,8 +150,25 @@ class ReviewEngine:
         confidence: float = 0.0,
         reviewer_id: str = "anonymous",
         notes: str = "",
+        bbox: Optional[list] = None,
     ) -> int:
         """Accept the AI prediction as correct. Returns the new action row id."""
+        if bbox is not None:
+            conn = self._conn()
+            try:
+                row = conn.execute(
+                    "SELECT id FROM detections WHERE image_id = ? ORDER BY confidence DESC LIMIT 1",
+                    [image_id]
+                ).fetchone()
+                if row:
+                    conn.execute(
+                        "UPDATE detections SET bbox = ? WHERE id = ?",
+                        [json.dumps(bbox), row[0]]
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
         return self._record(
             image_id=image_id,
             filename=filename,
@@ -161,8 +193,30 @@ class ReviewEngine:
         confidence: float = 0.0,
         reviewer_id: str = "anonymous",
         notes: str = "",
+        bbox: Optional[list] = None,
     ) -> int:
         """Record a species correction. Returns the new action row id."""
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                "SELECT id FROM detections WHERE image_id = ? ORDER BY confidence DESC LIMIT 1",
+                [image_id]
+            ).fetchone()
+            if row:
+                if bbox is not None:
+                    conn.execute(
+                        "UPDATE detections SET detected_animal = ?, bbox = ? WHERE id = ?",
+                        [corrected_species, json.dumps(bbox), row[0]]
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE detections SET detected_animal = ? WHERE id = ?",
+                        [corrected_species, row[0]]
+                    )
+                conn.commit()
+        finally:
+            conn.close()
+
         return self._record(
             image_id=image_id,
             filename=filename,
@@ -187,6 +241,16 @@ class ReviewEngine:
         notes: str = "",
     ) -> int:
         """Mark the detection as a false positive. Returns the new action row id."""
+        conn = self._conn()
+        try:
+            conn.execute(
+                "UPDATE detections SET detected_animal = 'Empty' WHERE image_id = ?",
+                [image_id]
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
         return self._record(
             image_id=image_id,
             filename=filename,

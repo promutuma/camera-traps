@@ -70,6 +70,7 @@ from backend.routers import (
     corridor as corridor_router,
     project as project_router,
     arcgis as arcgis_router,
+    exports as exports_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -234,6 +235,7 @@ def create_app() -> FastAPI:
     application.include_router(corridor_router.router, prefix=prefix)
     application.include_router(project_router.router, prefix=prefix)
     application.include_router(arcgis_router.router, prefix=prefix)
+    application.include_router(exports_router.router, prefix=prefix)
 
     # Serve built React app in production
     dist_path = Path(__file__).parent.parent / "frontend" / "dist"

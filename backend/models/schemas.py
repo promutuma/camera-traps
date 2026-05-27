@@ -123,6 +123,7 @@ class ReviewAction(BaseModel):
     reviewer_id: str
     corrected_label: Optional[str] = None
     notes: Optional[str] = None
+    bbox: Optional[List[float]] = None
 
 
 # ---------------------------------------------------------------------------
