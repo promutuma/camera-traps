@@ -113,10 +113,39 @@ class SpeciesNetWrapper:
 
             pairs = sorted(zip(classes, scores), key=lambda x: x[1], reverse=True)
             
+            import json
             cleaned_pairs = []
             for label, score in pairs[:top_k]:
-                if "::::::" in label:
-                    label = label.split("::::::")[-1].strip()
+                if ";" in label:
+                    parts = [p.strip() for p in label.split(";") if p.strip()]
+                    if parts:
+                        taxon_id = parts[0]
+                        common_name = parts[-1]
+                        hierarchy = parts[1:-1]
+                        scientific_name = " ".join(parts[-3:-1]) if len(parts) >= 4 else ""
+                        label = json.dumps({
+                            "id": taxon_id,
+                            "common_name": common_name,
+                            "scientific_name": scientific_name,
+                            "hierarchy": hierarchy,
+                            "display": common_name
+                        })
+                elif "::::::" in label:
+                    parts = label.split("::::::")
+                    if len(parts) >= 2:
+                        label = json.dumps({
+                            "id": parts[0].strip(),
+                            "common_name": parts[1].strip(),
+                            "display": parts[1].strip()
+                        })
+                    else:
+                        label = json.dumps({
+                            "display": label.strip()
+                        })
+                else:
+                    label = json.dumps({
+                        "display": label.strip()
+                    })
                 cleaned_pairs.append((label, float(score)))
                 
             return cleaned_pairs

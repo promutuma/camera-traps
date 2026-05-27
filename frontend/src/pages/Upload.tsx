@@ -213,10 +213,41 @@ function ImageResultCard({ row }: { row: ImageRow }) {
               {evSN?.skipped ? (
                 <span className="text-slate-400 dark:text-slate-550 italic">not loaded</span>
               ) : (
-                <span className="text-slate-600 dark:text-slate-400">
-                  {evSN?.top5?.length
-                    ? evSN.top5.slice(0, 3).map(([s, c]) => `${s} ${c.toFixed(2)}`).join(", ")
-                    : "—"}
+                <span className="text-slate-600 dark:text-slate-400 flex flex-wrap gap-x-1 items-center">
+                  {evSN?.top5?.length ? (
+                    evSN.top5.slice(0, 3).map(([s, c], i, arr) => {
+                      const isJson = s.startsWith("{") && s.endsWith("}");
+                      let displayName = s;
+                      let tooltip = "";
+                      if (isJson) {
+                        try {
+                          const parsed = JSON.parse(s);
+                          displayName = parsed.common_name || parsed.display || s;
+                          tooltip = [
+                            `Common: ${parsed.common_name}`,
+                            parsed.scientific_name ? `Scientific: ${parsed.scientific_name}` : null,
+                            parsed.hierarchy && parsed.hierarchy.length ? `Taxonomy: ${parsed.hierarchy.join(" > ")}` : null,
+                            `ID: ${parsed.id}`
+                          ].filter(Boolean).join("\n");
+                        } catch {}
+                      }
+                      return (
+                        <span key={i} className="inline-flex items-center gap-0.5">
+                          {tooltip ? (
+                            <span title={tooltip} className="cursor-help underline decoration-dotted underline-offset-2 decoration-slate-450 dark:decoration-slate-500 font-semibold hover:text-emerald-600 dark:hover:text-emerald-400 transition-colors">
+                              {displayName}
+                            </span>
+                          ) : (
+                            <span>{displayName}</span>
+                          )}
+                          <span className="text-slate-400 font-normal">{(c as number).toFixed(2)}</span>
+                          {i < arr.length - 1 && <span className="text-slate-350 dark:text-slate-750 mr-1">,</span>}
+                        </span>
+                      );
+                    })
+                  ) : (
+                    "—"
+                  )}
                 </span>
               )}
             </div>

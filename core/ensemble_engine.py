@@ -119,9 +119,21 @@ def fuse_species(
         all_candidates – top-5 fused (label, conf) pairs
     """
     w_bio, w_snet = weights
+    import json
+
+    def _clean_snet_label(label: str) -> str:
+        if label.startswith("{") and label.endswith("}"):
+            try:
+                return json.loads(label).get("display", label)
+            except Exception:
+                pass
+        return label
 
     bc_top: Optional[Tuple[str, float]] = bioclip[0] if bioclip else None
-    sn_top: Optional[Tuple[str, float]] = speciesnet[0] if speciesnet else None
+    sn_top_raw: Optional[Tuple[str, float]] = speciesnet[0] if speciesnet else None
+    sn_top: Optional[Tuple[str, float]] = (
+        (_clean_snet_label(sn_top_raw[0]), sn_top_raw[1]) if sn_top_raw else None
+    )
 
     # Accumulate weighted scores; use lower-cased name as key
     scores: Dict[str, float] = {}
@@ -133,9 +145,10 @@ def fuse_species(
         name_map.setdefault(key, label)
 
     for label, score in speciesnet:
-        key = label.lower().strip()
+        clean_label = _clean_snet_label(label)
+        key = clean_label.lower().strip()
         scores[key] = scores.get(key, 0.0) + score * w_snet
-        name_map.setdefault(key, label)
+        name_map.setdefault(key, clean_label)
 
     if not scores:
         return {
