@@ -123,18 +123,18 @@ export default function Diagnostics() {
                     return (
                       <g key={idx}>
                         <rect
-                          x={bbox[0] * imgNatural.w}
-                          y={bbox[1] * imgNatural.h}
-                          width={bbox[2] * imgNatural.w}
-                          height={bbox[3] * imgNatural.h}
+                          x={bbox[1] * imgNatural.w}
+                          y={bbox[0] * imgNatural.h}
+                          width={bbox[3] * imgNatural.w}
+                          height={bbox[2] * imgNatural.h}
                           fill="none"
                           stroke={color}
                           strokeWidth={Math.max(3, imgNatural.w / 250)}
                           strokeDasharray={isV1000 ? "6 4" : undefined}
                         />
                         <text
-                          x={bbox[0] * imgNatural.w + 6}
-                          y={bbox[1] * imgNatural.h - 8}
+                          x={bbox[1] * imgNatural.w + 6}
+                          y={bbox[0] * imgNatural.h - 8}
                           fill={color}
                           fontWeight="bold"
                           fontSize={Math.max(14, imgNatural.w / 40)}
