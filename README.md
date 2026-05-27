@@ -233,19 +233,29 @@ In production the FastAPI backend serves the built React app as static files —
 git clone <repository-url>
 cd camera-traps
 
-# Build and run
-docker-compose up --build
+# Build and run (first time — downloads and compiles everything)
+docker compose up --build
+
+# Subsequent runs (uses cached image)
+docker compose up
 ```
 
 Access the app at `http://localhost:8000`.
 
-To persist the database between runs:
-```bash
-docker run -p 8000:8000 \
-  -v $(pwd)/wildlife_data.db:/app/wildlife_data.db \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  wildlife-analyzer
+> **Note:** Newer Docker versions (19+) ship Compose as a built-in plugin. Use `docker compose` (space, not hyphen). The old standalone `docker-compose` binary is no longer installed by default. If you get `bash: docker-compose: command not found`, either use `docker compose` or add an alias:
+> ```bash
+> echo "alias docker-compose='docker compose'" >> ~/.bashrc && source ~/.bashrc
+> ```
+
+The `docker-compose.yml` mounts three model cache directories from your host into the container so the AI models do not need to be re-downloaded on every build:
+
 ```
+~/.EasyOCR                → /root/.EasyOCR          (EasyOCR model weights)
+~/.cache/huggingface      → /root/.cache/huggingface (BioClip / HuggingFace)
+/tmp/megadetector_models  → /tmp/megadetector_models (MegaDetector V5a)
+```
+
+On a fresh machine with no local cache Docker will download the models at first startup (~1.5 GB total) since it has internet access by default. Subsequent restarts use the cached volumes and are fast.
 
 ---
 
@@ -507,6 +517,57 @@ set REQUESTS_CA_BUNDLE=C:\path\to\corporate-ca.pem
 set SSL_CERT_FILE=C:\path\to\corporate-ca.pem
 pip install --no-cache-dir -r requirements.txt
 ```
+
+---
+
+## Troubleshooting: Docker — Permission Denied Connecting to Docker Socket
+
+If you see this error when running `docker compose up`:
+
+```
+permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock
+```
+
+Your user is not in the `docker` group. Fix it with:
+
+```bash
+# 1 — Create the docker group (may already exist on some distros)
+sudo groupadd docker
+
+# 2 — Add yourself to the group
+sudo usermod -aG docker $USER
+
+# 3 — Fix the socket ownership so the group can access it
+sudo chown root:docker /var/run/docker.sock
+
+# 4 — Activate the new group in your current terminal session
+newgrp docker
+```
+
+Step 4 (`newgrp docker`) applies the group membership immediately without requiring a logout. For all future terminal sessions it works automatically — you may need to log out and back in (or reboot) once to make it fully permanent.
+
+---
+
+## Troubleshooting: Docker — Port 8000 Already in Use
+
+```
+failed to bind host port 0.0.0.0:8000/tcp: address already in use
+```
+
+The local development server (`dev.sh` / uvicorn) is still running on port 8000. Find and stop it:
+
+```bash
+# Find the process
+lsof -ti :8000
+
+# Kill it (replace PID with the number returned above)
+kill <PID>
+
+# Then start Docker
+docker compose up
+```
+
+Alternatively, change the Docker port mapping in `docker-compose.yml` to run both simultaneously (e.g. `"8080:8000"` for Docker, keeping 8000 for local dev).
 
 ---
 
