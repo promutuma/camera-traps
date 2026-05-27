@@ -397,6 +397,57 @@ class SpatialExporter:
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(kml, encoding="unicode")
 
     # ------------------------------------------------------------------
+    # Router adapter methods (accept raw detection history df)
+    # ------------------------------------------------------------------
+
+    def to_geojson(self, df: pd.DataFrame) -> dict:
+        result = self.detections_to_geojson(df)
+        return json.loads(result) if isinstance(result, str) else result
+
+    def to_shapefile_bytes(self, df: pd.DataFrame) -> bytes:
+        try:
+            import shapefile as sf
+        except ImportError:
+            raise ImportError("Install pyshp: pip install pyshp")
+
+        w = sf.Writer(shapeType=sf.NULL)
+        keep = ["station_id", "detected_animal", "detection_confidence",
+                "capture_date", "capture_time", "day_night", "ide_id"]
+        cols = [c for c in keep if c in df.columns]
+        for col in cols:
+            w.field(col[:10], "C", 50)
+        for _, row in df.iterrows():
+            w.null()
+            w.record(*[str(row.get(c, ""))[:50] for c in cols])
+        return self._pack_shapefile_zip(w, "detections")
+
+    def to_kml(self, df: pd.DataFrame) -> str:
+        from xml.etree.ElementTree import Element, SubElement, tostring
+        kml = Element("kml", xmlns="http://www.opengis.net/kml/2.2")
+        doc = SubElement(kml, "Document")
+        SubElement(doc, "name").text = "Wildlife Detections"
+        lat_col = next((c for c in ["gps_lat", "lat", "latitude"] if c in df.columns), None)
+        lon_col = next((c for c in ["gps_lon", "lon", "longitude"] if c in df.columns), None)
+        for _, row in df.iterrows():
+            pm = SubElement(doc, "Placemark")
+            SubElement(pm, "name").text = str(row.get("detected_animal", row.get("species_label", "Unknown")))
+            SubElement(pm, "description").text = "\n".join([
+                f"Station: {row.get('station_id', '')}",
+                f"Confidence: {row.get('detection_confidence', '')}",
+                f"Date: {row.get('capture_date', '')}",
+                f"Time: {row.get('capture_time', '')}",
+            ])
+            if lat_col and lon_col:
+                try:
+                    lat, lon = float(row[lat_col]), float(row[lon_col])
+                    if not (lat == 0.0 and lon == 0.0):
+                        pt = SubElement(pm, "Point")
+                        SubElement(pt, "coordinates").text = f"{lon},{lat},0"
+                except (TypeError, ValueError):
+                    pass
+        return '<?xml version="1.0" encoding="UTF-8"?>\n' + tostring(kml, encoding="unicode")
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 

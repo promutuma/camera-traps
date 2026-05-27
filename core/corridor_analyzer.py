@@ -55,7 +55,11 @@ class CorridorAnalyzer:
     # Station pairs
     # ------------------------------------------------------------------
 
-    def compute_station_pairs(self, stations_df: pd.DataFrame) -> pd.DataFrame:
+    def compute_station_pairs(
+        self,
+        stations_df: pd.DataFrame,
+        max_distance_m: Optional[float] = None,
+    ) -> pd.DataFrame:
         """
         Return all station pairs within max_distance_m.
 
@@ -63,12 +67,15 @@ class CorridorAnalyzer:
         ----------
         stations_df : pd.DataFrame
             Must contain columns: station_id, gps_lat, gps_lon.
+        max_distance_m : float, optional
+            Override self.max_distance_m for this call.
 
         Returns
         -------
         pd.DataFrame with columns:
             station_a, station_b, lat_a, lon_a, lat_b, lon_b, distance_m
         """
+        limit_m = max_distance_m if max_distance_m is not None else self.max_distance_m
         rows = []
         valid = stations_df.dropna(subset=["gps_lat", "gps_lon"]).copy()
         valid = valid[(valid["gps_lat"] != 0) | (valid["gps_lon"] != 0)]
@@ -85,7 +92,7 @@ class CorridorAnalyzer:
                     )
                 except (TypeError, ValueError):
                     continue
-                if dist <= self.max_distance_m:
+                if dist <= limit_m:
                     rows.append({
                         "station_a":  str(a["station_id"]),
                         "station_b":  str(b["station_id"]),
@@ -273,6 +280,47 @@ class CorridorAnalyzer:
         util["total_pairs"] = total_pairs
         util["utilisation_pct"] = (util["pairs_used"] / total_pairs * 100).round(1)
         return util.sort_values("utilisation_pct", ascending=False).reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # Router adapter methods (accept list-of-dicts + max_distance_km)
+    # ------------------------------------------------------------------
+
+    def _stations_df(self, stations: list) -> pd.DataFrame:
+        if not stations:
+            return pd.DataFrame(columns=["station_id", "gps_lat", "gps_lon"])
+        return pd.DataFrame(stations)
+
+    def _ide_summary_from_history(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df[["station_id"]].copy()
+        out["species"] = df.get("detected_animal", df.get("species_label", pd.Series(["Unknown"] * len(df), index=df.index)))
+        if "capture_date" in df.columns and "capture_time" in df.columns:
+            out["first_detection"] = df["capture_date"].astype(str) + " " + df["capture_time"].astype(str)
+        elif "processed_at" in df.columns:
+            out["first_detection"] = df["processed_at"]
+        else:
+            out["first_detection"] = None
+        return out.dropna(subset=["first_detection"])
+
+    def get_station_pairs(self, stations: list, max_distance_km: float = 50.0) -> list:
+        pairs = self.compute_station_pairs(self._stations_df(stations), max_distance_km * 1000)
+        return [] if pairs.empty else pairs.fillna("").to_dict(orient="records")
+
+    def get_movements(self, df: pd.DataFrame, stations: list, max_distance_km: float = 50.0) -> list:
+        pairs = self.compute_station_pairs(self._stations_df(stations), max_distance_km * 1000)
+        flows = self.compute_corridor_flows(self._ide_summary_from_history(df), pairs)
+        return [] if (flows is None or flows.empty) else flows.fillna("").to_dict(orient="records")
+
+    def get_bottlenecks(self, df: pd.DataFrame, stations: list, max_distance_km: float = 50.0) -> list:
+        pairs = self.compute_station_pairs(self._stations_df(stations), max_distance_km * 1000)
+        flows = self.compute_corridor_flows(self._ide_summary_from_history(df), pairs)
+        bottlenecks = self.identify_bottlenecks(flows)
+        return [] if (bottlenecks is None or bottlenecks.empty) else bottlenecks.fillna("").to_dict(orient="records")
+
+    def get_utilisation(self, df: pd.DataFrame, stations: list, max_distance_km: float = 50.0) -> list:
+        pairs = self.compute_station_pairs(self._stations_df(stations), max_distance_km * 1000)
+        flows = self.compute_corridor_flows(self._ide_summary_from_history(df), pairs)
+        utilisation = self.compute_corridor_utilisation(flows, pairs)
+        return [] if (utilisation is None or utilisation.empty) else utilisation.fillna("").to_dict(orient="records")
 
     # ------------------------------------------------------------------
     # Combined summary

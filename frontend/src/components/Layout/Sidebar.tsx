@@ -42,10 +42,40 @@ const NAV_GROUPS = [
 export default function Sidebar() {
   const { config, fetch, patch } = useConfigStore();
   const [activeTab, setActiveTab] = useState<"nav" | "config">("nav");
+  const [theme, setTheme] = useState<"light" | "dark">(() => {
+    return (localStorage.getItem("color-scheme") as "light" | "dark") || 
+      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  });
 
   useEffect(() => {
     fetch();
+    
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const handler = (e: MediaQueryListEvent) => {
+      if (!localStorage.getItem("color-scheme")) {
+        const nextTheme = e.matches ? "dark" : "light";
+        setTheme(nextTheme);
+        if (nextTheme === "dark") {
+          document.documentElement.classList.add("dark");
+        } else {
+          document.documentElement.classList.remove("dark");
+        }
+      }
+    };
+    media.addEventListener("change", handler);
+    return () => media.removeEventListener("change", handler);
   }, []);
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "light" ? "dark" : "light";
+    setTheme(nextTheme);
+    localStorage.setItem("color-scheme", nextTheme);
+    if (nextTheme === "dark") {
+      document.documentElement.classList.add("dark");
+    } else {
+      document.documentElement.classList.remove("dark");
+    }
+  };
 
   if (!config) return <div className="p-4 text-sm text-slate-400">Loading config…</div>;
 
@@ -273,8 +303,18 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="p-4 border-t border-slate-800 text-[10px] text-slate-500 bg-slate-950/20 text-center">
-        Changes apply dynamically
+      <div className="p-4 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-500 bg-slate-950/20">
+        <span>Changes apply dynamically</span>
+        <button
+          onClick={toggleTheme}
+          className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer select-none"
+          title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
+        >
+          <span className="material-symbols-outlined text-[14px] leading-none select-none">
+            {theme === "light" ? "dark_mode" : "light_mode"}
+          </span>
+          <span className="capitalize text-[10px] font-semibold">{theme === "light" ? "dark" : "light"}</span>
+        </button>
       </div>
     </aside>
   );

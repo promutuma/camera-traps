@@ -2,15 +2,30 @@
 
 @import "leaflet/dist/leaflet.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   color-scheme: light dark;
+  --bg-gradient-start: #f0fdf4;
+  --bg-gradient-end: #f8fafc;
+  --text-color: #0f172a;
+  --scrollbar-thumb: #cbd5e1;
+  --scrollbar-hover: #10b981;
+}
+
+html.dark {
+  --bg-gradient-start: #061c16;
+  --bg-gradient-end: #0b0f19;
+  --text-color: #f8fafc;
+  --scrollbar-thumb: #334155;
+  --scrollbar-hover: #10b981;
 }
 
 body {
   margin: 0;
   font-family: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
-  background: linear-gradient(135deg, #f0fdf4 0%, #f8fafc 100%);
-  color: #0f172a;
+  background: linear-gradient(135deg, var(--bg-gradient-start) 0%, var(--bg-gradient-end) 100%);
+  color: var(--text-color);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -32,12 +47,12 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #a8e6cf;
+  background: var(--scrollbar-hover);
 }
 
 /* Glassmorphism helpers for Tailwind v4 */

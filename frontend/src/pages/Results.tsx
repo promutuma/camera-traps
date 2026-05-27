@@ -147,6 +147,14 @@ function Lightbox({
   const [saving, setSaving] = useState(false);
   const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
 
+  // Zoom / Pan / Opacity states
+  const [scale, setScale] = useState(1);
+  const [translate, setTranslate] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [boxOpacity, setBoxOpacity] = useState(0.85);
+  const [showCheatsheet, setShowCheatsheet] = useState(true);
+
   const idx = groups.findIndex((g) => g.filename === filename);
   const hasPrev = idx > 0;
   const hasNext = idx < groups.length - 1;
@@ -175,6 +183,40 @@ function Lightbox({
     setDetEdit(null);
   };
 
+  const handleWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    const zoomFactor = 1.15;
+    const nextScale = e.deltaY < 0 ? scale * zoomFactor : scale / zoomFactor;
+    const boundedScale = Math.max(1, Math.min(8, nextScale));
+    setScale(boundedScale);
+    if (boundedScale <= 1) {
+      setTranslate({ x: 0, y: 0 });
+    }
+  };
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (scale <= 1) return;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX - translate.x, y: e.clientY - translate.y });
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setTranslate({
+      x: e.clientX - dragStart.x,
+      y: e.clientY - dragStart.y,
+    });
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  const resetZoom = () => {
+    setScale(1);
+    setTranslate({ x: 0, y: 0 });
+  };
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (editField || detEdit) return;
@@ -186,93 +228,177 @@ function Lightbox({
     return () => window.removeEventListener("keydown", handler);
   }, [idx, hasPrev, hasNext, editField, onClose, onNavigate, groups, detEdit]);
 
-  useEffect(() => { setImgNatural(null); setEditField(null); setDetEdit(null); }, [imgUrl]);
+  useEffect(() => {
+    setImgNatural(null);
+    setEditField(null);
+    setDetEdit(null);
+    setScale(1);
+    setTranslate({ x: 0, y: 0 });
+  }, [imgUrl]);
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
-        className="relative bg-white rounded-2xl shadow-2xl max-w-5xl w-full mx-4 overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
+        className="relative bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl max-w-5xl w-full overflow-hidden flex flex-col md:flex-row max-h-[90vh]"
         onClick={(e) => e.stopPropagation()}
       >
         {/* ── Image panel ── */}
-        <div className="md:w-[60%] bg-slate-950 flex items-center justify-center relative min-h-64">
-          <img
-            src={imgUrl}
-            alt={filename}
-            className="max-h-[85vh] w-full object-contain"
-            onLoad={(e) => {
-              const img = e.currentTarget as HTMLImageElement;
-              setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
-            }}
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
-          />
-
-          {imgNatural && (
-            <svg
-              className="absolute inset-0 w-full h-full pointer-events-none"
-              viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
-              preserveAspectRatio="xMidYMid meet"
+        <div 
+          className="md:w-[65%] bg-slate-955 flex items-center justify-center relative min-h-[300px] md:min-h-[500px] overflow-hidden group/image select-none"
+          onWheel={handleWheel}
+        >
+          {/* Zoom controls overlay */}
+          <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10 bg-slate-900/80 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/10 opacity-0 group-hover/image:opacity-100 transition-opacity duration-200">
+            <button 
+              onClick={() => setScale(s => Math.min(8, s * 1.25))}
+              className="text-white hover:text-green-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
+              title="Zoom In"
             >
-              {rows.map((row, i) => {
-                const bbox = parseBbox(row.bbox);
-                if (!bbox) return null;
-                const color = BOX_COLORS[i % BOX_COLORS.length];
-                const sw = Math.max(2, imgNatural.w / 400);
-                const fs = Math.max(14, imgNatural.w / 55);
-                const conf = typeof row.detection_confidence === "number"
-                  ? ` (${(row.detection_confidence as number).toFixed(2)})`
-                  : "";
-                return (
-                  <g key={i}>
-                    <rect
-                      x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
-                      width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
-                      fill="none" stroke={color} strokeWidth={sw}
-                    />
-                    <text
-                      x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 8}
-                      fill={color} fontWeight="bold" fontSize={fs}
-                      style={{ filter: "drop-shadow(0 1px 2px #000)" }}
-                    >
-                      {String(row.detected_animal ?? "")}{conf}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
+              <span className="material-symbols-outlined text-sm leading-none block">zoom_in</span>
+            </button>
+            <button 
+              onClick={() => setScale(s => Math.max(1, s / 1.25))}
+              className="text-white hover:text-green-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
+              title="Zoom Out"
+            >
+              <span className="material-symbols-outlined text-sm leading-none block">zoom_out</span>
+            </button>
+            <button 
+              onClick={resetZoom}
+              className="text-white hover:text-green-400 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide uppercase transition border border-white/20 rounded cursor-pointer"
+              title="Reset Zoom"
+            >
+              Reset
+            </button>
+          </div>
+
+          {/* Keyboard Cheatsheet Overlay */}
+          {showCheatsheet && (
+            <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-white/10 rounded-xl p-3 text-[10px] text-slate-350 space-y-1 shadow-lg max-w-[200px] transition-all">
+              <div className="flex items-center justify-between font-bold border-b border-white/10 pb-1 mb-1 text-white">
+                <span>Shortcuts Cheatsheet</span>
+                <button onClick={() => setShowCheatsheet(false)} className="text-slate-400 hover:text-white shrink-0 cursor-pointer">✕</button>
+              </div>
+              <div className="flex justify-between gap-4"><span>Navigate Left</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">←</kbd></div>
+              <div className="flex justify-between gap-4"><span>Navigate Right</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">→</kbd></div>
+              <div className="flex justify-between gap-4"><span>Exit Lightbox</span><kbd className="bg-white/10 px-1.5 rounded text-white font-semibold">Esc</kbd></div>
+              <div className="flex justify-between gap-4"><span>Zoom (Image)</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">Scroll</kbd></div>
+              <div className="flex justify-between gap-4"><span>Pan (Zoomed)</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">Drag</kbd></div>
+            </div>
           )}
 
+          {/* Nav buttons */}
           {hasPrev && (
             <button
               onClick={() => onNavigate(groups[idx - 1])}
-              className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-lg transition"
+              className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-green-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
             >‹</button>
           )}
           {hasNext && (
             <button
               onClick={() => onNavigate(groups[idx + 1])}
-              className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/50 hover:bg-black/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-lg transition"
+              className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-green-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
             >›</button>
           )}
 
-          <div className="absolute bottom-2 right-3 text-xs text-white/60 font-mono">
+          {/* Interactive Transform Wrapper */}
+          <div
+            style={{
+              transform: `translate(${translate.x}px, ${translate.y}px) scale(${scale})`,
+              cursor: scale > 1 ? (isDragging ? "grabbing" : "grab") : "default",
+              transition: isDragging ? "none" : "transform 0.15s ease-out",
+            }}
+            className="relative flex items-center justify-center max-h-[85vh] w-full"
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={handleMouseUp}
+          >
+            <img
+              src={imgUrl}
+              alt={filename}
+              className="max-h-[85vh] w-full object-contain pointer-events-none"
+              onLoad={(e) => {
+                const img = e.currentTarget as HTMLImageElement;
+                setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+              }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+            />
+
+            {imgNatural && (
+              <svg
+                className="absolute inset-0 w-full h-full pointer-events-none"
+                viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
+                preserveAspectRatio="xMidYMid meet"
+                style={{ opacity: boxOpacity }}
+              >
+                {rows.map((row, i) => {
+                  const bbox = parseBbox(row.bbox);
+                  if (!bbox) return null;
+                  const color = BOX_COLORS[i % BOX_COLORS.length];
+                  const sw = Math.max(2, imgNatural.w / 400);
+                  const fs = Math.max(14, imgNatural.w / 55);
+                  const conf = typeof row.detection_confidence === "number"
+                    ? ` (${(row.detection_confidence as number).toFixed(2)})`
+                    : "";
+                  return (
+                    <g key={i}>
+                      <rect
+                        x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
+                        width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
+                        fill="none" stroke={color} strokeWidth={sw}
+                      />
+                      <text
+                        x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 8}
+                        fill={color} fontWeight="bold" fontSize={fs}
+                        style={{ filter: "drop-shadow(0 1px 2px #000)" }}
+                      >
+                        {String(row.detected_animal ?? "")}{conf}
+                      </text>
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+          </div>
+
+          <div className="absolute bottom-3 right-3 text-xs text-white/50 font-mono select-none">
             {idx + 1} / {groups.length}
           </div>
         </div>
 
         {/* ── Details panel ── */}
-        <div className="md:w-[40%] p-5 flex flex-col gap-4 overflow-y-auto">
-          <div className="flex items-start justify-between gap-2">
-            <p className="font-semibold text-slate-800 text-sm break-all leading-snug">{filename}</p>
-            <button onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-700 text-xl leading-none mt-0.5">✕</button>
+        <div className="md:w-[35%] p-5 flex flex-col gap-4 overflow-y-auto dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+          <div className="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
+            <p className="font-bold text-slate-800 dark:text-slate-100 text-sm break-all leading-snug">{filename}</p>
+            <button onClick={onClose} className="shrink-0 text-slate-450 hover:text-slate-700 dark:hover:text-slate-300 text-xl leading-none mt-0.5 cursor-pointer">✕</button>
+          </div>
+
+          {/* Box Opacity Slider */}
+          <div className="flex items-center justify-between gap-2 px-1 py-1.5 bg-slate-50 dark:bg-slate-950/40 rounded-lg border border-slate-100 dark:border-slate-850">
+            <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider pl-1.5">
+              Box Opacity
+            </label>
+            <div className="flex items-center gap-2 pr-1.5">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={boxOpacity}
+                onChange={(e) => setBoxOpacity(parseFloat(e.target.value))}
+                className="w-20 accent-emerald-500 bg-slate-200 dark:bg-slate-800 cursor-pointer h-1 rounded-lg appearance-none"
+              />
+              <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500 w-8 text-right">{Math.round(boxOpacity * 100)}%</span>
+            </div>
           </div>
 
           {/* Detection list */}
           <div className="space-y-2.5">
-            <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">
+            <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">
               Detections ({rows.length})
             </p>
             {rows.map((row, i) => {
@@ -282,10 +408,10 @@ function Lightbox({
                 : null;
               const isEditingDet = detEdit?.idx === i;
               return (
-                <div key={i} className="rounded-lg border border-slate-100 bg-slate-50/60 p-2.5 space-y-1.5">
+                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-955/20 p-3 space-y-1.5">
                   {/* Species row */}
                   <div className="flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: color }} />
+                    <span className="w-2.5 h-2.5 rounded-sm shrink-0 shadow-sm" style={{ background: color }} />
                     {isEditingDet ? (
                       <>
                         <input
@@ -296,26 +422,26 @@ function Lightbox({
                             if (e.key === "Enter") commitDetEdit();
                             if (e.key === "Escape") setDetEdit(null);
                           }}
-                          className="flex-1 border border-green-400 rounded px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-400"
+                          className="flex-1 border border-emerald-500 rounded px-2.5 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white"
                         />
                         <button onClick={commitDetEdit} disabled={saving}
-                          className="px-2 py-0.5 bg-green-600 text-white text-[10px] rounded hover:bg-green-700 disabled:opacity-50 shrink-0">
+                          className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] rounded font-semibold hover:shadow transition disabled:opacity-50 shrink-0 cursor-pointer">
                           {saving ? "…" : "✓"}
                         </button>
                         <button onClick={() => setDetEdit(null)}
-                          className="text-slate-300 hover:text-slate-600 shrink-0 text-sm">✕</button>
+                          className="text-slate-350 hover:text-slate-650 shrink-0 text-sm cursor-pointer px-1">✕</button>
                       </>
                     ) : (
                       <>
                         <span
-                          className="font-semibold text-slate-800 text-sm flex-1 truncate cursor-pointer hover:text-green-700 hover:underline underline-offset-2"
+                          className="font-bold text-slate-850 dark:text-slate-200 text-sm flex-1 truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
                           title="Click to edit species"
                           onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
                         >
                           {String(row.detected_animal ?? "Unknown")}
                         </span>
                         {conf !== null && (
-                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white shrink-0 ${confColor(conf / 100)}`}>
+                          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white font-bold shrink-0 ${confColor(conf / 100)}`}>
                             {conf}%
                           </span>
                         )}
@@ -339,7 +465,7 @@ function Lightbox({
           </div>
 
           {/* Shared image fields */}
-          <div className="space-y-3 flex-1">
+          <div className="space-y-3.5 flex-1 border-t border-slate-100 dark:border-slate-800/80 pt-3">
             {([
               ["Station",      "station_id",   true ],
               ["Day / Night",  "day_night",     false],
@@ -350,34 +476,34 @@ function Lightbox({
               const isEditing = editField === field;
               const val = primary[field];
               return (
-                <div key={field}>
-                  <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{label}</p>
+                <div key={field} className="px-1">
+                  <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">{label}</p>
                   {isEditing ? (
                     <div className="flex gap-1.5">
                       {field === "user_notes" ? (
                         <textarea autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)} rows={3}
-                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-green-400" />
+                          className="flex-1 border border-emerald-500 dark:border-emerald-700 rounded-xl px-2.5 py-1.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white" />
                       ) : (
                         <input autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
                           onKeyDown={(e) => e.key === "Enter" && commitEdit()}
-                          className="flex-1 border border-green-400 rounded px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
+                          className="flex-1 border border-emerald-500 dark:border-emerald-700 rounded-xl px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-emerald-500 dark:bg-slate-900 text-white" />
                       )}
-                      <div className="flex flex-col gap-1">
+                      <div className="flex flex-col gap-1.5">
                         <button onClick={commitEdit} disabled={saving}
-                          className="px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 disabled:opacity-50">
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg font-semibold hover:shadow transition disabled:opacity-50 cursor-pointer">
                           {saving ? "…" : "✓"}
                         </button>
                         <button onClick={() => setEditField(null)}
-                          className="px-2 py-1 bg-slate-100 text-slate-600 text-xs rounded hover:bg-slate-200">✕</button>
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs rounded-lg transition cursor-pointer">✕</button>
                       </div>
                     </div>
                   ) : (
                     <div
-                      className={`text-sm text-slate-800 font-medium ${editable ? "cursor-pointer hover:text-green-700 hover:underline underline-offset-2" : ""}`}
+                      className={`text-sm text-slate-800 dark:text-slate-200 font-semibold ${editable ? "cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2" : ""}`}
                       onClick={() => editable && startEdit(field)}
                     >
                       {field === "day_night" ? <DayNightBadge value={val} /> : String(val ?? "—")}
-                      {editable && !val && <span className="text-slate-300 font-normal italic">click to add…</span>}
+                      {editable && !val && <span className="text-slate-300 dark:text-slate-600 font-normal italic">click to add…</span>}
                     </div>
                   )}
                 </div>
@@ -385,7 +511,7 @@ function Lightbox({
             })}
           </div>
 
-          <p className="text-xs text-slate-300 text-center pt-2 border-t border-slate-100">
+          <p className="text-xs text-slate-355 dark:text-slate-500 text-center pt-2 border-t border-slate-100 dark:border-slate-800/80 select-none">
             ← → navigate &nbsp;·&nbsp; Esc close
           </p>
         </div>
@@ -650,20 +776,20 @@ export default function Results() {
 
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-slate-800">Review Results</h1>
+        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Review Results</h1>
         <div className="flex gap-2 flex-wrap">
-          <div className="flex rounded-lg border border-slate-200 overflow-hidden bg-white">
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-850 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
             <button
               onClick={() => setViewMode("table")}
-              className={`px-3 py-1.5 text-sm font-medium transition ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
             >☰ Table</button>
             <button
               onClick={() => setViewMode("gallery")}
-              className={`px-3 py-1.5 text-sm font-medium transition ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
             >⊞ Gallery</button>
           </div>
-          <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Export Excel</a>
-          <a href={exportCsv()} className="px-4 py-2 bg-slate-600 text-white text-sm rounded-lg hover:bg-slate-700">Export CSV</a>
+          <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition">Export Excel</a>
+          <a href={exportCsv()} className="px-4 py-2 bg-slate-600 dark:bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 dark:hover:bg-slate-700 shadow-sm transition">Export CSV</a>
         </div>
       </div>
 
@@ -671,13 +797,13 @@ export default function Results() {
       {rows.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            ["Total Images", rows.length, "text-slate-700"],
-            ["Animals", totalAnimals, "text-green-700"],
-            ["Unique Species", uniqueSpecies, "text-indigo-700"],
-            ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700"],
+            ["Total Images", rows.length, "text-slate-700 dark:text-slate-200"],
+            ["Animals", totalAnimals, "text-green-700 dark:text-emerald-400"],
+            ["Unique Species", uniqueSpecies, "text-indigo-700 dark:text-indigo-400"],
+            ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700 dark:text-amber-450"],
           ].map(([label, val, cls]) => (
-            <div key={String(label)} className="bg-white rounded-xl border border-slate-200 px-4 py-3">
-              <p className="text-xs text-slate-400 font-medium uppercase tracking-wide">{label}</p>
+            <div key={String(label)} className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 px-4 py-3 shadow-sm">
+              <p className="text-xs text-slate-400 dark:text-slate-500 font-medium uppercase tracking-wide">{label}</p>
               <p className={`text-xl font-bold mt-0.5 ${cls}`}>{String(val)}</p>
             </div>
           ))}
@@ -685,18 +811,18 @@ export default function Results() {
       )}
 
       {/* Filters */}
-      <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-2 items-end">
+      <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 p-3 flex flex-wrap gap-2 items-end shadow-sm">
         <input ref={speciesInputRef} placeholder="Species…" value={filter.species}
           onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
           onKeyDown={(e) => e.key === "Enter" && load()}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
+          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         <input placeholder="Station…" value={filter.station}
           onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
           onKeyDown={(e) => e.key === "Enter" && load()}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400" />
+          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         <select value={filter.day_night}
           onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
-          className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400">
+          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250">
           <option value="">All times</option>
           <option value="Day">☀ Day</option>
           <option value="Night">🌙 Night</option>
@@ -704,24 +830,24 @@ export default function Results() {
         <div className="flex items-center gap-1">
           <input placeholder="Min conf" value={filter.min_conf}
             onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value }))}
-            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400" />
-          <span className="text-slate-400 text-sm">–</span>
+            className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
+          <span className="text-slate-450 dark:text-slate-600 text-sm">–</span>
           <input placeholder="Max conf" value={filter.max_conf}
             onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value }))}
-            className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400" />
+            className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
         </div>
-        <button onClick={load} className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700">Apply</button>
+        <button onClick={load} className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply</button>
         {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station) && (
           <button
             onClick={() => { setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" }); setTimeout(load, 0); }}
-            className="px-3 py-1.5 text-slate-500 text-sm rounded-lg hover:bg-slate-100"
+            className="px-3 py-1.5 text-slate-500 dark:text-slate-400 text-sm rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
           >Clear</button>
         )}
       </div>
 
       {/* Content */}
       {loading ? (
-        <div className="flex items-center justify-center py-16 text-slate-400 gap-2">
+        <div className="flex items-center justify-center py-16 text-slate-400 dark:text-slate-500 gap-2">
           <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
             <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
             <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
@@ -729,9 +855,9 @@ export default function Results() {
           Loading…
         </div>
       ) : sorted.length === 0 ? (
-        <div className="text-center py-16 text-slate-400 space-y-2">
+        <div className="text-center py-16 text-slate-400 dark:text-slate-550 space-y-2">
           <div className="text-4xl">📷</div>
-          <p className="font-medium">No results yet</p>
+          <p className="font-semibold">No results yet</p>
           <p className="text-sm">Process images in the Upload tab first.</p>
         </div>
       ) : viewMode === "gallery" ? (
@@ -745,15 +871,15 @@ export default function Results() {
         </>
       ) : (
         <>
-          <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+          <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 overflow-x-auto shadow-sm">
             <table className="w-full text-sm">
-              <thead className="bg-slate-50 border-b border-slate-200">
+              <thead className="bg-slate-50 dark:bg-slate-950/80 border-b border-slate-200 dark:border-slate-800">
                 <tr>
-                  <th className="text-left px-3 py-3 font-medium text-slate-500 w-20">Image</th>
+                  <th className="text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-450 w-20">Image</th>
                   {COLS.map(({ key, label, sortable }) => (
                     <th
                       key={key}
-                      className={`text-left px-3 py-3 font-medium text-slate-500 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800" : ""}`}
+                      className={`text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-450 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-200" : ""}`}
                       onClick={() => sortable && toggleSort(key)}
                     >
                       {label}{sortable && sortIcon(key)}
@@ -761,12 +887,12 @@ export default function Results() {
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {paginated.map((row, i) => {
                   const id = Number(row.detection_id ?? row.id ?? i);
                   const filename = String(row.filename ?? "");
                   return (
-                    <tr key={id} className="hover:bg-slate-50 group">
+                    <tr key={id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/20 group">
                       {/* Thumbnail */}
                       <td className="px-3 py-2">
                         <button
@@ -774,7 +900,7 @@ export default function Results() {
                             const g = galleryGroups.find((g) => g.filename === filename);
                             setLightbox(g ?? { filename, rows: [row] });
                           }}
-                          className="block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-100 hover:ring-2 hover:ring-green-500 transition shrink-0"
+                          className="block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 hover:ring-2 hover:ring-green-500 transition shrink-0 cursor-pointer"
                           title="View image"
                         >
                           <img
@@ -784,7 +910,7 @@ export default function Results() {
                             onError={(e) => {
                               const el = e.currentTarget as HTMLImageElement;
                               el.style.display = "none";
-                              el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 flex items-center justify-center h-full w-full">No img</span>';
+                              el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-550 flex items-center justify-center h-full w-full">No img</span>';
                             }}
                           />
                         </button>
@@ -796,15 +922,15 @@ export default function Results() {
                         const val = row[key];
 
                         return (
-                          <td key={key} className="px-3 py-2 max-w-[200px]">
+                          <td key={key} className="px-3 py-2 max-w-[200px] text-slate-700 dark:text-slate-300">
                             {isEditing ? (
                               <div className="flex gap-1 items-center">
                                 <input autoFocus value={editVal}
                                   onChange={(e) => setEditVal(e.target.value)}
                                   onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
-                                  className="border border-green-400 rounded px-2 py-0.5 text-sm w-full focus:outline-none" />
-                                <button onClick={() => saveEdit(id)} className="text-green-600 font-bold shrink-0">✓</button>
-                                <button onClick={() => setEditing(null)} className="text-slate-300 shrink-0">✕</button>
+                                  className="border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-sm w-full focus:outline-none bg-white dark:bg-slate-900 text-slate-855 dark:text-white" />
+                                <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer">✓</button>
+                                <button onClick={() => setEditing(null)} className="text-slate-300 dark:text-slate-655 shrink-0 cursor-pointer">✕</button>
                               </div>
                             ) : key === "detection_confidence" ? (
                               <ConfBar value={val} />
@@ -820,7 +946,7 @@ export default function Results() {
                               />
                             ) : (
                               <span
-                                className={`block truncate ${editable ? "cursor-pointer group-hover:text-green-700 hover:underline underline-offset-2" : "text-slate-700"}`}
+                                className={`block truncate font-medium ${editable ? "cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2" : "text-slate-700 dark:text-slate-300"}`}
                                 title={String(val ?? "")}
                                 onClick={() => editable && (() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); })()}
                               >
@@ -835,9 +961,9 @@ export default function Results() {
                 })}
               </tbody>
             </table>
-            <div className="px-4 py-2 text-xs text-slate-400 border-t border-slate-100 flex items-center justify-between">
+            <div className="px-4 py-2 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between select-none">
               <span>{sorted.length} record(s) · Click thumbnail to view · Click species/station/notes to edit</span>
-              <span className="text-slate-300">Click column headers to sort</span>
+              <span className="text-slate-350 dark:text-slate-700">Click column headers to sort</span>
             </div>
           </div>
           <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />

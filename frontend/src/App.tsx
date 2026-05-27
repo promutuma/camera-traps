@@ -19,7 +19,7 @@ import ArcGIS from "./pages/ArcGIS";
 export default function App() {
   return (
     <BrowserRouter>
-      <div className="flex h-screen overflow-hidden bg-slate-50">
+      <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
         <Sidebar />
         <div className="flex flex-col flex-1 overflow-hidden">
           <main className="flex-1 overflow-y-auto p-8">
