@@ -28,6 +28,9 @@ class ConfigResponse(BaseModel):
     speciesnet_lat: float
     speciesnet_lng: float
     speciesnet_country: str
+    bioclip_weight: float
+    speciesnet_weight: float
+    speciesnet_bypass_threshold: float
 
 
 class ConfigUpdate(BaseModel):
@@ -49,6 +52,9 @@ class ConfigUpdate(BaseModel):
     speciesnet_lat: Optional[float] = None
     speciesnet_lng: Optional[float] = None
     speciesnet_country: Optional[str] = None
+    bioclip_weight: Optional[float] = None
+    speciesnet_weight: Optional[float] = None
+    speciesnet_bypass_threshold: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

@@ -222,6 +222,45 @@ export default function Sidebar() {
               </div>
             </section>
 
+            {/* Classifier Fusion */}
+            <section className="space-y-2.5">
+              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                Classifier Fusion
+              </h3>
+              <div className="space-y-4 bg-slate-950/30 p-3 rounded-lg border border-slate-800/50">
+                <Slider
+                  label="BioClip Weight"
+                  value={config.bioclip_weight ?? 0.05}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  format={(v) => v.toFixed(2)}
+                  onChange={(v) => num("bioclip_weight", v)}
+                />
+                <Slider
+                  label="SpeciesNet Weight"
+                  value={config.speciesnet_weight ?? 0.95}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  format={(v) => v.toFixed(2)}
+                  onChange={(v) => num("speciesnet_weight", v)}
+                />
+                <Slider
+                  label="SpeciesNet Bypass Threshold"
+                  value={config.speciesnet_bypass_threshold ?? 0.60}
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  format={(v) => v === 0 ? "Off" : v.toFixed(2)}
+                  onChange={(v) => num("speciesnet_bypass_threshold", v)}
+                />
+                <p className="text-[9px] text-slate-500 leading-relaxed">
+                  Bypass: skip BioClip fusion when SpeciesNet top confidence ≥ threshold. Set to 0 to always fuse.
+                </p>
+              </div>
+            </section>
+
             {/* Privacy & Review */}
             <section className="space-y-2.5">
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">

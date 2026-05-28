@@ -31,6 +31,11 @@ class AppConfig:
     speciesnet_lat: float = -1.0
     speciesnet_lng: float = 37.0
     speciesnet_country: str = "KEN"
+    # Classifier fusion weights (BioClip vs SpeciesNet)
+    bioclip_weight: float = 0.05
+    speciesnet_weight: float = 0.95
+    # Bypass fusion and use SpeciesNet directly when its top confidence >= this (0 = disabled)
+    speciesnet_bypass_threshold: float = 0.60
 
 
 @dataclass

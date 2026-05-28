@@ -19,11 +19,11 @@ _AGREEMENT_BONUS = 0.08
 # SpeciesNet trained on 65 M camera-trap images → higher weight overall.
 # BioClip is a general CLIP model not trained on camera-trap imagery, so we
 # trust it less than SpeciesNet for this domain.
-_DEFAULT_WEIGHTS: Tuple[float, float] = (0.30, 0.70)
+_DEFAULT_WEIGHTS: Tuple[float, float] = (0.05, 0.95)
 
 # Night-time weights: SpeciesNet was explicitly trained on nocturnal/IR camera
 # trap images; BioCLIP has no such specialisation and is nearly blind to IR.
-_NIGHT_WEIGHTS: Tuple[float, float] = (0.15, 0.85)
+_NIGHT_WEIGHTS: Tuple[float, float] = (0.02, 0.98)
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +215,7 @@ def fuse_species(
     weights: Tuple[float, float] = _DEFAULT_WEIGHTS,
     is_night: bool = False,
     bioclip_taxonomy: Optional[Dict] = None,
+    speciesnet_bypass_threshold: float = 0.0,
 ) -> Dict:
     """
     Merge species predictions from BioClip and SpeciesNet.
@@ -248,6 +249,37 @@ def fuse_species(
 
     bc_top: Optional[Tuple[str, float]] = bioclip[0] if bioclip else None
     sn_top_raw: Optional[Tuple[str, float]] = speciesnet[0] if speciesnet else None
+
+    # Option 3: bypass fusion entirely when SpeciesNet is sufficiently confident
+    if (
+        speciesnet_bypass_threshold > 0.0
+        and sn_top_raw is not None
+        and sn_top_raw[1] >= speciesnet_bypass_threshold
+    ):
+        sn_display = _display(sn_top_raw[0])
+        sn_meta = _parse_snet_meta(sn_top_raw[0])
+        agreement = "High"
+        if bc_top and bioclip_taxonomy:
+            try:
+                agreement = _taxonomy_agreement_structured(
+                    bioclip_taxonomy.get("top", {}),
+                    sn_meta,
+                    bc_family_override=bioclip_taxonomy.get("family_prediction"),
+                )
+            except Exception:
+                pass
+        elif bc_top:
+            agreement = _taxonomy_agreement(bc_top[0], sn_meta)
+        conf = min(1.0, sn_top_raw[1] + (_AGREEMENT_BONUS if agreement == "High" else 0.0))
+        return {
+            "species": sn_display,
+            "confidence": round(conf, 4),
+            "agreement": agreement,
+            "bioclip_top": bc_top,
+            "speciesnet_top": (sn_display, sn_top_raw[1]),
+            "all_candidates": [(sn_display, sn_top_raw[1])]
+            + [(_display(l), s) for l, s in speciesnet[1:5]],
+        }
     sn_top: Optional[Tuple[str, float]] = (
         (_display(sn_top_raw[0]), sn_top_raw[1]) if sn_top_raw else None
     )

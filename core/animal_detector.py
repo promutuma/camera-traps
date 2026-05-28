@@ -219,11 +219,17 @@ class AnimalDetector:
         confidence_threshold: float = 0.2,
         megadetector_v1000: Optional[MegaDetectorWrapper] = None,
         speciesnet=None,  # SpeciesNetWrapper | None
+        bioclip_weight: float = 0.05,
+        speciesnet_weight: float = 0.95,
+        speciesnet_bypass_threshold: float = 0.60,
     ):
         self.megadetector = megadetector
         self.megadetector_v1000 = megadetector_v1000
         self.bioclip = bioclip
         self.speciesnet = speciesnet
+        self._bioclip_weight = bioclip_weight
+        self._speciesnet_weight = speciesnet_weight
+        self._speciesnet_bypass_threshold = speciesnet_bypass_threshold
 
         if self.megadetector:
             self.megadetector.set_confidence_threshold(confidence_threshold)
@@ -447,8 +453,10 @@ class AnimalDetector:
                 fusion = fuse_species(
                     bc_results,
                     sn_results,
+                    weights=(self._bioclip_weight, self._speciesnet_weight),
                     is_night=is_night,
                     bioclip_taxonomy=bc_taxonomy,
+                    speciesnet_bypass_threshold=self._speciesnet_bypass_threshold,
                 )
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]

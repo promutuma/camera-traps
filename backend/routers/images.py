@@ -167,6 +167,9 @@ def _run_processing(job_id: str, state: AppState) -> None:
             confidence_threshold=cfg.detection_confidence,
             megadetector_v1000=state.md_v1000_model,
             speciesnet=state.speciesnet_model,
+            bioclip_weight=cfg.bioclip_weight,
+            speciesnet_weight=cfg.speciesnet_weight,
+            speciesnet_bypass_threshold=cfg.speciesnet_bypass_threshold,
         )
 
         processor = ImageProcessor(
