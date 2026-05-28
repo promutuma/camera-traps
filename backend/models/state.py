@@ -45,7 +45,6 @@ class AppState:
     # AI models (populated during lifespan startup)
     ocr_model: Optional[Any] = None
     md_model: Optional[Any] = None          # MegaDetector v5a
-    md_v1000_model: Optional[Any] = None   # MegaDetector v1000 (redwood)
     bio_model: Optional[Any] = None         # BioClip classifier
     speciesnet_model: Optional[Any] = None  # Google SpeciesNet classifier
     dn_model: Optional[Any] = None

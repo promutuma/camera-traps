@@ -45,7 +45,7 @@ function getCandidates(row: Row): { label: string; conf: number; source: "BioCli
 
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
-    name === "MDv5a" || name === "MDv1000"
+    name === "MDv5a"
       ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-900/30"
       : name === "BioClip"
       ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 border-violet-200 dark:border-violet-900/30"
@@ -93,7 +93,6 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
 
   const detectors = method.split(" + ").filter((m) => m.startsWith("MDv") || m === "MegaDetector");
   const mdv5a: { label: string; conf: number }[] = bd?.MDv5a ?? [];
-  const mdv1000: { label: string; conf: number }[] = bd?.MDv1000 ?? [];
   const bcResults: [string, number][] = (bd?.BioClip ?? []).slice(0, 3);
   const snResults: [string, number][] = (bd?.SpeciesNet ?? []).slice(0, 3);
 
@@ -119,16 +118,6 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
                 <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
               </div>
             )) : <ModelPill name="MDv5a" />}
-            {mdv1000.length > 0 ? mdv1000.map((d, i) => (
-              <div key={`md1000-${i}`} className="flex items-center gap-1.5 text-[10px]">
-                <ModelPill name="MDv1000" />
-                <span className="flex-1 font-medium text-slate-600 truncate">{d.label}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-blue-500 rounded-full" style={{ width: `${Math.round((d.conf ?? 0) * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
-              </div>
-            )) : detectors.includes("MDv1000") ? <ModelPill name="MDv1000" /> : null}
           </div>
         )}
 

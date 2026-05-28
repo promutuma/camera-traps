@@ -133,28 +133,6 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
     )
 
     if not cfg.enable_low_spec:
-        # Patch the v1000 model URLs — the pip package ships with localhost:8181
-        # as a placeholder; the real models are on GitHub releases.
-        try:
-            from megadetector.detection import run_detector as _rd
-            _v1000_base = "https://github.com/agentmorris/MegaDetector/releases/download/v1000.0/"
-            for _key in list(_rd.known_models):
-                if _key.startswith("v1000."):
-                    _rd.known_models[_key]["url"] = _v1000_base + f"md_{_key}.pt"
-        except Exception:
-            pass
-
-        logger.info("Loading MegaDetector v1000 (redwood)...")
-        try:
-            from core.animal_detector import MegaDetectorWrapper as _MDWrapper
-            state.md_v1000_model = _MDWrapper(
-                model_version="redwood",
-                confidence_threshold=cfg.detection_confidence,
-                low_spec=False,
-            )
-        except Exception as exc:
-            logger.warning("MDv1000 failed to load (non-fatal): %s", exc)
-
         logger.info("Loading SpeciesNet classifier...")
         try:
             from core.speciesnet_classifier import SpeciesNetWrapper

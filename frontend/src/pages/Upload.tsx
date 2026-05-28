@@ -196,7 +196,7 @@ function AgreementBadge({ level }: { level?: string }) {
 
 function ModelTag({ name }: { name: string }) {
   const color =
-    name === "MDv5a" || name === "MDv1000"
+    name === "MDv5a"
       ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border-blue-200/50 dark:border-blue-900/30"
       : name === "BioClip"
       ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 border-violet-200/50 dark:border-violet-900/30"
@@ -315,7 +315,6 @@ function ImageResultCard({
   onFlag: () => void;
 }) {
   const detMDv5a = row.events.find((e) => e.model === "MDv5a");
-  const detMDv1000 = row.events.find((e) => e.model === "MDv1000");
   const detFusion = row.events.find((e) => e.model === "Detection");
   const evBC = row.events.find((e) => e.model === "BioClip");
   const evSN = row.events.find((e) => e.model === "SpeciesNet");
@@ -327,13 +326,11 @@ function ImageResultCard({
   // First bbox from merged detection or MDv5a
   const firstBbox =
     detFusion?.detections?.[0]?.bbox ??
-    detMDv5a?.detections?.[0]?.bbox ??
-    detMDv1000?.detections?.[0]?.bbox;
+    detMDv5a?.detections?.[0]?.bbox;
 
   // Compact row for empty/non-animal frames
   if (isEmpty) {
-    const personLabels = [detMDv5a, detMDv1000]
-      .flatMap((e) => e?.detections ?? [])
+    const personLabels = (detMDv5a?.detections ?? [])
       .filter((d) => d.label.toLowerCase() !== "animal")
       .map((d) => `${d.label} ${d.conf.toFixed(2)}`);
     const isPersonOrVehicle = personLabels.length > 0;
@@ -416,19 +413,6 @@ function ImageResultCard({
                       .join(", ")
                   : "—"}
               </span>
-              {detMDv1000 && (
-                <>
-                  <span className="text-slate-300 dark:text-slate-700">|</span>
-                  <ModelTag name="MDv1000" />
-                  <span className="text-slate-600 dark:text-slate-400">
-                    {detMDv1000.detections?.length
-                      ? detMDv1000.detections
-                          .map((d) => `${d.label} ${d.conf.toFixed(2)}`)
-                          .join(", ")
-                      : "—"}
-                  </span>
-                </>
-              )}
             </div>
             {detFusion && (
               <span className="text-slate-400 dark:text-slate-500 italic">
@@ -802,7 +786,6 @@ export default function Upload() {
   const latestModel = allEvents.length > 0 ? allEvents[allEvents.length - 1].model : null;
   const atDetect =
     latestModel === "MDv5a" ||
-    latestModel === "MDv1000" ||
     latestModel === "Detection";
   const atClassify = latestModel === "BioClip" || latestModel === "SpeciesNet";
   const atFusion = latestModel === "Result";

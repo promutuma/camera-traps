@@ -40,14 +40,6 @@ async def inspect_image(file: UploadFile = File(...), state: AppState = Depends(
                     megadetector_candidates.append(c)
             except Exception as e:
                 pass
-        if state.md_v1000_model:
-            try:
-                candidates = state.md_v1000_model.detect_all_candidates(tmp.name)
-                for c in (candidates if isinstance(candidates, list) else [candidates]):
-                    c["model"] = "MDv1000"
-                    megadetector_candidates.append(c)
-            except Exception as e:
-                pass
         result["megadetector"] = megadetector_candidates
 
         # BioClip top-20

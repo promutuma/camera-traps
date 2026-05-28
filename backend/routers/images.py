@@ -171,8 +171,6 @@ def _run_processing(job_id: str, state: AppState) -> None:
 
             if state.md_model:
                 state.md_model.set_confidence_threshold(cfg.detection_confidence)
-            if state.md_v1000_model:
-                state.md_v1000_model.set_confidence_threshold(cfg.detection_confidence)
             if state.dn_model:
                 state.dn_model.brightness_threshold = cfg.brightness_threshold
 
@@ -180,7 +178,6 @@ def _run_processing(job_id: str, state: AppState) -> None:
                 megadetector=state.md_model,
                 bioclip=state.bio_model,
                 confidence_threshold=cfg.detection_confidence,
-                megadetector_v1000=state.md_v1000_model,
                 speciesnet=state.speciesnet_model,
                 bioclip_weight=cfg.bioclip_weight,
                 speciesnet_weight=cfg.speciesnet_weight,

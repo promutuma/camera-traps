@@ -88,11 +88,7 @@ export default function Diagnostics() {
           <div className="absolute top-2 left-2 z-10 flex gap-2">
             <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/70 backdrop-blur-md text-[10px] font-semibold text-blue-400 border border-blue-500/30">
               <span className="w-3 h-0.5 bg-blue-500 inline-block"></span>
-              MDv5a (Primary)
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/70 backdrop-blur-md text-[10px] font-semibold text-violet-400 border border-violet-500/30">
-              <span className="w-3 h-0.5 border-t border-dashed border-violet-500 inline-block"></span>
-              MDv1000 (Redwood)
+              MDv5a
             </span>
           </div>
 
@@ -115,8 +111,7 @@ export default function Diagnostics() {
                   {(result.megadetector as any[]).map((det, idx) => {
                     const bbox = parseBbox(det.bbox);
                     if (!bbox) return null;
-                    const isV1000 = det.model === "MDv1000";
-                    const color = isV1000 ? "#c084fc" : "#60a5fa"; // soft purple for v1000, soft blue for v5a
+                    const color = "#60a5fa";
                     const label = det.label || "Animal";
                     const conf = Math.round((det.conf || 0) * 100);
 
@@ -130,7 +125,6 @@ export default function Diagnostics() {
                           fill="none"
                           stroke={color}
                           strokeWidth={Math.max(3, imgNatural.w / 250)}
-                          strokeDasharray={isV1000 ? "6 4" : undefined}
                         />
                         <text
                           x={bbox[1] * imgNatural.w + 6}

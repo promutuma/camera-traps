@@ -92,7 +92,7 @@ function ConfBar({ value }: { value: unknown }) {
 
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
-    name === "MDv5a" || name === "MDv1000"
+    name === "MDv5a"
       ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900/50"
       : name === "BioClip"
       ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-900/50"
@@ -195,19 +195,13 @@ function ModelBreakdown({
       {!compact && expanded && parsedBreakdown && (
         <div className="bg-slate-100/50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 text-[10px] space-y-2.5 shadow-inner w-full">
           {/* Detectors Candidates */}
-          {(parsedBreakdown.MDv5a?.length > 0 || parsedBreakdown.MDv1000?.length > 0) && (
+          {parsedBreakdown.MDv5a?.length > 0 && (
             <div className="space-y-1">
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Object Detection</span>
               <div className="space-y-0.5 font-medium pl-1">
-                {parsedBreakdown.MDv5a?.map((d: any, idx: number) => (
+                {parsedBreakdown.MDv5a.map((d: any, idx: number) => (
                   <div key={`md5-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                     <span>MDv5a: {d.label}</span>
-                    <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
-                  </div>
-                ))}
-                {parsedBreakdown.MDv1000?.map((d: any, idx: number) => (
-                  <div key={`md1000-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
-                    <span>MDv1000: {d.label}</span>
                     <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
                   </div>
                 ))}

@@ -1,14 +1,12 @@
 """
 Multi-Model Wildlife Identification Pipeline
 ─────────────────────────────────────────────
-Stage 1 – Detection   (parallel)
-  MDv5a    → candidates_a
-  MDv1000  → candidates_b          (skipped in low-spec / if not loaded)
-  NMS merge → merged_candidates
+Stage 1 – Detection
+  MDv5a → candidates
 
 Stage 2 – Crop + Classify   (parallel per animal crop)
-  BioClip     → [(species, conf), ...]
-  SpeciesNet  → [(species, conf), ...]   (skipped if not loaded)
+  BioClip     → [(species, conf), ...]   ┐ run concurrently
+  SpeciesNet  → [(species, conf), ...]   ┘ (skipped if not loaded)
   Ensemble fusion → final species + agreement score
 
 Each result dict includes a '_model_events' list for real-time SSE display.
@@ -34,12 +32,8 @@ except ImportError as exc:
     MD_AVAILABLE = False
     print(f"Warning: megadetector not installed. Error: {exc}")
 
-# Thread pool shared across detector calls.
-# Scale to half the available cores (minimum 4) so parallel model inference
-# can saturate CPU without thrashing. Each image submits up to 4 tasks
-# (MDv5a + MDv1000, then BioCLIP + SpeciesNet), so 4 workers handles one
-# image at full utilisation; more workers allow concurrent images to overlap.
-_executor = ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 4) // 2))
+# Thread pool for parallel BioClip + SpeciesNet classification calls.
+_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4) // 2))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -47,7 +41,7 @@ _executor = ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 4) // 2))
 # ─────────────────────────────────────────────────────────────────────────────
 
 class MegaDetectorWrapper:
-    """Wrapper for a single MegaDetector model (MDv5a, MDv1000-redwood, …)."""
+    """Wrapper for a single MegaDetector model (MDv5a or any version string)."""
 
     CLASS_MAP = {"1": "Animal", "2": "Person", "3": "Vehicle"}
 
@@ -154,13 +148,11 @@ class AnimalDetector:
     Parameters
     ----------
     megadetector : MegaDetectorWrapper
-        Primary detector (MDv5a).
+        Detector (MDv5a).
     bioclip : BioClipClassifier
         Zero-shot species classifier.
     confidence_threshold : float
-        Applied to both detectors.
-    megadetector_v1000 : MegaDetectorWrapper | None
-        Secondary detector (MDv1000-redwood). None → single-detector mode.
+        Detection threshold.
     speciesnet : SpeciesNetWrapper | None
         Google SpeciesNet classifier. None → BioClip-only mode.
     """
@@ -221,14 +213,12 @@ class AnimalDetector:
         megadetector: Optional[MegaDetectorWrapper],
         bioclip: Optional[BioClipClassifier],
         confidence_threshold: float = 0.2,
-        megadetector_v1000: Optional[MegaDetectorWrapper] = None,
         speciesnet=None,  # SpeciesNetWrapper | None
         bioclip_weight: float = 0.05,
         speciesnet_weight: float = 0.95,
         speciesnet_bypass_threshold: float = 0.60,
     ):
         self.megadetector = megadetector
-        self.megadetector_v1000 = megadetector_v1000
         self.bioclip = bioclip
         self.speciesnet = speciesnet
         self._bioclip_weight = bioclip_weight
@@ -237,26 +227,7 @@ class AnimalDetector:
 
         if self.megadetector:
             self.megadetector.set_confidence_threshold(confidence_threshold)
-        if self.megadetector_v1000:
-            self.megadetector_v1000.set_confidence_threshold(confidence_threshold)
         self._threshold = confidence_threshold
-
-    # ------------------------------------------------------------------
-    # Detection helpers
-    # ------------------------------------------------------------------
-
-    def _detect_parallel(self, image_path: str) -> Tuple[List[Dict], List[Dict]]:
-        """Run MDv5a and MDv1000 concurrently; return (cands_a, cands_b)."""
-        if not self.megadetector_v1000:
-            return self.megadetector.detect_all_candidates(image_path), []
-
-        future_a = _executor.submit(
-            self.megadetector.detect_all_candidates, image_path
-        )
-        future_b = _executor.submit(
-            self.megadetector_v1000.detect_all_candidates, image_path
-        )
-        return future_a.result(), future_b.result()
 
     # ------------------------------------------------------------------
     # Classification helpers
@@ -357,33 +328,23 @@ class AnimalDetector:
             return [result]
 
         # ── Stage 1: Detection ──────────────────────────────────────────
-        cands_a, cands_b = self._detect_parallel(image_path)
-        merged = nms_merge_detections(cands_a, cands_b)
+        candidates = self.megadetector.detect_all_candidates(image_path)
+        merged = nms_merge_detections(candidates, [])
 
         model_events: List[Dict] = [
             {
                 "model": "MDv5a",
                 "detections": [
                     {"label": c["label"], "conf": round(c["conf"], 3)}
-                    for c in cands_a
+                    for c in candidates
                 ],
             },
+            {
+                "model": "Detection",
+                "merged_count": len(merged),
+                "sources_used": ["MDv5a"],
+            },
         ]
-        if self.megadetector_v1000:
-            model_events.append({
-                "model": "MDv1000",
-                "detections": [
-                    {"label": c["label"], "conf": round(c["conf"], 3)}
-                    for c in cands_b
-                ],
-            })
-        model_events.append({
-            "model": "Detection",
-            "merged_count": len(merged),
-            "sources_used": (
-                ["MDv5a", "MDv1000"] if self.megadetector_v1000 else ["MDv5a"]
-            ),
-        })
 
         if not merged:
             result = dict(_empty)
@@ -512,8 +473,7 @@ class AnimalDetector:
                     "method": self._method_label(),
                     "secondary_method": "BioClip+SpeciesNet",
                     "model_breakdown": {
-                        "MDv5a": [c for c in cands_a if c.get("label") == "Animal"],
-                        "MDv1000": [c for c in cands_b if c.get("label") == "Animal"],
+                        "MDv5a": [c for c in candidates if c.get("label") == "Animal"],
                         "BioClip": bc_results[:5],
                         "SpeciesNet": sn_results[:5],
                         "Fusion": {
@@ -545,10 +505,7 @@ class AnimalDetector:
         return final_results
 
     def _method_label(self) -> str:
-        parts = ["MDv5a"]
-        if self.megadetector_v1000:
-            parts.append("MDv1000")
-        parts.append("BioClip")
+        parts = ["MDv5a", "BioClip"]
         if self.speciesnet and self.speciesnet.classifier is not None:
             parts.append("SpeciesNet")
         return " + ".join(parts)
