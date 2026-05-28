@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadImages, startProcessing, getJobResults, getModelStatus } from "../api/client";
+import { uploadImages, startProcessing, getJobResults, getModelStatus, flagByFilenames } from "../api/client";
+import { useConfigStore } from "../store/configStore";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -507,6 +508,8 @@ function ImageResultCard({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Upload() {
+  const reviewerId = useConfigStore((s) => s.config?.reviewer_id ?? "anonymous");
+
   const [files, setFiles] = useState<File[]>([]);
   const [dragging, setDragging] = useState(false);
 
@@ -528,6 +531,8 @@ export default function Upload() {
   const sseRef = useRef<EventSource | null>(null);
   const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resultsScrollRef = useRef<HTMLDivElement>(null);
+  // Mirror of flaggedImages kept in a ref so SSE closure always reads the latest value
+  const flaggedImagesRef = useRef<Set<string>>(new Set());
   const navigate = useNavigate();
 
   // Poll model status until ready
@@ -636,6 +641,7 @@ export default function Upload() {
     setJob(null);
     setImageRows([]);
     setFlaggedImages(new Set());
+    flaggedImagesRef.current = new Set();
     startTimeRef.current = null;
     if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
   };
@@ -644,6 +650,7 @@ export default function Upload() {
     setFlaggedImages((prev) => {
       const next = new Set(prev);
       next.has(name) ? next.delete(name) : next.add(name);
+      flaggedImagesRef.current = next;
       return next;
     });
   }, []);
@@ -658,6 +665,7 @@ export default function Upload() {
     setJob({ jobId: uploadedJobId, status: "running", total: files.length, completed: 0 });
     setImageRows([]);
     setFlaggedImages(new Set());
+    flaggedImagesRef.current = new Set();
 
     try {
       await startProcessing(uploadedJobId);
@@ -679,9 +687,12 @@ export default function Upload() {
 
           if (prog.status === "done") {
             sse.close();
-            getJobResults(uploadedJobId).then(() => {
-              setTimeout(() => navigate("/results"), 2000);
-            });
+            getJobResults(uploadedJobId);
+            // Persist any upload-page flags to the review log (non-fatal)
+            const toFlag = Array.from(flaggedImagesRef.current);
+            if (toFlag.length > 0) {
+              flagByFilenames(toFlag, reviewerId).catch(() => {});
+            }
           } else if (prog.status === "error") {
             sse.close();
           }

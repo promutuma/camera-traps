@@ -1,7 +1,7 @@
 """Tab 4 — Analysis History."""
 
 import io
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from backend.models.state import AppState
 from backend.routers.deps import get_state
@@ -10,10 +10,14 @@ router = APIRouter(prefix="/history", tags=["history"])
 
 
 @router.get("")
-def get_history(state: AppState = Depends(get_state)):
+def get_history(
+    state: AppState = Depends(get_state),
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
+):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
-    df = state.db_manager.get_history_df()
+    df = state.db_manager.get_history_df(limit=limit, offset=offset)
     return df.fillna("").to_dict(orient="records")
 
 

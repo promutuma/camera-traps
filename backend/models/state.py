@@ -27,6 +27,10 @@ class AppConfig:
     default_station_id: str = "Station-1"
     independence_window: int = 30
     trap_nights_default: int = 30
+    # SpeciesNet geographic prior — defaults to Kenya (East Africa)
+    speciesnet_lat: float = -1.0
+    speciesnet_lng: float = 37.0
+    speciesnet_country: str = "KEN"
 
 
 @dataclass

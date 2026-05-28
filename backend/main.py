@@ -158,14 +158,11 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
         logger.info("Loading SpeciesNet classifier...")
         try:
             from core.speciesnet_classifier import SpeciesNetWrapper
-            # Default to East Africa geographic prior so SpeciesNet's built-in
-            # species distribution model returns regionally appropriate predictions.
-            # lat/lng centre on Kenya; country="KEN" activates the geo prior.
             state.speciesnet_model = SpeciesNetWrapper(
                 low_spec=False,
-                lat=-1.0,
-                lng=37.0,
-                country="KEN",
+                lat=cfg.speciesnet_lat,
+                lng=cfg.speciesnet_lng,
+                country=cfg.speciesnet_country,
             )
         except Exception as exc:
             logger.warning("SpeciesNet failed to load (non-fatal): %s", exc)

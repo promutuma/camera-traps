@@ -47,7 +47,7 @@ export const storedImageUrl = (filename: string) =>
 
 // ── Results ──────────────────────────────────────────────────────────────────
 export const getResults = (params?: Record<string, string | number>) =>
-  api.get("/results", { params }).then((r) => r.data);
+  api.get("/results", { params }).then((r) => r.data as { total: number; limit: number; offset: number; items: Record<string, unknown>[] });
 export const updateResult = (imageId: number, patch: Record<string, unknown>) =>
   api.patch(`/results/${imageId}`, patch).then((r) => r.data);
 export const exportExcel = () => `/api/results/export/excel`;
@@ -112,6 +112,14 @@ export const correctDetection = (id: number, body: Record<string, unknown>) =>
   api.post(`/review/correct/${id}`, body).then((r) => r.data);
 export const flagDetection = (id: number, body: Record<string, unknown>) =>
   api.post(`/review/flag/${id}`, body).then((r) => r.data);
+export const flagByFilenames = (
+  filenames: string[],
+  reviewer_id: string,
+  notes = "Flagged during upload review",
+) =>
+  api
+    .post("/review/flag-by-filenames", { filenames, reviewer_id, notes })
+    .then((r) => r.data);
 export const getReviewLog = () =>
   api.get("/review/log").then((r) => r.data);
 export const getPrivacyAudit = () =>

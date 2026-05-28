@@ -23,6 +23,8 @@ def get_results(
     min_conf: Optional[float] = Query(None),
     max_conf: Optional[float] = Query(None),
     station: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=5000),
+    offset: int = Query(0, ge=0),
 ):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
@@ -41,7 +43,9 @@ def get_results(
     if station:
         df = df[df["station_id"] == station]
 
-    return df.fillna("").to_dict(orient="records")
+    total = len(df)
+    page = df.iloc[offset: offset + limit]
+    return {"total": total, "limit": limit, "offset": offset, "items": page.fillna("").to_dict(orient="records")}
 
 
 @router.patch("/{detection_id}")

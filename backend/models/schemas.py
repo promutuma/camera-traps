@@ -25,6 +25,9 @@ class ConfigResponse(BaseModel):
     default_station_id: str
     independence_window: int
     trap_nights_default: int
+    speciesnet_lat: float
+    speciesnet_lng: float
+    speciesnet_country: str
 
 
 class ConfigUpdate(BaseModel):
@@ -43,6 +46,9 @@ class ConfigUpdate(BaseModel):
     default_station_id: Optional[str] = None
     independence_window: Optional[int] = None
     trap_nights_default: Optional[int] = None
+    speciesnet_lat: Optional[float] = None
+    speciesnet_lng: Optional[float] = None
+    speciesnet_country: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +76,11 @@ class DetectionResult(BaseModel):
     species_label: Optional[str] = None
     detected_animal: Optional[str] = None
     detection_confidence: Optional[float] = None
+    detection_method: Optional[str] = None
+    bioclip_confidence: Optional[float] = None
+    speciesnet_confidence: Optional[float] = None
+    agreement: Optional[str] = None
+    model_breakdown: Optional[Any] = None
     day_night: Optional[str] = None
     capture_date: Optional[str] = None
     capture_time: Optional[str] = None
@@ -124,6 +135,12 @@ class ReviewAction(BaseModel):
     corrected_label: Optional[str] = None
     notes: Optional[str] = None
     bbox: Optional[List[float]] = None
+
+
+class BulkFlagRequest(BaseModel):
+    filenames: List[str]
+    reviewer_id: str = "anonymous"
+    notes: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -251,8 +251,8 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_history_df(self):
-        """Retrieve full detection history as a flat DataFrame."""
+    def get_history_df(self, limit: int = None, offset: int = 0):
+        """Retrieve detection history as a flat DataFrame, optionally paginated."""
         conn = self.get_connection()
         query = '''
             SELECT
@@ -268,11 +268,73 @@ class DatabaseManager:
             JOIN detections d ON i.id = d.image_id
             ORDER BY i.processed_at DESC
         '''
+        params = []
+        if limit is not None:
+            query += ' LIMIT ? OFFSET ?'
+            params = [limit, offset]
         try:
-            return pd.read_sql_query(query, conn)
+            return pd.read_sql_query(query, conn, params=params if params else None)
         except Exception as e:
             print(f"Error fetching history: {e}")
             return pd.DataFrame()
+        finally:
+            conn.close()
+
+    def get_pending_review(self, confidence_threshold: float = 0.9, limit: int = 500, offset: int = 0):
+        """Return detections below threshold that have not yet been actioned in review_actions."""
+        conn = self.get_connection()
+        query = '''
+            SELECT
+                i.id, i.filename, i.station_id,
+                i.capture_date, i.capture_time, i.temperature,
+                i.day_night, i.brightness, i.user_notes,
+                d.id as detection_id,
+                d.detected_animal, d.confidence as detection_confidence,
+                d.method as detection_method, d.bbox, d.ide_id,
+                d.bioclip_confidence, d.speciesnet_confidence, d.agreement,
+                d.model_breakdown
+            FROM images i
+            JOIN detections d ON i.id = d.image_id
+            LEFT JOIN review_actions ra ON ra.image_id = CAST(i.id AS TEXT)
+            WHERE d.confidence < ?
+              AND d.detected_animal NOT IN ('Empty', 'Person', 'Vehicle', 'Error')
+              AND ra.id IS NULL
+            ORDER BY d.confidence ASC
+            LIMIT ? OFFSET ?
+        '''
+        try:
+            return pd.read_sql_query(query, conn, params=[confidence_threshold, limit, offset])
+        except Exception as e:
+            print(f"Error fetching pending review: {e}")
+            return pd.DataFrame()
+        finally:
+            conn.close()
+
+    def get_detected_animal_for_image(self, image_id: int) -> str:
+        """Return the top detected_animal label for an image (by confidence)."""
+        conn = self.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT detected_animal FROM detections WHERE image_id = ? ORDER BY confidence DESC LIMIT 1",
+                [image_id],
+            ).fetchone()
+            return row[0] if row else ""
+        finally:
+            conn.close()
+
+    def get_image_ids_by_filenames(self, filenames: list) -> list:
+        """Return [(image_id, filename)] for each filename found in the images table."""
+        conn = self.get_connection()
+        try:
+            result = []
+            for filename in filenames:
+                row = conn.execute(
+                    "SELECT id FROM images WHERE filename = ? ORDER BY id DESC LIMIT 1",
+                    [filename],
+                ).fetchone()
+                if row:
+                    result.append((row[0], filename))
+            return result
         finally:
             conn.close()
 

@@ -21,7 +21,6 @@ import time
 import tempfile
 import traceback
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -55,8 +54,6 @@ from backend.routers.deps import get_state
 from backend.services.job_manager import job_manager
 
 router = APIRouter(prefix="/images", tags=["images"])
-
-_executor = ThreadPoolExecutor(max_workers=2)
 
 db_path = os.environ.get("DB_PATH", "wildlife_data.db")
 UPLOADS_DIR = Path(db_path).parent / "uploads"

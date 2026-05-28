@@ -173,18 +173,10 @@ function DetailViewport({
 
   const renderBbox = () => {
     if (!activeBbox || !imgNatural) return null;
-    let rx, ry, rw, rh;
-    if (activeBbox === editedBbox) {
-      rx = activeBbox[0] * imgNatural.w;
-      ry = activeBbox[1] * imgNatural.h;
-      rw = activeBbox[2] * imgNatural.w;
-      rh = activeBbox[3] * imgNatural.h;
-    } else {
-      rx = activeBbox[0] * imgNatural.w;
-      ry = activeBbox[1] * imgNatural.h;
-      rw = activeBbox[2] * imgNatural.w;
-      rh = activeBbox[3] * imgNatural.h;
-    }
+    const rx = activeBbox[0] * imgNatural.w;
+    const ry = activeBbox[1] * imgNatural.h;
+    const rw = activeBbox[2] * imgNatural.w;
+    const rh = activeBbox[3] * imgNatural.h;
 
     return (
       <svg
@@ -799,7 +791,11 @@ export default function ReviewQueue() {
     const [q, l, a] = await Promise.all([getReviewQueue(), getReviewLog(), getPrivacyAudit()]);
     const newQueue = Array.isArray(q) ? q : [];
     if (initialQueueSize.current === null) initialQueueSize.current = newQueue.length;
-    if (isAction) setSessionReviewed((n) => n + 1);
+    if (isAction) {
+      setSessionReviewed((n) => n + 1);
+      // Clamp so the last item confirming doesn't leave focusedIdx out of bounds
+      setFocusedIdx((i) => Math.min(i, Math.max(0, newQueue.length - 1)));
+    }
     setQueue(newQueue);
     setLog(Array.isArray(l) ? l : []);
     setAudit(Array.isArray(a) ? a : []);
