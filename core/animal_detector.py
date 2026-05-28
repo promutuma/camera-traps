@@ -34,8 +34,12 @@ except ImportError as exc:
     MD_AVAILABLE = False
     print(f"Warning: megadetector not installed. Error: {exc}")
 
-# Thread pool shared across detector calls
-_executor = ThreadPoolExecutor(max_workers=4)
+# Thread pool shared across detector calls.
+# Scale to half the available cores (minimum 4) so parallel model inference
+# can saturate CPU without thrashing. Each image submits up to 4 tasks
+# (MDv5a + MDv1000, then BioCLIP + SpeciesNet), so 4 workers handles one
+# image at full utilisation; more workers allow concurrent images to overlap.
+_executor = ThreadPoolExecutor(max_workers=max(4, (os.cpu_count() or 4) // 2))
 
 
 # ─────────────────────────────────────────────────────────────────────────────

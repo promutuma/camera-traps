@@ -165,7 +165,7 @@ If credentials are absent, SpeciesNet logs a warning at startup and the pipeline
 | **Taxonomy output** | Full path with genus/family/order | Full path via label hierarchy |
 | **Best for** | Unusual or rare species, taxonomic fallback, cross-checking | High-volume common species ID, blank filtering |
 
-**Design implication:** SpeciesNet is the primary species signal for camera trap data. BioCLIP provides a complementary zero-shot cross-check — particularly valuable when SpeciesNet encounters a rare or out-of-distribution species.
+**Design implication:** SpeciesNet is the dominant species signal (95% default weight). BioCLIP contributes a 5% minority vote as a zero-shot cross-check and provides the taxonomic path used for agreement scoring — particularly valuable when SpeciesNet encounters a rare or out-of-distribution species. Both weights are configurable in the sidebar.
 
 ---
 
@@ -193,8 +193,9 @@ The pipeline runs a two-stage ensemble architecture:
 │    → SpeciesNet classify_crop()  → label JSON with          │
 │                                    common_name + hierarchy  │
 │                                                             │
-│  Fusion (day):   0.40 × BioCLIP + 0.60 × SpeciesNet        │
-│  Fusion (night): 0.25 × BioCLIP + 0.75 × SpeciesNet        │
+│  Fusion (day):   0.05 × BioCLIP + 0.95 × SpeciesNet        │
+│  Fusion (night): 0.02 × BioCLIP + 0.98 × SpeciesNet        │
+│  Bypass: if SpeciesNet top ≥ threshold → skip fusion        │
 │                                                             │
 │  Agreement bonus (taxonomy-aware):                          │
 │    +0.08 if BioCLIP genus appears in SpeciesNet hierarchy   │
@@ -228,10 +229,16 @@ For every merged box classified as `"Animal"`, the padded crop runs through **Bi
 
 | Condition | BioCLIP weight | SpeciesNet weight | Reason |
 |---|---|---|---|
-| Day (colour image) | 0.40 | 0.60 | Both models competent; SpeciesNet favoured |
-| Night / IR image | 0.25 | 0.75 | SpeciesNet explicitly trained on nocturnal camera trap imagery; BioCLIP not optimised for IR |
+| Day (colour image) | 0.05 | 0.95 | SpeciesNet dominant; BioCLIP as minority cross-check |
+| Night / IR image | 0.02 | 0.98 | SpeciesNet explicitly trained on nocturnal camera trap imagery; BioCLIP not optimised for IR |
 
 Day/night is determined before classification via `DayNightClassifier`, which detects grayscale/low-saturation images as night-vision regardless of brightness.
+
+**1b. SpeciesNet bypass:**
+
+When SpeciesNet's top confidence exceeds the bypass threshold (default 0.60), the fusion step is skipped entirely and SpeciesNet's prediction is used directly (with an agreement bonus added if BioCLIP concurs at genus/family level). This avoids the rare case where weighted averaging with a low-confidence BioCLIP prediction pulls the final score down on images where SpeciesNet is already highly confident.
+
+Set the bypass threshold to 0 in the **Classifier Fusion** sidebar section to always fuse.
 
 **2. Taxonomy-aware agreement detection:**
 
@@ -322,7 +329,7 @@ camera-traps/
 │   ├── animal_detector.py        # MegaDetectorWrapper (v5a + v1000) + AnimalDetector
 │   │                             # orchestrator; parallel inference; is_night → fuse_species
 │   ├── ensemble_engine.py        # NMS detection fusion + taxonomy-aware species fusion
-│   │                             # Dynamic weights (day 0.40/0.60, night 0.25/0.75)
+│   │                             # Dynamic weights (day 0.05/0.95, night 0.02/0.98) + bypass
 │   ├── speciesnet_classifier.py  # Google SpeciesNet wrapper; parses full taxonomy JSON
 │   ├── bioclip_classifier.py     # BioCLIP zero-shot classifier with predict_taxonomy():
 │   │                             # species path + independent family-level cross-check
@@ -527,6 +534,9 @@ All runtime settings are in the left sidebar. Changes POST to `PATCH /api/config
 | Detection Confidence | Score cutoff (default 0.35). Lower for dark/distant shots. |
 | Brightness Threshold | Day/Night classification sensitivity (0–255). |
 | Metadata Strip (%) | % of image bottom scanned for date/time OCR text. |
+| **BioClip Weight** | BioCLIP contribution in species fusion (default 0.05). |
+| **SpeciesNet Weight** | SpeciesNet contribution in species fusion (default 0.95). |
+| **SpeciesNet Bypass Threshold** | Skip fusion when SpeciesNet top confidence ≥ this value (default 0.60). Set to 0 to always fuse. |
 | Auto-Scrub Person/Vehicle | Apply Gaussian blur to privacy-sensitive bounding boxes. |
 | Blur Strength | Gaussian kernel size (11–101, odd numbers). |
 | Independence Window (min) | Same species + station within this window = one IDE (default 30 min). |
@@ -733,11 +743,17 @@ git pull && install.bat
 - **Day/night classification** runs before species classification; `DayNightClassifier` detects grayscale/low-saturation images as night-vision regardless of pixel brightness.
 - **BioCLIP `predict_taxonomy()`** performs a single image forward pass scoring against both the 129-species list and 31 family-level prompts. Returning: top species, full taxonomic path (`Mammalia > order > family > genus > epithet`), and an independent family prediction.
 - **SpeciesNet** classifies the same crop via its filepath-based API (crop saved to temp JPEG, classified, file deleted). Returns JSON labels with `common_name`, `scientific_name`, and `hierarchy`.
-- **Fusion weights** are dynamic: `(0.40 BioCLIP, 0.60 SpeciesNet)` for day images; `(0.25 BioCLIP, 0.75 SpeciesNet)` at night.
+- **Fusion weights** are dynamic and configurable: defaults are `(0.05 BioCLIP, 0.95 SpeciesNet)` for day images; `(0.02 BioCLIP, 0.98 SpeciesNet)` at night. When SpeciesNet's top score exceeds the bypass threshold (default 0.60), fusion is skipped entirely and SpeciesNet's result is used directly. All three parameters are adjustable live from the sidebar without restart.
 - **Agreement** is computed by comparing BioCLIP's genus/family against SpeciesNet's taxonomy hierarchy — not word matching. High (+0.08) for genus match; Medium (+0.04) for family match.
 - Images upload automatically in the browser (400 ms debounce) on file selection — the server receives files before the user clicks "Start".
 - SSE stream (`GET /api/images/job/{id}/stream`) emits both `model_event` messages (per model per image) and `progress` heartbeats.
-- All processing runs in a `ThreadPoolExecutor` background task to keep the FastAPI event loop free.
+- **Three-layer threading model:**
+  - *Startup* — `asyncio.to_thread` offloads model loading (~4.5 GB) so the FastAPI event loop stays responsive during the multi-minute boot.
+  - *Per-job* — FastAPI `BackgroundTasks` runs `_run_processing` in a starlette threadpool thread. A `threading.Semaphore(1)` limits concurrent jobs to one, preventing OOM from overlapping ML workloads.
+  - *Per-image* — a `ThreadPoolExecutor(_PARALLEL_IMAGES)` processes multiple images concurrently within the job. `_PARALLEL_IMAGES = max(1, min(4, cpu_count // 2))` so it scales with hardware.
+  - *Per-model* — a module-level `ThreadPoolExecutor(max(4, cpu_count // 2))` in `animal_detector.py` runs MDv5a ∥ MDv1000 (Stage 1) and BioCLIP ∥ SpeciesNet (Stage 2) in parallel.
+  - *Within-image* — OCR and day/night classification are submitted to `_pipeline_executor` simultaneously; both complete before detection starts (detection needs the `is_night` flag). EasyOCR calls are serialised via `_ocr_lock` because `Reader.readtext()` has shared internal buffers.
+- `JobManager` uses a `threading.Lock` to protect the `_jobs` dict from concurrent reads and writes across HTTP handler threads and background processing threads.
 - Completed jobs are persisted to a `jobs` table in SQLite so job metadata survives server restarts.
 - File uploads are validated by magic bytes (JPEG, PNG, TIFF, BMP, WebP) — not just MIME type headers — before being saved.
 
@@ -754,6 +770,52 @@ git pull && install.bat
 
 ## Recent Changes
 
+### Concurrency & Threading Improvements (May 2026)
+
+**Parallel image processing within a job (`backend/routers/images.py`):**
+- The per-job image loop was fully sequential; images now process in parallel using a `ThreadPoolExecutor` sized to `max(1, min(4, cpu_count // 2))`. On a 4-core machine: 2 images in parallel; on 8 cores: 4 images. Results are collected by index and re-ordered before DB insert so upload order is preserved regardless of completion order.
+- Per-image failures (bad file, corrupted read) are caught and logged individually. The rest of the batch continues and `job.error` is set to a summary of which images failed, rather than killing the entire job.
+
+**Job concurrency limit (`backend/routers/images.py`):**
+- Added `_job_semaphore = threading.Semaphore(1)`. A second `POST /process/{id}` call now blocks inside the background thread (job stays "queued") until the first job finishes. Prevents concurrent jobs from doubling ML memory usage (~9 GB) and OOM-killing the process.
+
+**Thread-safe `JobManager` (`backend/services/job_manager.py`):**
+- Added `self._lock = threading.Lock()` protecting all `self._jobs` dict mutations (`create`, `get`, `delete`, `_evict_expired`). Previously relied on CPython's GIL for dict safety — correct in practice but fragile across Python implementations.
+- Filesystem cleanup (`shutil.rmtree`) moved outside the lock so temp-dir deletion doesn't block concurrent readers.
+
+**Dynamic `_executor` sizing (`core/animal_detector.py`):**
+- Changed `ThreadPoolExecutor(max_workers=4)` to `ThreadPoolExecutor(max_workers=max(4, cpu_count // 2))`. On an 8-core machine the pool grows to 4; on a 16-core machine to 8, letting more parallel model calls run simultaneously.
+
+**Parallel OCR + day/night classification (`core/image_processor.py`):**
+- Added module-level `_pipeline_executor` and `_ocr_lock`. Inside `process_single_image`, OCR and day/night are now submitted as futures simultaneously rather than run sequentially. OCR (~500 ms) and day/night (~100 ms) now overlap, saving ~100 ms per image. `_ocr_lock` serialises EasyOCR calls across threads because `Reader.readtext()` has shared internal buffers.
+
+---
+
+### Classifier Fusion Tuning + Model Breakdown Display (May 2026)
+
+**Ensemble weight rebalancing (`core/ensemble_engine.py`):**
+- `_DEFAULT_WEIGHTS` revised to `(0.05, 0.95)` (BioCLIP / SpeciesNet) and `_NIGHT_WEIGHTS` to `(0.02, 0.98)`. Field observation confirmed SpeciesNet is consistently more accurate on camera trap images; BioCLIP now acts as a minority cross-check rather than an equal partner.
+- Added `speciesnet_bypass_threshold` parameter to `fuse_species()`. When SpeciesNet's top-1 score ≥ threshold, the weighted average step is skipped and SpeciesNet's prediction is returned directly (plus agreement bonus when BioCLIP concurs at genus/family level). Avoids artificially dragging down a high-confidence SpeciesNet result.
+
+**Configurable fusion weights (`core/animal_detector.py`, `backend/`):**
+- `AnimalDetector.__init__` accepts `bioclip_weight`, `speciesnet_weight`, and `speciesnet_bypass_threshold`.
+- `AppConfig` and `ConfigResponse` / `ConfigUpdate` schemas expose all three fields.
+- `_run_processing` in `backend/routers/images.py` passes live config values to `AnimalDetector` so weight changes take effect on the next processing run without restart.
+
+**Settings UI — Classifier Fusion section (`frontend/src/components/Layout/Sidebar.tsx`, `store/configStore.ts`):**
+- Added "Classifier Fusion" settings section to the sidebar with three sliders: BioClip Weight (0–1), SpeciesNet Weight (0–1), and SpeciesNet Bypass Threshold (0 = always fuse, >0 = skip fusion above that confidence).
+- `AppConfig` TypeScript interface updated with all three new fields plus previously missing `speciesnet_lat`, `speciesnet_lng`, `speciesnet_country`.
+
+**Full model breakdown display (`frontend/src/pages/ReviewQueue.tsx`, `Results.tsx`):**
+- Added `FullModelBreakdown` component in Review Queue showing ranked top-3 predictions for Object Detector (MDv5a / MDv1000), BioCLIP, SpeciesNet, and Fusion with confidence bars.
+- For records without `model_breakdown` data (processed before this fix), the component falls back to displaying the stored scalar `bioclip_confidence` / `speciesnet_confidence` as a top-1 entry.
+- Results gallery card now passes `model_breakdown` to the expanded "Show Details" view.
+
+**model_breakdown data-loss fix (`core/image_processor.py`):**
+- `process_single_image()` was computing `model_breakdown` inside the detector but never copying it to the result row before DB insert — it was always stored as `NULL`. Added `row['model_breakdown'] = det.get('model_breakdown')` to close this gap. Newly processed images will have full per-model ranked predictions in the UI.
+
+---
+
 ### Taxonomy-Aware Ensemble + ML Quality (May 2026)
 
 **BioCLIP (`core/bioclip_classifier.py`):**
@@ -765,7 +827,7 @@ git pull && install.bat
 
 **Ensemble (`core/ensemble_engine.py`):**
 - Replaced flat word-matching agreement with `_taxonomy_agreement_structured()` — compares BioCLIP's genus/family/order against SpeciesNet's parsed hierarchy. High agreement fires correctly when BioCLIP predicts "lion" and SpeciesNet returns the genus *Panthera*.
-- `_DEFAULT_WEIGHTS` updated to `(0.40, 0.60)` — SpeciesNet carries more weight overall.
+- `_DEFAULT_WEIGHTS` set to `(0.40, 0.60)` — SpeciesNet carries more weight overall (later revised, see below).
 - Added `_NIGHT_WEIGHTS = (0.25, 0.75)` — SpeciesNet dominant at night (trained on IR/nocturnal imagery; BioCLIP is not).
 - `fuse_species()` gains `is_night: bool` and `bioclip_taxonomy: Optional[Dict]` parameters.
 

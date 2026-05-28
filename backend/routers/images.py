@@ -17,9 +17,11 @@ import logging
 import os
 import re
 import sys
+import threading
 import time
 import tempfile
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List
 
@@ -54,6 +56,16 @@ from backend.routers.deps import get_state
 from backend.services.job_manager import job_manager
 
 router = APIRouter(prefix="/images", tags=["images"])
+
+# Allow at most 1 job to run inference at a time. Each job loads all four
+# models into active memory (~4.5 GB); concurrent jobs would OOM most machines.
+# The job stays "queued" while waiting and transitions to "running" on acquire.
+_job_semaphore = threading.Semaphore(1)
+
+# Number of images to process in parallel within a single job. Capped at 4;
+# each image submits 4 model tasks to the inner _executor, so this value × 4
+# approximates the peak task count hitting the ML thread pool simultaneously.
+_PARALLEL_IMAGES = max(1, min(4, (os.cpu_count() or 4) // 2))
 
 db_path = os.environ.get("DB_PATH", "wildlife_data.db")
 UPLOADS_DIR = Path(db_path).parent / "uploads"
@@ -143,96 +155,129 @@ def _run_processing(job_id: str, state: AppState) -> None:
     if not job:
         return
 
-    job.status = "running"
-    cfg = state.config
+    # Block here if another job is already running. The job stays "queued"
+    # while waiting so the SSE stream and UI reflect the correct state.
+    with _job_semaphore:
+        job.status = "running"
+        cfg = state.config
 
-    try:
-        project_root = Path(__file__).parent.parent.parent
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
+        try:
+            project_root = Path(__file__).parent.parent.parent
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
 
-        from core.animal_detector import AnimalDetector
-        from core.image_processor import ImageProcessor
+            from core.animal_detector import AnimalDetector
+            from core.image_processor import ImageProcessor
 
-        if state.md_model:
-            state.md_model.set_confidence_threshold(cfg.detection_confidence)
-        if state.md_v1000_model:
-            state.md_v1000_model.set_confidence_threshold(cfg.detection_confidence)
-        if state.dn_model:
-            state.dn_model.brightness_threshold = cfg.brightness_threshold
+            if state.md_model:
+                state.md_model.set_confidence_threshold(cfg.detection_confidence)
+            if state.md_v1000_model:
+                state.md_v1000_model.set_confidence_threshold(cfg.detection_confidence)
+            if state.dn_model:
+                state.dn_model.brightness_threshold = cfg.brightness_threshold
 
-        animal_detector = AnimalDetector(
-            megadetector=state.md_model,
-            bioclip=state.bio_model,
-            confidence_threshold=cfg.detection_confidence,
-            megadetector_v1000=state.md_v1000_model,
-            speciesnet=state.speciesnet_model,
-            bioclip_weight=cfg.bioclip_weight,
-            speciesnet_weight=cfg.speciesnet_weight,
-            speciesnet_bypass_threshold=cfg.speciesnet_bypass_threshold,
-        )
+            animal_detector = AnimalDetector(
+                megadetector=state.md_model,
+                bioclip=state.bio_model,
+                confidence_threshold=cfg.detection_confidence,
+                megadetector_v1000=state.md_v1000_model,
+                speciesnet=state.speciesnet_model,
+                bioclip_weight=cfg.bioclip_weight,
+                speciesnet_weight=cfg.speciesnet_weight,
+                speciesnet_bypass_threshold=cfg.speciesnet_bypass_threshold,
+            )
 
-        processor = ImageProcessor(
-            ocr_processor=state.ocr_model,
-            animal_detector=animal_detector,
-            day_night_classifier=state.dn_model,
-            ocr_enabled=cfg.enable_ocr,
-            detection_enabled=cfg.enable_detection,
-            day_night_enabled=cfg.enable_day_night,
-            ocr_strip_percent=cfg.ocr_strip_height,
-        )
+            processor = ImageProcessor(
+                ocr_processor=state.ocr_model,
+                animal_detector=animal_detector,
+                day_night_classifier=state.dn_model,
+                ocr_enabled=cfg.enable_ocr,
+                detection_enabled=cfg.enable_detection,
+                day_night_enabled=cfg.enable_day_night,
+                ocr_strip_percent=cfg.ocr_strip_height,
+            )
 
-        results = []
-        for idx, image_path in enumerate(job.image_paths):
-            result = processor.process_single_image(image_path)
-            result_list = result if isinstance(result, list) else [result]
+            # Process images in parallel. Results are collected by index so the
+            # final list preserves upload order regardless of completion order.
+            results_by_idx: dict = {}
+            image_errors: list = []
+            _write_lock = threading.Lock()
 
-            # Extract per-image model events from the first result
-            image_events = result_list[0].pop("_model_events", []) if result_list else []
-            image_name = os.path.basename(image_path)
-            for ev in image_events:
-                job.model_events.append({
-                    "type": "model_event",
-                    "image": image_name,
-                    "image_index": idx,
-                    **ev,
-                })
+            def _process_one(args: tuple) -> tuple:
+                idx, path = args
+                result = processor.process_single_image(path)
+                return idx, path, result if isinstance(result, list) else [result]
 
-            results.extend(result_list)
-            job.completed = idx + 1
+            with ThreadPoolExecutor(max_workers=_PARALLEL_IMAGES) as image_pool:
+                futures = {
+                    image_pool.submit(_process_one, (idx, path)): (idx, path)
+                    for idx, path in enumerate(job.image_paths)
+                }
+                for future in as_completed(futures):
+                    idx, image_path = futures[future]
+                    try:
+                        _, _, result_list = future.result()
+                    except Exception as exc:
+                        logger.error("Image %s failed: %s", image_path, exc)
+                        with _write_lock:
+                            image_errors.append(f"{os.path.basename(image_path)}: {exc}")
+                            job.completed += 1
+                        continue
 
-        for r in results:
-            if not r.get("station_id"):
-                r["station_id"] = cfg.default_station_id
+                    image_events = result_list[0].pop("_model_events", []) if result_list else []
+                    image_name = os.path.basename(image_path)
 
-        job.results = results
+                    with _write_lock:
+                        for ev in image_events:
+                            job.model_events.append({
+                                "type": "model_event",
+                                "image": image_name,
+                                "image_index": idx,
+                                **ev,
+                            })
+                        results_by_idx[idx] = result_list
+                        job.completed += 1
 
-        if cfg.enable_scrubbing and state.scrubber:
-            import pandas as pd
-            df = pd.DataFrame(results)
-            job.scrub_audit = state.scrubber.scrub_batch(df)
+            # Reconstruct in upload order
+            results = []
+            for idx in range(len(job.image_paths)):
+                results.extend(results_by_idx.get(idx, []))
 
-        if state.db_manager:
-            import pandas as pd
-            df = pd.DataFrame(results)
-            try:
-                state.db_manager.save_results(df)
-            except Exception as db_exc:
-                logger.error("Failed to persist results to DB for job %s: %s", job_id, db_exc)
+            if image_errors:
+                job.error = f"{len(image_errors)} image(s) failed: " + "; ".join(image_errors)
 
-        job.status = "done"
+            for r in results:
+                if not r.get("station_id"):
+                    r["station_id"] = cfg.default_station_id
 
-    except Exception as exc:
-        job.status = "error"
-        job.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+            job.results = results
 
-    finally:
-        job.finished_at = time.time()
-        if state.db_manager:
-            try:
-                state.db_manager.save_job(job)
-            except Exception as persist_exc:
-                logger.error("Could not persist job metadata for %s: %s", job_id, persist_exc)
+            if cfg.enable_scrubbing and state.scrubber:
+                import pandas as pd
+                df = pd.DataFrame(results)
+                job.scrub_audit = state.scrubber.scrub_batch(df)
+
+            if state.db_manager:
+                import pandas as pd
+                df = pd.DataFrame(results)
+                try:
+                    state.db_manager.save_results(df)
+                except Exception as db_exc:
+                    logger.error("Failed to persist results to DB for job %s: %s", job_id, db_exc)
+
+            job.status = "done"
+
+        except Exception as exc:
+            job.status = "error"
+            job.error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+
+        finally:
+            job.finished_at = time.time()
+            if state.db_manager:
+                try:
+                    state.db_manager.save_job(job)
+                except Exception as persist_exc:
+                    logger.error("Could not persist job metadata for %s: %s", job_id, persist_exc)
 
 
 @router.post("/process/{job_id}")

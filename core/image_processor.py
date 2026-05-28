@@ -5,12 +5,24 @@ Orchestrates OCR, animal detection, and day/night classification.
 
 import os
 import hashlib
+import threading
 import cv2
+from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
 from typing import Dict, Optional, Callable
 from .ocr_processor import OCRProcessor
 from .animal_detector import EnsembleDetector
 from .day_night_classifier import DayNightClassifier
+
+# Executor for running OCR and day/night classification in parallel within a
+# single image. Sized to match the number of tasks we submit per image (2),
+# multiplied by the number of images that may be in flight simultaneously.
+_pipeline_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4)))
+
+# EasyOCR's Reader.readtext() shares internal numpy/model buffers and is not
+# safe to call concurrently on the same instance. This lock serializes OCR
+# calls while still allowing day/night + detection to run in parallel.
+_ocr_lock = threading.Lock()
 
 
 class ImageProcessor:
@@ -55,15 +67,26 @@ class ImageProcessor:
             return file_hash.hexdigest()
         except Exception:
             return "unknown_hash"
-    
+
+    def _do_ocr(self, image_path: str) -> dict:
+        """Run OCR under the shared lock (EasyOCR is not thread-safe)."""
+        with _ocr_lock:
+            return self.ocr_processor.process_image(
+                image_path, strip_height_percent=self.ocr_strip_percent
+            )
+
     def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> list:
         """
         Process a single image through the complete pipeline.
-        
+
+        OCR and day/night classification are submitted to _pipeline_executor in
+        parallel — they are independent reads of the same file. Detection waits
+        for the day/night result (needs is_night) but runs immediately after.
+
         Args:
             image_path: Path to the image file
             progress_callback: Optional callback function for progress updates
-            
+
         Returns:
             List of dictionaries containing all extracted information (one per detected entity)
         """
@@ -76,34 +99,38 @@ class ImageProcessor:
             'time': None,
             'day_night': 'Unknown',
             'brightness': 0.0,
-            'species_data': [], # Initialize structured data
+            'species_data': [],
             'user_notes': '',
             'processing_status': 'Success'
         }
-        
+
         try:
-            # 1. OCR Processing (Common to all)
-            if self.ocr_enabled and self.ocr_processor:
-                if progress_callback:
-                    progress_callback(f"Extracting metadata from {base_result['filename']}...")
-                ocr_metadata = self.ocr_processor.process_image(image_path, strip_height_percent=self.ocr_strip_percent)
-                base_result.update(ocr_metadata)
-                
-            # Step 2: Day/Night Classification (Common to all)
-            if self.day_night_enabled and self.day_night_classifier:
-                if progress_callback:
-                    progress_callback(f"Classifying day/night for {base_result['filename']}...")
-                
-                classification, brightness = self.day_night_classifier.classify(image_path)
+            filename = base_result['filename']
+            if progress_callback:
+                progress_callback(f"Processing {filename}...")
+
+            # Submit OCR and day/night in parallel — both are independent reads.
+            future_ocr = (
+                _pipeline_executor.submit(self._do_ocr, image_path)
+                if self.ocr_enabled and self.ocr_processor else None
+            )
+            future_dn = (
+                _pipeline_executor.submit(self.day_night_classifier.classify, image_path)
+                if self.day_night_enabled and self.day_night_classifier else None
+            )
+
+            if future_ocr:
+                base_result.update(future_ocr.result())
+
+            if future_dn:
+                classification, brightness = future_dn.result()
                 base_result['day_night'] = classification
                 base_result['brightness'] = brightness
-            
+
             # 3. Animal Detection (Returns List)
             final_results = []
-            
+
             if self.detection_enabled and self.animal_detector:
-                if progress_callback:
-                    progress_callback(f"Detecting animal in {base_result['filename']}...")
                 
                 is_night = base_result.get("day_night") == "Night"
                 detections = self.animal_detector.detect(image_path, is_night=is_night)
