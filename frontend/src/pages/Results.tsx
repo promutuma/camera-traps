@@ -45,15 +45,15 @@ function getCandidates(row: Row): { label: string; conf: number; source: "BioCli
   const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
   const seen = new Set<string>();
 
-  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
-    const key = String(s).toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
-  }
   for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
     let label = String(s);
     if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
     const key = label.toLowerCase();
     if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
+  }
+  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
+    const key = String(s).toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
   }
   return out;
 }
@@ -172,8 +172,8 @@ function ModelBreakdown({
           {detectors.map((m) => <ModelPill key={m} name={m} />)}
           {isAnimal && (
             <>
-              {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
               {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
+              {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
               <AgreementBadge level={agreement} />
             </>
           )}
@@ -209,22 +209,7 @@ function ModelBreakdown({
             </div>
           )}
 
-          {/* BioClip Top Detections */}
-          {parsedBreakdown.BioClip?.length > 0 && (
-            <div className="space-y-1">
-              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">BioClip Top Guesses</span>
-              <div className="space-y-0.5 font-medium pl-1">
-                {parsedBreakdown.BioClip.slice(0, 3).map(([s, c]: [string, number], idx: number) => (
-                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
-                    <span>{s}</span>
-                    <span className="font-mono">{(c * 100).toFixed(0)}%</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* SpeciesNet Top Detections */}
+          {/* SpeciesNet Top Detections (primary) */}
           {parsedBreakdown.SpeciesNet?.length > 0 && (
             <div className="space-y-1">
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">SpeciesNet Taxonomy</span>
@@ -296,6 +281,21 @@ function ModelBreakdown({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {/* BioClip supplement (only ran when SpeciesNet was uncertain) */}
+          {parsedBreakdown.BioClip?.length > 0 && (
+            <div className="space-y-1">
+              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">BioClip <span className="font-normal normal-case">supplement</span></span>
+              <div className="space-y-0.5 font-medium pl-1">
+                {parsedBreakdown.BioClip.slice(0, 3).map(([s, c]: [string, number], idx: number) => (
+                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
+                    <span>{s}</span>
+                    <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}

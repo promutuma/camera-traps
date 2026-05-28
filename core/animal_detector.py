@@ -4,9 +4,9 @@ Multi-Model Wildlife Identification Pipeline
 Stage 1 – Detection
   MDv5a → candidates
 
-Stage 2 – Crop + Classify   (parallel per animal crop)
-  BioClip     → [(species, conf), ...]   ┐ run concurrently
-  SpeciesNet  → [(species, conf), ...]   ┘ (skipped if not loaded)
+Stage 2 – Crop + Classify   (SpeciesNet-first; BioClip only when uncertain)
+  SpeciesNet  → [(species, conf), ...]          primary classifier
+  BioClip     → [(species, conf), ...]          supplement if SN conf < bypass threshold
   Ensemble fusion → final species + agreement score
 
 Each result dict includes a '_model_events' list for real-time SSE display.
@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 import cv2
 import numpy as np
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,9 +30,6 @@ try:
 except ImportError as exc:
     MD_AVAILABLE = False
     print(f"Warning: megadetector not installed. Error: {exc}")
-
-# Thread pool for parallel BioClip + SpeciesNet classification calls.
-_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4) // 2))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,33 +229,39 @@ class AnimalDetector:
     # Classification helpers
     # ------------------------------------------------------------------
 
-    def _classify_parallel(
+    def _classify(
         self, crop: Image.Image
-    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], Optional[Dict]]:
+    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], Optional[Dict], bool]:
         """
-        Run BioCLIP and SpeciesNet concurrently.
+        SpeciesNet-first classification. Returns (bc_pairs, sn_pairs, bc_taxonomy, bioclip_skipped).
 
-        Returns (bc_pairs, sn_pairs, bc_taxonomy) where:
-          bc_pairs    – [(species, conf), ...] for score accumulation
-          sn_pairs    – [(label_json, conf), ...] from SpeciesNet
-          bc_taxonomy – full dict from predict_taxonomy(), used for
-                        genus/family-level agreement in fuse_species()
+        SpeciesNet runs first. If its top confidence meets the bypass threshold
+        BioClip is skipped entirely — no wasted inference, lower peak memory.
+        BioClip only runs when SpeciesNet is uncertain (below the threshold),
+        providing supplementary signal for the weighted fusion.
         """
-        if not self.bioclip:
-            return [], [], None
-
         if not self.speciesnet or self.speciesnet.classifier is None:
+            # SpeciesNet unavailable — fall back to BioClip-only
+            if not self.bioclip:
+                return [], [], None, False
             tax = self.bioclip.predict_taxonomy(crop, threshold=self._threshold)
             bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
-            return bc, [], tax
+            return bc, [], tax, False
 
-        future_bc = _executor.submit(
-            self.bioclip.predict_taxonomy, crop, self._threshold
-        )
-        future_sn = _executor.submit(self.speciesnet.classify_crop, crop)
-        tax = future_bc.result()
+        # ── Primary: SpeciesNet ──────────────────────────────────────────
+        sn = self.speciesnet.classify_crop(crop)
+        sn_top_conf = sn[0][1] if sn else 0.0
+
+        # SpeciesNet confident → skip BioClip
+        if self._speciesnet_bypass_threshold > 0.0 and sn_top_conf >= self._speciesnet_bypass_threshold:
+            return [], sn, None, True
+
+        # ── Supplement: BioClip (SpeciesNet uncertain) ───────────────────
+        if not self.bioclip:
+            return [], sn, None, False
+        tax = self.bioclip.predict_taxonomy(crop, threshold=self._threshold)
         bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
-        return bc, future_sn.result(), tax
+        return bc, sn, tax, False
 
     # ------------------------------------------------------------------
     # Crop helpers
@@ -394,21 +396,22 @@ class AnimalDetector:
                     final_results.append(base)
                     continue
 
-                # Stage 2a: Parallel classification
-                bc_results, sn_results, bc_taxonomy = self._classify_parallel(crop)
+                # Stage 2a: SpeciesNet-first classification
+                bc_results, sn_results, bc_taxonomy, bioclip_skipped = self._classify(crop)
 
-                # BioCLIP fallback if nothing above threshold
-                if not bc_results and self.bioclip:
+                # BioClip fallback only when not intentionally skipped and SpeciesNet gave nothing
+                if not bc_results and not bioclip_skipped and not sn_results and self.bioclip:
                     fb = self.bioclip.predict_taxonomy(crop, threshold=0.0, top_k=1)
                     bc_results = [(c["species"], c["confidence"]) for c in fb.get("candidates", [])]
                     if bc_taxonomy is None:
                         bc_taxonomy = fb
 
                 # Classification events
-                ev_bc = {
-                    "model": "BioClip",
-                    "top5": [[s, round(c, 3)] for s, c in bc_results[:5]],
-                }
+                ev_bc = (
+                    {"model": "BioClip", "top5": [], "skipped": True}
+                    if bioclip_skipped
+                    else {"model": "BioClip", "top5": [[s, round(c, 3)] for s, c in bc_results[:5]]}
+                )
                 ev_sn = {
                     "model": "SpeciesNet",
                     "top5": [[s, round(c, 3)] for s, c in sn_results[:5]],

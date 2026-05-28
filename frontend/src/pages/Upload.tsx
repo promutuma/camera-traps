@@ -420,22 +420,10 @@ function ImageResultCard({
               </span>
             )}
 
-            {/* BioCLIP top results */}
-            {!isEmpty && evBC?.top5?.length && (
-              <div className="flex flex-wrap items-center gap-1">
-                <ModelTag name="BioClip" />
-                <span className="text-slate-600 dark:text-slate-400">
-                  {evBC.top5
-                    .slice(0, 2)
-                    .map(([s, c]) => `${s} ${(c as number).toFixed(2)}`)
-                    .join(", ")}
-                </span>
-              </div>
-            )}
           </div>
         </div>
 
-        {/* SpeciesNet ranked list */}
+        {/* SpeciesNet ranked list (primary classifier) */}
         {!isEmpty && (
           <>
             {evSN?.skipped ? (
@@ -454,6 +442,23 @@ function ImageResultCard({
               </div>
             ) : null}
           </>
+        )}
+
+        {/* BioClip (supplement — only runs when SpeciesNet is uncertain) */}
+        {!isEmpty && evBC && (
+          evBC.skipped ? (
+            <div className="flex items-center gap-1.5">
+              <ModelTag name="BioClip" />
+              <span className="text-slate-400 dark:text-slate-500 italic text-[10px]">skipped — SpeciesNet confident</span>
+            </div>
+          ) : evBC.top5?.length ? (
+            <div className="flex flex-wrap items-center gap-1">
+              <ModelTag name="BioClip" />
+              <span className="text-slate-600 dark:text-slate-400">
+                {evBC.top5.slice(0, 2).map(([s, c]) => `${s} ${(c as number).toFixed(2)}`).join(", ")}
+              </span>
+            </div>
+          ) : null
         )}
 
         {/* Final result */}
@@ -1006,7 +1011,7 @@ export default function Upload() {
                     {[
                       { id: "ocr", label: "OCR Date/Time Extraction" },
                       { id: "detect", label: "MegaDetector Bounding Boxes" },
-                      { id: "classify", label: "BioClip & SpeciesNet Classifiers" },
+                      { id: "classify", label: "SpeciesNet · BioClip Classifiers" },
                       { id: "fusion", label: "Ensemble Fusion & Database Write" },
                     ].map((step, sIdx) => {
                       let active = false;
@@ -1171,11 +1176,11 @@ export default function Upload() {
                 <span className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
                   <span className="w-2 h-2 rounded bg-blue-200 dark:bg-blue-900/50" /> Detectors
                 </span>
-                <span className="flex items-center gap-1 text-violet-600 dark:text-violet-400">
-                  <span className="w-2 h-2 rounded bg-violet-200 dark:bg-violet-900/50" /> BioClip
-                </span>
                 <span className="flex items-center gap-1 text-teal-600 dark:text-teal-400">
                   <span className="w-2 h-2 rounded bg-teal-200 dark:bg-teal-900/50" /> SpeciesNet
+                </span>
+                <span className="flex items-center gap-1 text-violet-600 dark:text-violet-400">
+                  <span className="w-2 h-2 rounded bg-violet-200 dark:bg-violet-900/50" /> BioClip
                 </span>
                 <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                   <span className="w-2 h-2 rounded bg-emerald-200 dark:bg-emerald-900/50" /> Result

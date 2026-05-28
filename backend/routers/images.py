@@ -62,10 +62,11 @@ router = APIRouter(prefix="/images", tags=["images"])
 # The job stays "queued" while waiting and transitions to "running" on acquire.
 _job_semaphore = threading.Semaphore(1)
 
-# Number of images to process in parallel within a single job. Capped at 4;
-# each image submits 4 model tasks to the inner _executor, so this value × 4
-# approximates the peak task count hitting the ML thread pool simultaneously.
-_PARALLEL_IMAGES = max(1, min(4, (os.cpu_count() or 4) // 2))
+# Number of images to process in parallel within a single job. Capped at 2
+# to keep peak memory manageable on low-RAM deployments. Each image runs
+# BioClip then SpeciesNet sequentially, so 2 parallel images ≈ 2 active
+# inference contexts at any moment.
+_PARALLEL_IMAGES = max(1, min(2, (os.cpu_count() or 4) // 4))
 
 db_path = os.environ.get("DB_PATH", "wildlife_data.db")
 UPLOADS_DIR = Path(db_path).parent / "uploads"

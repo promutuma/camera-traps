@@ -28,15 +28,15 @@ function getCandidates(row: Row): { label: string; conf: number; source: "BioCli
   const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
   const seen = new Set<string>();
 
-  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
-    const key = String(s).toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
-  }
   for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
     let label = String(s);
     if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
     const key = label.toLowerCase();
     if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
+  }
+  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
+    const key = String(s).toLowerCase();
+    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
   }
   return out;
 }
@@ -121,38 +121,7 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
           </div>
         )}
 
-        {/* BioClip ranked predictions (or fallback to stored top confidence) */}
-        {isAnimal && (bcResults.length > 0 || (bioclipConf !== undefined && bioclipConf > 0)) && (
-          <div className="p-2.5 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-violet-500">BioClip Classifier</span>
-              {bioclipConf !== undefined && bioclipConf > 0 && (
-                <span className="text-[10px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
-              )}
-            </div>
-            {bcResults.length > 0 ? bcResults.map(([s, c], i) => (
-              <div key={`bc-${i}`} className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-slate-400 w-3 shrink-0 text-center">{i + 1}.</span>
-                <span className="flex-1 font-medium text-slate-700 truncate">{s}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
-              </div>
-            )) : (
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-slate-400 w-3 shrink-0 text-center">1.</span>
-                <span className="flex-1 font-medium text-slate-700 truncate">{detected}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round((bioclipConf ?? 0) * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((bioclipConf ?? 0) * 100)}%</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* SpeciesNet ranked predictions (or fallback to stored top confidence) */}
+        {/* SpeciesNet ranked predictions (primary classifier) */}
         {isAnimal && (snResults.length > 0 || (speciesnetConf !== undefined && speciesnetConf > 0)) && (
           <div className="p-2.5 space-y-1.5">
             <div className="flex items-center justify-between">
@@ -192,6 +161,37 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
                   <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round((speciesnetConf ?? 0) * 100)}%` }} />
                 </div>
                 <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((speciesnetConf ?? 0) * 100)}%</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* BioClip supplement (only ran when SpeciesNet was uncertain) */}
+        {isAnimal && (bcResults.length > 0 || (bioclipConf !== undefined && bioclipConf > 0)) && (
+          <div className="p-2.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-violet-500">BioClip <span className="font-normal normal-case text-slate-400">(supplement)</span></span>
+              {bioclipConf !== undefined && bioclipConf > 0 && (
+                <span className="text-[10px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
+              )}
+            </div>
+            {bcResults.length > 0 ? bcResults.map(([s, c], i) => (
+              <div key={`bc-${i}`} className="flex items-center gap-1.5 text-[10px]">
+                <span className="text-slate-400 w-3 shrink-0 text-center">{i + 1}.</span>
+                <span className="flex-1 font-medium text-slate-700 truncate">{s}</span>
+                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
+                </div>
+                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
+              </div>
+            )) : (
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <span className="text-slate-400 w-3 shrink-0 text-center">1.</span>
+                <span className="flex-1 font-medium text-slate-700 truncate">{detected}</span>
+                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round((bioclipConf ?? 0) * 100)}%` }} />
+                </div>
+                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((bioclipConf ?? 0) * 100)}%</span>
               </div>
             )}
           </div>
