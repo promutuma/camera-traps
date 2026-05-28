@@ -128,7 +128,7 @@ function ThumbnailItem({
           >
             {file.name}
           </p>
-          <p className="text-[9px] text-slate-400 dark:text-slate-500">
+          <p className="text-[10px] text-slate-400 dark:text-slate-500">
             {(file.size / 1024).toFixed(0)} KB
             {status === "done" && <span className="ml-1 text-emerald-500 font-semibold">· done</span>}
             {status === "processing" && <span className="ml-1 text-indigo-400 font-semibold">· analysing…</span>}
@@ -138,7 +138,7 @@ function ThumbnailItem({
       <button
         onClick={onRemove}
         disabled={disabled}
-        className="text-slate-300 dark:text-slate-600 hover:text-red-500 p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-950/30 transition-all shrink-0 disabled:opacity-50 cursor-pointer"
+        className="text-slate-300 dark:text-slate-600 hover:text-red-500 p-1 rounded-full hover:bg-red-50 dark:hover:bg-red-950/30 transition-all shrink-0 disabled:opacity-50 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
       >
         <span className="material-symbols-outlined text-sm select-none leading-none block">close</span>
       </button>
@@ -188,7 +188,7 @@ function AgreementBadge({ level }: { level?: string }) {
       ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/30"
       : "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/30";
   return (
-    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${styles}`}>
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full border ${styles}`}>
       {level}
     </span>
   );
@@ -206,7 +206,7 @@ function ModelTag({ name }: { name: string }) {
       ? "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700"
       : "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200/50 dark:border-emerald-900/30";
   return (
-    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded border ${color}`}>
+    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${color}`}>
       {name}
     </span>
   );
@@ -280,7 +280,7 @@ function SpeciesRow({
   const pct = Math.round(conf * 100);
   return (
     <div className="flex items-center gap-1.5 min-w-0">
-      <span className="text-[9px] text-slate-400 dark:text-slate-500 w-3 shrink-0 text-right">
+      <span className="text-[10px] text-slate-400 dark:text-slate-500 w-3 shrink-0 text-right">
         {rank}.
       </span>
       <span
@@ -297,7 +297,7 @@ function SpeciesRow({
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-[9px] font-mono text-slate-400 shrink-0 w-6 text-right">{pct}%</span>
+      <span className="text-[10px] font-mono text-slate-400 shrink-0 w-6 text-right">{pct}%</span>
     </div>
   );
 }
@@ -345,13 +345,13 @@ function ImageResultCard({
         <p className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 truncate flex-1 min-w-0" title={row.name}>
           {row.name}
         </p>
-        <span className="text-[9px] text-slate-400 dark:text-slate-500 italic shrink-0">
+        <span className="text-[10px] text-slate-400 dark:text-slate-500 italic shrink-0">
           {isPersonOrVehicle ? personLabels.join(", ") : "empty"}
         </span>
         <button
           onClick={onFlag}
           title={flagged ? "Remove flag" : "Flag for review"}
-          className={`p-0.5 rounded-full shrink-0 transition-colors cursor-pointer ${flagged ? "text-amber-500" : "text-slate-300 dark:text-slate-600 hover:text-amber-500"}`}
+          className={`p-0.5 rounded-full shrink-0 transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${flagged ? "text-amber-500" : "text-slate-300 dark:text-slate-600 hover:text-amber-500"}`}
         >
           <span className="material-symbols-outlined text-sm select-none leading-none block">{flagged ? "flag" : "outlined_flag"}</span>
         </button>
@@ -385,7 +385,7 @@ function ImageResultCard({
           <button
             onClick={onFlag}
             title={flagged ? "Remove review flag" : "Flag for review"}
-            className={`p-0.5 rounded-full transition-colors cursor-pointer ${
+            className={`p-0.5 rounded-full transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 ${
               flagged
                 ? "text-amber-500 hover:text-amber-600"
                 : "text-slate-300 dark:text-slate-600 hover:text-amber-500"
@@ -813,7 +813,11 @@ export default function Upload() {
             onDragLeave={() => setDragging(false)}
             onDrop={onDrop}
             onClick={() => inputRef.current?.click()}
-            className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 group ${
+            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); inputRef.current?.click(); } }}
+            tabIndex={0}
+            role="button"
+            aria-label="Drop images here or click to browse"
+            className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all duration-300 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 ${
               dragging
                 ? "border-emerald-500 bg-emerald-50/60 dark:bg-emerald-950/20 shadow-inner scale-[0.99] ring-2 ring-emerald-500/20"
                 : "border-slate-300 dark:border-slate-800 bg-white dark:bg-slate-900/40 hover:border-emerald-400 dark:hover:border-emerald-500 hover:bg-emerald-50/20 dark:hover:bg-emerald-950/10 hover:shadow-md"
@@ -834,7 +838,8 @@ export default function Upload() {
             <p className="text-slate-400 dark:text-slate-500 text-xs mt-1">JPG / JPEG / PNG</p>
             <button
               type="button"
-              className="mt-4 px-4 py-1.5 bg-slate-900 dark:bg-slate-800 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 dark:hover:bg-slate-700 transition-colors shadow-sm cursor-pointer"
+              onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
+              className="mt-4 px-4 py-1.5 bg-slate-900 dark:bg-slate-800 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 dark:hover:bg-slate-700 transition-colors shadow-sm cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
             >
               Browse Files
             </button>
@@ -879,7 +884,7 @@ export default function Upload() {
           {/* File list */}
           {files.length > 0 && (
             <div className="bg-white dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-              <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-105 flex justify-between items-center">
+              <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-100 flex justify-between items-center">
                 <span className="font-semibold text-slate-700 dark:text-slate-300 text-xs flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-base text-slate-500 dark:text-slate-400 select-none">
                     photo_library
@@ -970,7 +975,7 @@ export default function Upload() {
                       )}
                     </span>
                   )}
-                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-450">
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
                     {pct}%
                   </span>
                 </div>
@@ -1021,7 +1026,7 @@ export default function Upload() {
                           <div
                             className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition ${
                               done
-                                ? "bg-emerald-100 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-450"
+                                ? "bg-emerald-100 dark:bg-emerald-950/40 border-emerald-300 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400"
                                 : active
                                 ? "bg-indigo-50 dark:bg-indigo-950/40 border-indigo-300 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 animate-pulse"
                                 : "bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400"
@@ -1092,7 +1097,7 @@ export default function Upload() {
                   <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">
                     {imageRows.length}
                   </p>
-                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                  <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
                     Images
                   </p>
                 </div>
@@ -1100,7 +1105,7 @@ export default function Upload() {
                   <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">
                     {speciesSet.size}
                   </p>
-                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                  <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
                     Species
                   </p>
                 </div>
@@ -1120,7 +1125,7 @@ export default function Upload() {
                   >
                     {needsReviewCount}
                   </p>
-                  <p className="text-[9px] text-slate-500 font-semibold uppercase tracking-wide">
+                  <p className="text-[10px] text-slate-500 font-semibold uppercase tracking-wide">
                     Review
                   </p>
                 </div>
@@ -1142,7 +1147,7 @@ export default function Upload() {
         <div className="lg:col-span-2">
           <div className="bg-white dark:bg-slate-900/60 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col h-full min-h-[520px]">
             {/* Panel header */}
-            <div className="px-4 py-3 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-105 flex items-center justify-between">
+            <div className="px-4 py-3 bg-slate-50 dark:bg-slate-950/80 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-slate-500 dark:text-slate-400 select-none text-lg">
                   model_training
@@ -1151,7 +1156,7 @@ export default function Upload() {
                   Live Model Output
                 </span>
                 {flaggedImages.size > 0 && (
-                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/30">
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-900/30">
                     {flaggedImages.size} flagged
                   </span>
                 )}
@@ -1166,7 +1171,7 @@ export default function Upload() {
                 <span className="flex items-center gap-1 text-teal-600 dark:text-teal-400">
                   <span className="w-2 h-2 rounded bg-teal-200 dark:bg-teal-900/50" /> SpeciesNet
                 </span>
-                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-450">
+                <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
                   <span className="w-2 h-2 rounded bg-emerald-200 dark:bg-emerald-900/50" /> Result
                 </span>
               </div>

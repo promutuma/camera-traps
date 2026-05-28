@@ -21,16 +21,16 @@ function parseBbox(raw: unknown): [number, number, number, number] | null {
 }
 
 function confColor(v: number): string {
-  if (v >= 0.7) return "bg-green-500";
+  if (v >= 0.7) return "bg-emerald-500";
   if (v >= 0.4) return "bg-amber-400";
   return "bg-red-400";
 }
 
-/** Hex color for SVG bounding boxes, keyed by confidence. */
+/** Hex color for SVG bounding boxes — mirrors confColor thresholds. */
 function confBoxColor(conf: number): string {
-  if (conf >= 0.7) return "#22c55e";
-  if (conf >= 0.4) return "#f59e0b";
-  return "#ef4444";
+  if (conf >= 0.7) return "#10b981"; // emerald-500
+  if (conf >= 0.4) return "#f59e0b"; // amber-400
+  return "#ef4444";                  // red-400
 }
 
 /** Extract ranked species candidates from the model_breakdown JSON field. */
@@ -60,12 +60,17 @@ function getCandidates(row: Row): { label: string; conf: number; source: "BioCli
 
 function DayNightBadge({ value }: { value: unknown }) {
   const v = String(value ?? "");
-  if (!v) return <span className="text-slate-300">—</span>;
+  if (!v) return <span className="text-slate-300 dark:text-slate-600">—</span>;
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-      v === "Day" ? "bg-amber-50 text-amber-700" : "bg-indigo-50 text-indigo-700"
+      v === "Day"
+        ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
+        : "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300"
     }`}>
-      {v === "Day" ? "☀" : "🌙"} {v}
+      <span className="material-symbols-outlined text-[12px] leading-none select-none">
+        {v === "Day" ? "wb_sunny" : "bedtime"}
+      </span>
+      {v}
     </span>
   );
 }
@@ -75,10 +80,10 @@ function ConfBar({ value }: { value: unknown }) {
   const pct = isNaN(v) ? 0 : Math.round(v * 100);
   return (
     <div className="flex items-center gap-2 min-w-[80px]">
-      <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+      <div className="flex-1 bg-slate-100 dark:bg-slate-700 rounded-full h-1.5 overflow-hidden">
         <div className={`h-full rounded-full ${confColor(v)}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs font-mono text-slate-500 w-8 text-right">{pct}%</span>
+      <span className="text-xs font-mono text-slate-500 dark:text-slate-400 w-8 text-right">{pct}%</span>
     </div>
   );
 }
@@ -88,14 +93,14 @@ function ConfBar({ value }: { value: unknown }) {
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
     name === "MDv5a" || name === "MDv1000"
-      ? "bg-blue-100 text-blue-700 border-blue-200"
+      ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900/50"
       : name === "BioClip"
-      ? "bg-violet-100 text-violet-700 border-violet-200"
+      ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-900/50"
       : name === "SpeciesNet"
-      ? "bg-teal-100 text-teal-700 border-teal-200"
-      : "bg-slate-100 text-slate-600 border-slate-200";
+      ? "bg-teal-100 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-900/50"
+      : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700";
   return (
-    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold border ${base}`}>
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold border ${base}`}>
       {name}
       {conf !== undefined && conf > 0 && (
         <span className="font-normal opacity-80 ml-0.5">{Math.round(conf * 100)}%</span>
@@ -108,12 +113,12 @@ function AgreementBadge({ level }: { level?: string | null }) {
   if (!level) return null;
   const styles =
     level === "High"
-      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+      ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50"
       : level === "Medium"
-      ? "bg-amber-100 text-amber-700 border-amber-200"
-      : "bg-red-100 text-red-700 border-red-200";
+      ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/50"
+      : "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border-red-200 dark:border-red-900/50";
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border ${styles}`}>
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${styles}`}>
       {level}
     </span>
   );
@@ -176,7 +181,7 @@ function ModelBreakdown({
         {!compact && hasDetail && (
           <button
             onClick={() => setExpanded(!expanded)}
-            className="text-[10px] text-emerald-600 hover:text-emerald-700 dark:text-emerald-450 dark:hover:text-emerald-350 font-bold tracking-wider uppercase cursor-pointer hover:underline inline-flex items-center gap-0.5 select-none"
+            className="text-[10px] text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 font-bold tracking-wider uppercase cursor-pointer hover:underline inline-flex items-center gap-0.5 select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 rounded"
           >
             {expanded ? "Hide Details" : "Show Details"}
             <span className="material-symbols-outlined text-[12px] leading-none">
@@ -195,13 +200,13 @@ function ModelBreakdown({
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Object Detection</span>
               <div className="space-y-0.5 font-medium pl-1">
                 {parsedBreakdown.MDv5a?.map((d: any, idx: number) => (
-                  <div key={`md5-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                  <div key={`md5-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                     <span>MDv5a: {d.label}</span>
                     <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
                   </div>
                 ))}
                 {parsedBreakdown.MDv1000?.map((d: any, idx: number) => (
-                  <div key={`md1000-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                  <div key={`md1000-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                     <span>MDv1000: {d.label}</span>
                     <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
                   </div>
@@ -216,7 +221,7 @@ function ModelBreakdown({
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">BioClip Top Guesses</span>
               <div className="space-y-0.5 font-medium pl-1">
                 {parsedBreakdown.BioClip.slice(0, 3).map(([s, c]: [string, number], idx: number) => (
-                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                     <span>{s}</span>
                     <span className="font-mono">{(c * 100).toFixed(0)}%</span>
                   </div>
@@ -236,13 +241,13 @@ function ModelBreakdown({
                     try {
                       const parsed = JSON.parse(s);
                       return (
-                        <div key={`sn-${idx}`} className="border-b border-slate-200/40 dark:border-slate-800/40 pb-1.5 last:border-b-0 last:pb-0 space-y-0.5 text-slate-650 dark:text-slate-400">
+                        <div key={`sn-${idx}`} className="border-b border-slate-200/40 dark:border-slate-800/40 pb-1.5 last:border-b-0 last:pb-0 space-y-0.5 text-slate-600 dark:text-slate-400">
                           <div className="flex justify-between items-center">
                             <span className="font-bold text-slate-700 dark:text-slate-300">
                               {onTaxonClick ? (
                                 <button
                                   onClick={() => onTaxonClick(parsed.common_name)}
-                                  className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer font-bold text-left"
+                                  className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer font-bold text-left"
                                 >
                                   {parsed.common_name}
                                 </button>
@@ -253,11 +258,11 @@ function ModelBreakdown({
                             <span className="font-mono">{(c * 100).toFixed(0)}%</span>
                           </div>
                           {parsed.scientific_name && (
-                            <div className="text-[9px] italic text-slate-450">
+                            <div className="text-[10px] italic text-slate-500 dark:text-slate-400">
                               {onTaxonClick ? (
                                 <button
                                   onClick={() => onTaxonClick(parsed.scientific_name)}
-                                  className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer italic"
+                                  className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer italic"
                                 >
                                   {parsed.scientific_name}
                                 </button>
@@ -267,21 +272,21 @@ function ModelBreakdown({
                             </div>
                           )}
                           {parsed.hierarchy && parsed.hierarchy.length > 0 && (
-                            <div className="text-[9px] text-slate-400 flex flex-wrap gap-1 items-center mt-0.5 select-none">
+                            <div className="text-[10px] text-slate-400 dark:text-slate-500 flex flex-wrap gap-1 items-center mt-0.5 select-none">
                               <span className="material-symbols-outlined text-[10px] leading-none shrink-0">schema</span>
                               {parsed.hierarchy.map((h: string, hIdx: number) => (
                                 <span key={hIdx} className="inline-flex items-center gap-1">
                                   {onTaxonClick ? (
                                     <button
                                       onClick={() => onTaxonClick(h)}
-                                      className="hover:text-emerald-600 dark:hover:text-emerald-450 hover:underline cursor-pointer"
+                                      className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer"
                                     >
                                       {h}
                                     </button>
                                   ) : (
                                     <span>{h}</span>
                                   )}
-                                  {hIdx < parsed.hierarchy.length - 1 && <span className="text-[8px] text-slate-350 dark:text-slate-800">&gt;</span>}
+                                  {hIdx < parsed.hierarchy.length - 1 && <span className="text-[10px] text-slate-300 dark:text-slate-600">&gt;</span>}
                                 </span>
                               ))}
                             </div>
@@ -291,7 +296,7 @@ function ModelBreakdown({
                     } catch {}
                   }
                   return (
-                    <div key={`sn-${idx}`} className="flex justify-between items-center text-slate-650 dark:text-slate-400">
+                    <div key={`sn-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                       <span>{s}</span>
                       <span className="font-mono">{(c * 100).toFixed(0)}%</span>
                     </div>
@@ -303,7 +308,7 @@ function ModelBreakdown({
 
           {/* Fusion agreement detail */}
           {parsedBreakdown.Fusion && (
-            <div className="border-t border-slate-200/50 dark:border-slate-800/50 pt-1.5 flex justify-between items-center text-[9px] text-slate-450 dark:text-slate-500 font-semibold select-none">
+            <div className="border-t border-slate-200/50 dark:border-slate-800/50 pt-1.5 flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400 font-semibold select-none">
               <span>Agreement: {agreement}</span>
               {agreement === "High" && <span className="text-emerald-500 font-bold">+0.08 Agreement Bonus</span>}
               {agreement === "Medium" && <span className="text-amber-500 font-bold">+0.04 Agreement Bonus</span>}
@@ -466,21 +471,21 @@ function Lightbox({
           <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10 bg-slate-900/80 backdrop-blur-md px-2 py-1.5 rounded-lg border border-white/10 opacity-0 group-hover/image:opacity-100 transition-opacity duration-200">
             <button 
               onClick={() => setScale(s => Math.min(8, s * 1.25))}
-              className="text-white hover:text-green-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
+              className="text-white hover:text-emerald-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
               title="Zoom In"
             >
               <span className="material-symbols-outlined text-sm leading-none block">zoom_in</span>
             </button>
             <button 
               onClick={() => setScale(s => Math.max(1, s / 1.25))}
-              className="text-white hover:text-green-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
+              className="text-white hover:text-emerald-400 p-1 text-xs font-bold transition flex items-center justify-center cursor-pointer"
               title="Zoom Out"
             >
               <span className="material-symbols-outlined text-sm leading-none block">zoom_out</span>
             </button>
             <button 
               onClick={resetZoom}
-              className="text-white hover:text-green-400 px-1.5 py-0.5 text-[9px] font-semibold tracking-wide uppercase transition border border-white/20 rounded cursor-pointer"
+              className="text-white hover:text-emerald-400 px-1.5 py-0.5 text-xs font-semibold tracking-wide uppercase transition border border-white/20 rounded cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/50"
               title="Reset Zoom"
             >
               Reset
@@ -489,10 +494,12 @@ function Lightbox({
 
           {/* Keyboard Cheatsheet Overlay */}
           {showCheatsheet && (
-            <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-white/10 rounded-xl p-3 text-[10px] text-slate-350 space-y-1 shadow-lg max-w-[200px] transition-all">
+            <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-white/10 rounded-xl p-3 text-[10px] text-slate-400 space-y-1 shadow-lg max-w-[200px] transition-all">
               <div className="flex items-center justify-between font-bold border-b border-white/10 pb-1 mb-1 text-white">
                 <span>Shortcuts Cheatsheet</span>
-                <button onClick={() => setShowCheatsheet(false)} className="text-slate-400 hover:text-white shrink-0 cursor-pointer">✕</button>
+                <button onClick={() => setShowCheatsheet(false)} className="text-slate-400 hover:text-white shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/50 rounded">
+                  <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+                </button>
               </div>
               <div className="flex justify-between gap-4"><span>Navigate Left</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">←</kbd></div>
               <div className="flex justify-between gap-4"><span>Navigate Right</span><kbd className="bg-white/10 px-1 rounded text-white font-semibold">→</kbd></div>
@@ -506,13 +513,13 @@ function Lightbox({
           {hasPrev && (
             <button
               onClick={() => onNavigate(groups[idx - 1])}
-              className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-green-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
+              className="absolute left-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-emerald-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
             >‹</button>
           )}
           {hasNext && (
             <button
               onClick={() => onNavigate(groups[idx + 1])}
-              className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-green-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
+              className="absolute right-3 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-emerald-600/80 text-white rounded-full w-9 h-9 flex items-center justify-center text-lg transition z-10 cursor-pointer shadow-md select-none border border-white/10"
             >›</button>
           )}
 
@@ -587,11 +594,13 @@ function Lightbox({
         <div className="w-80 shrink-0 flex flex-col gap-3 overflow-y-auto border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 p-4">
           <div className="flex items-start justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
             <p className="font-bold text-slate-800 dark:text-slate-100 text-sm break-all leading-snug">{filename}</p>
-            <button onClick={onClose} className="shrink-0 text-slate-450 hover:text-slate-700 dark:hover:text-slate-300 text-xl leading-none mt-0.5 cursor-pointer">✕</button>
+            <button onClick={onClose} className="shrink-0 text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-300 leading-none mt-0.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 rounded">
+              <span className="material-symbols-outlined text-base select-none">close</span>
+            </button>
           </div>
 
           {/* Box Opacity Slider */}
-          <div className="flex items-center justify-between gap-2 px-1 py-1.5 bg-slate-50 dark:bg-slate-950/40 rounded-lg border border-slate-100 dark:border-slate-850">
+          <div className="flex items-center justify-between gap-2 px-1 py-1.5 bg-slate-50 dark:bg-slate-950/40 rounded-lg border border-slate-100 dark:border-slate-800">
             <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider pl-1.5">
               Box Opacity
             </label>
@@ -622,13 +631,13 @@ function Lightbox({
               const candidates = getCandidates(row);
 
               return (
-                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-955/20 p-3 space-y-2">
+                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/20 p-3 space-y-2">
                   {isEditingDet ? (
                     /* ── Candidate dropdown + manual override ── */
                     <div className="space-y-2.5">
                       {candidates.length > 0 && (
                         <div className="space-y-1">
-                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Model candidates</p>
+                          <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Model candidates</p>
                           <div className="space-y-0.5 max-h-40 overflow-y-auto">
                             {candidates.map((c, ci) => (
                               <button
@@ -642,8 +651,8 @@ function Lightbox({
                               >
                                 <span className="truncate">{c.label}</span>
                                 <div className="flex items-center gap-1 shrink-0 ml-2">
-                                  <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
-                                  <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
+                                  <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">{Math.round(c.conf * 100)}%</span>
+                                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${
                                     c.source === "BioClip"
                                       ? "bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400"
                                       : "bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400"
@@ -655,7 +664,7 @@ function Lightbox({
                         </div>
                       )}
                       <div>
-                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">Manual override</p>
+                        <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-1">Manual override</p>
                         <input
                           autoFocus={candidates.length === 0}
                           value={detEdit!.val}
@@ -682,7 +691,7 @@ function Lightbox({
                       <div className="flex items-center gap-2">
                         <span className="w-2 h-2 rounded-sm shrink-0 shadow-sm" style={{ background: boxColor }} />
                         <span
-                          className="font-bold text-slate-850 dark:text-slate-200 text-sm flex-1 truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
+                          className="font-bold text-slate-800 dark:text-slate-200 text-sm flex-1 truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
                           title="Click to correct species"
                           onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
                         >
@@ -791,7 +800,9 @@ function Lightbox({
                           {saving ? "…" : "✓"}
                         </button>
                         <button onClick={() => setEditField(null)}
-                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs rounded-lg transition cursor-pointer">✕</button>
+                          className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs rounded-lg transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
+                          <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+                        </button>
                       </div>
                     </div>
                   ) : (
@@ -808,7 +819,7 @@ function Lightbox({
             })}
           </div>
 
-          <p className="text-xs text-slate-355 dark:text-slate-500 text-center pt-2 border-t border-slate-100 dark:border-slate-800/80 select-none">
+          <p className="text-xs text-slate-400 dark:text-slate-500 text-center pt-2 border-t border-slate-100 dark:border-slate-800/80 select-none">
             ← → navigate &nbsp;·&nbsp; Esc close
           </p>
         </div>
@@ -1221,7 +1232,7 @@ export default function Results() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Review Results</h1>
         <div className="flex gap-2 flex-wrap">
-          <div className="flex rounded-lg border border-slate-200 dark:border-slate-850 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
+          <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
             <button
               onClick={() => setViewMode("table")}
               className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
@@ -1243,7 +1254,7 @@ export default function Results() {
             ["Total Images", rows.length, "text-slate-700 dark:text-slate-200"],
             ["Animals", totalAnimals, "text-green-700 dark:text-emerald-400"],
             ["Unique Species", uniqueSpecies, "text-indigo-700 dark:text-indigo-400"],
-            ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700 dark:text-amber-450"],
+            ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700 dark:text-amber-400"],
             ["Needs Review", lowConfCount, lowConfCount > 0 ? "text-red-600 dark:text-red-400" : "text-slate-400 dark:text-slate-500"],
           ].map(([label, val, cls]) => (
             <div key={String(label)} className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 px-4 py-3 shadow-sm">
@@ -1258,13 +1269,13 @@ export default function Results() {
       <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 p-3 flex flex-wrap gap-2 items-end shadow-sm">
         <input ref={speciesInputRef} placeholder="Species (live)…" value={filter.species}
           onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
+          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
         <input placeholder="Station (live)…" value={filter.station}
           onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
+          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
         <select value={filter.day_night}
           onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250">
+          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300">
           <option value="">All times</option>
           <option value="Day">☀ Day</option>
           <option value="Night">🌙 Night</option>
@@ -1273,18 +1284,20 @@ export default function Results() {
           <input placeholder="Min conf" value={filter.min_conf}
             onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value }))}
             onKeyDown={(e) => e.key === "Enter" && load()}
-            className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
-          <span className="text-slate-450 dark:text-slate-600 text-sm">–</span>
+            className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
+          <span className="text-slate-500 dark:text-slate-600 text-sm">–</span>
           <input placeholder="Max conf" value={filter.max_conf}
             onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value }))}
             onKeyDown={(e) => e.key === "Enter" && load()}
-            className="border border-slate-300 dark:border-slate-805 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-250" />
+            className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
         </div>
         <button onClick={load} title="Apply confidence range filter" className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply Conf</button>
         {selectedTaxon && (
           <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50 rounded-lg text-xs font-bold leading-none h-[34px] tracking-wide uppercase select-none">
             <span>Taxon: {selectedTaxon}</span>
-            <button onClick={() => setSelectedTaxon(null)} className="hover:text-emerald-900 dark:hover:text-emerald-250 cursor-pointer text-sm font-semibold">✕</button>
+            <button onClick={() => setSelectedTaxon(null)} className="hover:text-emerald-900 dark:hover:text-emerald-300 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded">
+              <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+            </button>
           </div>
         )}
         {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station || selectedTaxon) && (
@@ -1336,7 +1349,7 @@ export default function Results() {
           Loading…
         </div>
       ) : sorted.length === 0 ? (
-        <div className="text-center py-16 text-slate-400 dark:text-slate-550 space-y-2">
+        <div className="text-center py-16 text-slate-400 dark:text-slate-500 space-y-2">
           <div className="text-4xl">📷</div>
           <p className="font-semibold">No results yet</p>
           <p className="text-sm">Process images in the Upload tab first.</p>
@@ -1365,11 +1378,11 @@ export default function Results() {
                       title="Select all on this page"
                     />
                   </th>
-                  <th className="text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-450 w-20">Image</th>
+                  <th className="text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-500 w-20">Image</th>
                   {COLS.map(({ key, label, sortable }) => (
                     <th
                       key={key}
-                      className={`text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-450 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-200" : ""}`}
+                      className={`text-left px-3 py-3 font-semibold text-slate-500 dark:text-slate-500 whitespace-nowrap ${sortable ? "cursor-pointer select-none hover:text-slate-800 dark:hover:text-slate-200" : ""}`}
                       onClick={() => sortable && toggleSort(key)}
                     >
                       {label}{sortable && sortIcon(key)}
@@ -1425,7 +1438,7 @@ export default function Results() {
                             onError={(e) => {
                               const el = e.currentTarget as HTMLImageElement;
                               el.style.display = "none";
-                              el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-550 flex items-center justify-center h-full w-full">No img</span>';
+                              el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-500 flex items-center justify-center h-full w-full">No img</span>';
                             }}
                           />
                           {isLowConf && (
@@ -1489,9 +1502,11 @@ export default function Results() {
                                 <input autoFocus value={editVal}
                                   onChange={(e) => setEditVal(e.target.value)}
                                   onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
-                                  className="border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-sm w-full focus:outline-none bg-white dark:bg-slate-900 text-slate-855 dark:text-white" />
+                                  className="border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-sm w-full focus:outline-none bg-white dark:bg-slate-900 text-slate-800 dark:text-white" />
                                 <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer">✓</button>
-                                <button onClick={() => setEditing(null)} className="text-slate-300 dark:text-slate-655 shrink-0 cursor-pointer">✕</button>
+                                <button onClick={() => setEditing(null)} className="text-slate-300 dark:text-slate-600 hover:text-red-500 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">
+                                  <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+                                </button>
                               </div>
                             ) : key === "detection_confidence" ? (
                               <ConfBar value={val} />
@@ -1538,7 +1553,7 @@ export default function Results() {
             </table>
             <div className="px-4 py-2 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between select-none">
               <span>{filteredRows.length} record(s){filteredRows.length !== rows.length ? ` (filtered from ${rows.length})` : ""} · Checkbox to select · Click species to correct · Click thumbnail to open</span>
-              <span className="text-slate-350 dark:text-slate-700">Column headers to sort</span>
+              <span className="text-slate-400 dark:text-slate-700">Column headers to sort</span>
             </div>
           </div>
           <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />

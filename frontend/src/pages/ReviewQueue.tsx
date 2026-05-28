@@ -46,14 +46,14 @@ function getCandidates(row: Row): { label: string; conf: number; source: "BioCli
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
     name === "MDv5a" || name === "MDv1000"
-      ? "bg-blue-100 text-blue-700 border-blue-200"
+      ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-900/30"
       : name === "BioClip"
-      ? "bg-violet-100 text-violet-700 border-violet-200"
+      ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 border-violet-200 dark:border-violet-900/30"
       : name === "SpeciesNet"
-      ? "bg-teal-100 text-teal-700 border-teal-200"
-      : "bg-slate-100 text-slate-600 border-slate-200";
+      ? "bg-teal-100 dark:bg-teal-950/60 text-teal-700 dark:text-teal-400 border-teal-200 dark:border-teal-900/30"
+      : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700";
   return (
-    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-bold border ${base}`}>
+    <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold border ${base}`}>
       {name}
       {conf !== undefined && conf > 0 && (
         <span className="font-normal opacity-80 ml-0.5">{Math.round(conf * 100)}%</span>
@@ -66,12 +66,12 @@ function AgreementBadge({ level }: { level?: string | null }) {
   if (!level) return null;
   const styles =
     level === "High"
-      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+      ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/30"
       : level === "Medium"
-      ? "bg-amber-100 text-amber-700 border-amber-200"
-      : "bg-red-100 text-red-700 border-red-200";
+      ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/30"
+      : "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border-red-200 dark:border-red-900/30";
   return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold border ${styles}`}>
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${styles}`}>
       {level}
     </span>
   );
@@ -108,7 +108,7 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
         {/* MegaDetector detections */}
         {detectors.length > 0 && (
           <div className="p-2.5 space-y-1.5 bg-slate-50/50">
-            <span className="text-[8px] font-bold uppercase tracking-wider text-blue-500">Object Detector</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Object Detector</span>
             {mdv5a.length > 0 ? mdv5a.map((d, i) => (
               <div key={`md5-${i}`} className="flex items-center gap-1.5 text-[10px]">
                 <ModelPill name="MDv5a" />
@@ -136,9 +136,9 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
         {isAnimal && (bcResults.length > 0 || (bioclipConf !== undefined && bioclipConf > 0)) && (
           <div className="p-2.5 space-y-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-[8px] font-bold uppercase tracking-wider text-violet-500">BioClip Classifier</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-violet-500">BioClip Classifier</span>
               {bioclipConf !== undefined && bioclipConf > 0 && (
-                <span className="text-[9px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
+                <span className="text-[10px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
               )}
             </div>
             {bcResults.length > 0 ? bcResults.map(([s, c], i) => (
@@ -167,9 +167,9 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
         {isAnimal && (snResults.length > 0 || (speciesnetConf !== undefined && speciesnetConf > 0)) && (
           <div className="p-2.5 space-y-1.5">
             <div className="flex items-center justify-between">
-              <span className="text-[8px] font-bold uppercase tracking-wider text-teal-500">SpeciesNet</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-teal-500">SpeciesNet</span>
               {speciesnetConf !== undefined && speciesnetConf > 0 && (
-                <span className="text-[9px] font-mono text-teal-500">{Math.round(speciesnetConf * 100)}% top</span>
+                <span className="text-[10px] font-mono text-teal-500">{Math.round(speciesnetConf * 100)}% top</span>
               )}
             </div>
             {snResults.length > 0 ? snResults.map(([s, c], i) => {
@@ -187,7 +187,7 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
                   <span className="text-slate-400 w-3 shrink-0 text-center mt-0.5">{i + 1}.</span>
                   <div className="flex-1 min-w-0">
                     <span className="font-medium text-slate-700 block truncate">{label}</span>
-                    {scientific && <span className="text-[9px] italic text-slate-400 block truncate">{scientific}</span>}
+                    {scientific && <span className="text-[10px] italic text-slate-400 block truncate">{scientific}</span>}
                   </div>
                   <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0 mt-1.5">
                     <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
@@ -212,7 +212,7 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
         {bd?.Fusion && (
           <div className="p-2.5 bg-slate-50/60 flex items-center justify-between gap-2">
             <div>
-              <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Final Fusion</span>
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Final Fusion</span>
               <span className="text-xs font-bold text-slate-800">{bd.Fusion.species}</span>
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
@@ -232,9 +232,14 @@ function DayNightBadge({ value }: { value: unknown }) {
   if (!v) return null;
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-      v === "Day" ? "bg-amber-50 text-amber-700" : "bg-indigo-50 text-indigo-700"
+      v === "Day"
+        ? "bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400"
+        : "bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400"
     }`}>
-      {v === "Day" ? "☀" : "🌙"} {v}
+      <span className="material-symbols-outlined text-[13px] leading-none select-none">
+        {v === "Day" ? "wb_sunny" : "bedtime"}
+      </span>
+      {v}
     </span>
   );
 }
@@ -491,11 +496,11 @@ function DetailSidebar({
         {/* Metadata */}
         <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2.5">
           <div>
-            <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Classified Species</p>
+            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Classified Species</p>
             <p className="font-bold text-slate-800 text-sm">{species}</p>
           </div>
           <div>
-            <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-1">Confidence</p>
+            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-1">Confidence</p>
             <div className="flex items-center gap-2">
               <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden">
                 <div
@@ -510,7 +515,7 @@ function DetailSidebar({
           </div>
           {row.capture_date != null && (
             <div>
-              <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Date / Time</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Date / Time</p>
               <p className="font-medium text-slate-600 text-[11px]">
                 {String(row.capture_date)} {String(row.capture_time ?? "")}
               </p>
@@ -518,7 +523,7 @@ function DetailSidebar({
           )}
           {row.station_id != null && String(row.station_id) && (
             <div>
-              <p className="text-[9px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Station</p>
+              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Station</p>
               <p className="font-medium text-slate-600 text-[11px]">{String(row.station_id)}</p>
             </div>
           )}
@@ -606,7 +611,7 @@ function DetailSidebar({
                     {/* Model candidates */}
                     {candidates.length > 0 && (
                       <div className="space-y-1">
-                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Model candidates — click to select</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Model candidates — click to select</p>
                         <div className="space-y-0.5 max-h-40 overflow-y-auto">
                           {candidates.map((c, ci) => (
                             <button
@@ -622,10 +627,10 @@ function DetailSidebar({
                               <span className="truncate">{c.label}</span>
                               <div className="flex items-center gap-1 shrink-0 ml-2">
                                 <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
-                                <span className={`text-[8px] font-bold px-1 py-0.5 rounded ${
+                                <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${
                                   c.source === "BioClip"
-                                    ? "bg-violet-100 text-violet-600"
-                                    : "bg-teal-100 text-teal-600"
+                                    ? "bg-violet-100 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400"
+                                    : "bg-teal-100 dark:bg-teal-950/60 text-teal-600 dark:text-teal-400"
                                 }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
                               </div>
                             </button>
@@ -945,7 +950,7 @@ export default function ReviewQueue() {
                 <span className="material-symbols-outlined text-xs">keyboard</span>
                 Key Shortcuts
               </button>
-              <label className="flex items-center gap-2 text-xs font-semibold text-slate-650 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm">
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm">
                 <input
                   type="checkbox"
                   checked={filterDisagreement}

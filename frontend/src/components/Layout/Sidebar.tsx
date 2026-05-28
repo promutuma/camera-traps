@@ -84,7 +84,7 @@ export default function Sidebar() {
   const str = (key: string, val: string) => patch({ [key]: val });
 
   return (
-    <aside className="w-72 min-h-screen bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 shrink-0">
+    <aside className="w-72 h-full bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 shrink-0">
       {/* Brand Header */}
       <div className="p-5 border-b border-slate-800 flex items-center gap-3 bg-slate-950/40">
         <span className="material-symbols-outlined text-emerald-400 text-3xl select-none">
@@ -255,7 +255,7 @@ export default function Sidebar() {
                   format={(v) => v === 0 ? "Off" : v.toFixed(2)}
                   onChange={(v) => num("speciesnet_bypass_threshold", v)}
                 />
-                <p className="text-[9px] text-slate-500 leading-relaxed">
+                <p className="text-[10px] text-slate-500 leading-relaxed">
                   Bypass: skip BioClip fusion when SpeciesNet top confidence ≥ threshold. Set to 0 to always fuse.
                 </p>
               </div>
