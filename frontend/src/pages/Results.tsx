@@ -1025,7 +1025,8 @@ export default function Results() {
       // Confidence range goes to server; text filters are applied client-side
       if (filter.min_conf) params.min_conf = filter.min_conf;
       if (filter.max_conf) params.max_conf = filter.max_conf;
-      setRows(await getResults(params));
+      const data = await getResults(params);
+      setRows(data.items as Row[]);
     } finally {
       setLoading(false);
     }
