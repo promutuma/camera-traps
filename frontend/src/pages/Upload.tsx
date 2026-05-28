@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadImages, startProcessing, getJobResults, getModelStatus, flagByFilenames } from "../api/client";
+import { uploadImages, startProcessing, pollJob, getJobResults, getModelStatus, flagByFilenames } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -667,10 +667,18 @@ export default function Upload() {
     setFlaggedImages(new Set());
     flaggedImagesRef.current = new Set();
 
-    try {
-      await startProcessing(uploadedJobId);
+    // Called when the job reaches "done" status (via SSE or poll fallback).
+    const onJobDone = (jobId: string) => {
+      getJobResults(jobId);
+      const toFlag = Array.from(flaggedImagesRef.current);
+      if (toFlag.length > 0) flagByFilenames(toFlag, reviewerId).catch(() => {});
+    };
 
-      const sse = new EventSource(`/api/images/job/${uploadedJobId}/stream`);
+    // Attach a fresh EventSource for the given jobId.
+    // reconnectsLeft limits how many times we re-open the stream if the
+    // connection drops while the job is still running (e.g. dev-proxy timeout).
+    const attachSSE = (jobId: string, reconnectsLeft: number) => {
+      const sse = new EventSource(`/api/images/job/${jobId}/stream`);
       sseRef.current = sse;
 
       sse.onmessage = (e) => {
@@ -683,16 +691,10 @@ export default function Upload() {
             completed: number;
             error?: string;
           };
-          setJob({ jobId: uploadedJobId, ...prog });
-
+          setJob({ jobId, ...prog });
           if (prog.status === "done") {
             sse.close();
-            getJobResults(uploadedJobId);
-            // Persist any upload-page flags to the review log (non-fatal)
-            const toFlag = Array.from(flaggedImagesRef.current);
-            if (toFlag.length > 0) {
-              flagByFilenames(toFlag, reviewerId).catch(() => {});
-            }
+            onJobDone(jobId);
           } else if (prog.status === "error") {
             sse.close();
           }
@@ -710,12 +712,33 @@ export default function Upload() {
         }
       };
 
-      sse.onerror = () => {
+      sse.onerror = async () => {
         sse.close();
-        setJob((prev) =>
-          prev ? { ...prev, status: "error", error: "Stream connection lost." } : prev
-        );
+        // Poll the actual job state — the connection drop may be a proxy
+        // timeout or a normal server-close after the job finished, not a
+        // real failure. Only show an error if the backend confirms it.
+        try {
+          const status = await pollJob(jobId);
+          if (status.status === "done") {
+            setJob({ jobId, status: "done", total: status.total, completed: status.completed });
+            onJobDone(jobId);
+          } else if (status.status === "error") {
+            setJob((prev) => prev ? { ...prev, status: "error", error: status.error ?? "Processing failed." } : prev);
+          } else if (reconnectsLeft > 0) {
+            // Still running — reconnect after a short back-off
+            setTimeout(() => attachSSE(jobId, reconnectsLeft - 1), 2000);
+          } else {
+            setJob((prev) => prev ? { ...prev, status: "error", error: "Stream disconnected and could not reconnect." } : prev);
+          }
+        } catch {
+          setJob((prev) => prev ? { ...prev, status: "error", error: "Stream connection lost." } : prev);
+        }
       };
+    };
+
+    try {
+      await startProcessing(uploadedJobId);
+      attachSSE(uploadedJobId, 3);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setJob((prev) => (prev ? { ...prev, status: "error", error: msg } : prev));
