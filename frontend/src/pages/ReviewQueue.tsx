@@ -77,37 +77,133 @@ function AgreementBadge({ level }: { level?: string | null }) {
   );
 }
 
-function ModelBreakdown({
-  method,
-  bioclipConf,
-  speciesnetConf,
-  agreement,
-  detected,
-}: {
-  method: string;
-  bioclipConf?: number;
-  speciesnetConf?: number;
-  agreement?: string | null;
-  detected?: string;
-}) {
-  const models = method ? method.split(" + ").filter(Boolean) : [];
-  const detectors = models.filter((m) => m.startsWith("MDv") || m === "MegaDetector");
-  const isAnimal =
-    detected && detected !== "Empty" && detected !== "Unidentified" &&
+function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
+  let bd: Record<string, any> | null = null;
+  try {
+    if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown as string);
+    else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
+  } catch {}
+
+  const method = String(row.detection_method ?? "");
+  const bioclipConf = typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined;
+  const speciesnetConf = typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined;
+  const agreement = row.agreement as string | null;
+  const isAnimal = !!detected && detected !== "Empty" && detected !== "Unidentified" &&
     detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
 
-  if (!detectors.length && !isAnimal) return null;
+  const detectors = method.split(" + ").filter((m) => m.startsWith("MDv") || m === "MegaDetector");
+  const mdv5a: { label: string; conf: number }[] = bd?.MDv5a ?? [];
+  const mdv1000: { label: string; conf: number }[] = bd?.MDv1000 ?? [];
+  const bcResults: [string, number][] = (bd?.BioClip ?? []).slice(0, 3);
+  const snResults: [string, number][] = (bd?.SpeciesNet ?? []).slice(0, 3);
+
+  const hasAny = detectors.length > 0 || bcResults.length > 0 || snResults.length > 0;
+  if (!hasAny) return null;
 
   return (
-    <div className="flex flex-wrap items-center gap-1 mt-1">
-      {detectors.map((m) => <ModelPill key={m} name={m} />)}
-      {isAnimal && (
-        <>
-          {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
-          {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
-          <AgreementBadge level={agreement} />
-        </>
-      )}
+    <div className="space-y-1.5">
+      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Predictions</span>
+      <div className="border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-100">
+
+        {/* MegaDetector detections */}
+        {detectors.length > 0 && (
+          <div className="p-2.5 space-y-1.5 bg-slate-50/50">
+            <span className="text-[8px] font-bold uppercase tracking-wider text-blue-500">Object Detector</span>
+            {mdv5a.length > 0 ? mdv5a.map((d, i) => (
+              <div key={`md5-${i}`} className="flex items-center gap-1.5 text-[10px]">
+                <ModelPill name="MDv5a" />
+                <span className="flex-1 font-medium text-slate-600 truncate">{d.label}</span>
+                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div className="h-1.5 bg-blue-400 rounded-full" style={{ width: `${Math.round((d.conf ?? 0) * 100)}%` }} />
+                </div>
+                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
+              </div>
+            )) : <ModelPill name="MDv5a" />}
+            {mdv1000.length > 0 ? mdv1000.map((d, i) => (
+              <div key={`md1000-${i}`} className="flex items-center gap-1.5 text-[10px]">
+                <ModelPill name="MDv1000" />
+                <span className="flex-1 font-medium text-slate-600 truncate">{d.label}</span>
+                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div className="h-1.5 bg-blue-500 rounded-full" style={{ width: `${Math.round((d.conf ?? 0) * 100)}%` }} />
+                </div>
+                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
+              </div>
+            )) : detectors.includes("MDv1000") ? <ModelPill name="MDv1000" /> : null}
+          </div>
+        )}
+
+        {/* BioClip ranked predictions */}
+        {isAnimal && bcResults.length > 0 && (
+          <div className="p-2.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[8px] font-bold uppercase tracking-wider text-violet-500">BioClip Classifier</span>
+              {bioclipConf !== undefined && bioclipConf > 0 && (
+                <span className="text-[9px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
+              )}
+            </div>
+            {bcResults.map(([s, c], i) => (
+              <div key={`bc-${i}`} className="flex items-center gap-1.5 text-[10px]">
+                <span className="text-slate-400 w-3 shrink-0 text-center">{i + 1}.</span>
+                <span className="flex-1 font-medium text-slate-700 truncate">{s}</span>
+                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
+                </div>
+                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* SpeciesNet ranked predictions */}
+        {isAnimal && snResults.length > 0 && (
+          <div className="p-2.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[8px] font-bold uppercase tracking-wider text-teal-500">SpeciesNet</span>
+              {speciesnetConf !== undefined && speciesnetConf > 0 && (
+                <span className="text-[9px] font-mono text-teal-500">{Math.round(speciesnetConf * 100)}% top</span>
+              )}
+            </div>
+            {snResults.map(([s, c], i) => {
+              let label = String(s);
+              let scientific = "";
+              if (label.startsWith("{")) {
+                try {
+                  const p = JSON.parse(label);
+                  label = p.common_name || label;
+                  scientific = p.scientific_name || "";
+                } catch {}
+              }
+              return (
+                <div key={`sn-${i}`} className="flex items-start gap-1.5 text-[10px]">
+                  <span className="text-slate-400 w-3 shrink-0 text-center mt-0.5">{i + 1}.</span>
+                  <div className="flex-1 min-w-0">
+                    <span className="font-medium text-slate-700 block truncate">{label}</span>
+                    {scientific && <span className="text-[9px] italic text-slate-400 block truncate">{scientific}</span>}
+                  </div>
+                  <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0 mt-1.5">
+                    <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
+                  </div>
+                  <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Fusion final result */}
+        {bd?.Fusion && (
+          <div className="p-2.5 bg-slate-50/60 flex items-center justify-between gap-2">
+            <div>
+              <span className="text-[8px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Final Fusion</span>
+              <span className="text-xs font-bold text-slate-800">{bd.Fusion.species}</span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] font-mono text-slate-600">{Math.round((bd.Fusion.confidence ?? 0) * 100)}%</span>
+              <AgreementBadge level={agreement} />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -182,7 +278,7 @@ function DetailViewport({
       <svg
         className="absolute inset-0 w-full h-full pointer-events-none"
         viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
-        preserveAspectRatio="xMidYMid meet"
+        preserveAspectRatio="none"
       >
         <rect
           x={rx}
@@ -247,8 +343,11 @@ function DetailViewport({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        className={`relative max-w-full max-h-full aspect-video ${isDrawing ? "cursor-crosshair" : ""}`}
-        style={{ width: imgNatural ? "auto" : "100%", height: imgNatural ? "100%" : "auto" }}
+        className={`relative ${isDrawing ? "cursor-crosshair" : ""}`}
+        style={imgNatural
+          ? { aspectRatio: `${imgNatural.w} / ${imgNatural.h}`, maxHeight: "100%", maxWidth: "100%" }
+          : { width: "100%", height: "100%" }
+        }
       >
         {imgError ? (
           <div className="w-full h-full flex items-center justify-center text-slate-600 bg-slate-950">
@@ -259,7 +358,7 @@ function DetailViewport({
             <img
               src={storedImageUrl(filename)}
               alt={filename}
-              className="w-auto h-full object-contain block max-w-full select-none"
+              className="w-full h-full block select-none"
               onLoad={(e) => {
                 const img = e.currentTarget as HTMLImageElement;
                 setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
@@ -407,76 +506,7 @@ function DetailSidebar({
           )}
         </div>
 
-        {/* Model Performance */}
-        <div className="space-y-1.5">
-          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Performance</span>
-          <div className="border border-slate-100 rounded-xl p-3 space-y-2 bg-slate-50/30">
-            <ModelBreakdown
-              method={String(row.detection_method ?? "")}
-              bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
-              speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
-              agreement={row.agreement as string | null}
-              detected={species}
-            />
-            {/* BioClip top result */}
-            {(() => {
-              let bd: Record<string, any> | null = null;
-              try {
-                if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown as string);
-                else if (row.model_breakdown) bd = row.model_breakdown as Record<string, any>;
-              } catch {}
-              if (!bd) return null;
-              const bcTop: [string, number][] = (bd.BioClip ?? []).slice(0, 1);
-              const snTop: [string, number][] = (bd.SpeciesNet ?? []).slice(0, 1);
-              if (!bcTop.length && !snTop.length) return null;
-              return (
-                <div className="space-y-1 pt-1 border-t border-slate-100">
-                  {bcTop.map(([s, c], i) => (
-                    <div key={`bc-${i}`} className="flex items-center justify-between text-[10px]">
-                      <span className="text-slate-400">BioClip top</span>
-                      <span className="font-semibold text-violet-700 truncate max-w-[120px]">{s} <span className="text-slate-400 font-normal">{Math.round(c * 100)}%</span></span>
-                    </div>
-                  ))}
-                  {snTop.map(([s, c], i) => {
-                    let label = String(s);
-                    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
-                    return (
-                      <div key={`sn-${i}`} className="flex items-center justify-between text-[10px]">
-                        <span className="text-slate-400">SpeciesNet top</span>
-                        <span className="font-semibold text-teal-700 truncate max-w-[120px]">{label} <span className="text-slate-400 font-normal">{Math.round(c * 100)}%</span></span>
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
-          </div>
-        </div>
-
-        {/* Model Suggestions (candidates) — visible in idle mode */}
-        {mode === "idle" && (() => {
-          const candidates = getCandidates(row);
-          if (candidates.length === 0) return null;
-          return (
-            <div className="space-y-1.5">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Suggestions</span>
-              <div className="border border-slate-100 rounded-xl overflow-hidden bg-white">
-                {candidates.map((c, ci) => (
-                  <div key={ci} className="flex items-center gap-2 px-2.5 py-1.5 border-b last:border-b-0 border-slate-100 text-[10px]">
-                    <span className="truncate flex-1 font-medium text-slate-700">{c.label}</span>
-                    <div className="w-12 h-1 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                      <div className="h-1 bg-teal-400 rounded-full" style={{ width: `${Math.round(c.conf * 100)}%` }} />
-                    </div>
-                    <span className="font-mono text-slate-400 shrink-0 w-6 text-right">{Math.round(c.conf * 100)}%</span>
-                    <span className={`text-[8px] font-bold px-1 py-0.5 rounded shrink-0 ${c.source === "BioClip" ? "bg-violet-100 text-violet-600" : "bg-teal-100 text-teal-600"}`}>
-                      {c.source === "BioClip" ? "BC" : "SN"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
+        <FullModelBreakdown row={row} detected={species} />
 
         <div className="pt-1 border-t border-slate-100">
           {mode === "idle" ? (

@@ -956,6 +956,7 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
           speciesnetConf={typeof bestRow.speciesnet_confidence === "number" ? bestRow.speciesnet_confidence as number : undefined}
           agreement={bestRow.agreement as string | null}
           detected={String(bestRow.detected_animal ?? "")}
+          modelBreakdown={bestRow.model_breakdown}
         />
       </div>
     </div>
