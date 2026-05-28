@@ -122,6 +122,7 @@ class ImageProcessor:
                     row['bioclip_confidence'] = det.get('bioclip_confidence', 0.0)
                     row['speciesnet_confidence'] = det.get('speciesnet_confidence', 0.0)
                     row['agreement'] = det.get('agreement')
+                    row['model_breakdown'] = det.get('model_breakdown')
                     if '_model_events' in det:
                         row['_model_events'] = det['_model_events']
                     final_results.append(row)
