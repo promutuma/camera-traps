@@ -2,11 +2,14 @@
 
 import io
 import json
+import logging
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from backend.models.state import AppState
 from backend.routers.deps import get_state
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/exports", tags=["exports"])
 
@@ -16,6 +19,22 @@ def export_darwin_core(state: AppState = Depends(get_state)):
     """Export camera trap data formatted to the Darwin Core Standard (CSV)."""
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="Database manager not ready")
+
+    # Mark detections as exported
+    try:
+        conn = state.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id FROM detections
+            WHERE is_exported = 0 AND detected_animal IS NOT NULL
+        ''')
+        detection_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        if detection_ids:
+            state.db_manager.mark_exports_as_exported(detection_ids, 'darwin_core')
+    except Exception as e:
+        logger.warning(f"Could not mark detections as exported: {e}")
 
     conn = state.db_manager.get_connection()
     try:
@@ -68,6 +87,22 @@ def export_wildlife_insights(state: AppState = Depends(get_state)):
     """Export camera trap data matching the Wildlife Insights batch upload schema (JSON)."""
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="Database manager not ready")
+
+    # Mark detections as exported
+    try:
+        conn = state.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id FROM detections
+            WHERE is_exported = 0 AND detected_animal IS NOT NULL
+        ''')
+        detection_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        if detection_ids:
+            state.db_manager.mark_exports_as_exported(detection_ids, 'wildlife_insights')
+    except Exception as e:
+        logger.warning(f"Could not mark detections as exported: {e}")
 
     conn = state.db_manager.get_connection()
     try:

@@ -21,7 +21,7 @@ from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
 from .bioclip_classifier import BioClipClassifier
-from .ensemble_engine import nms_merge_detections, fuse_species
+from .ensemble_engine import nms_merge_detections, fuse_species, fuse_species_speciesnet_first
 
 # MegaDetector (Official Package)
 try:
@@ -213,6 +213,7 @@ class AnimalDetector:
         bioclip_weight: float = 0.05,
         speciesnet_weight: float = 0.95,
         speciesnet_bypass_threshold: float = 0.60,
+        use_speciesnet_first: bool = True,  # NEW: SpeciesNet as primary, returns ALL outputs
     ):
         self.megadetector = megadetector
         self.bioclip = bioclip
@@ -220,6 +221,7 @@ class AnimalDetector:
         self._bioclip_weight = bioclip_weight
         self._speciesnet_weight = speciesnet_weight
         self._speciesnet_bypass_threshold = speciesnet_bypass_threshold
+        self._use_speciesnet_first = use_speciesnet_first
 
         if self.megadetector:
             self.megadetector.set_confidence_threshold(confidence_threshold)
@@ -417,15 +419,23 @@ class AnimalDetector:
                     "top5": [[s, round(c, 3)] for s, c in sn_results[:5]],
                 } if sn_results else {"model": "SpeciesNet", "top5": [], "skipped": True}
 
-                # Stage 2b: Fuse (night weights + full taxonomy for agreement)
-                fusion = fuse_species(
-                    bc_results,
-                    sn_results,
-                    weights=(self._bioclip_weight, self._speciesnet_weight),
-                    is_night=is_night,
-                    bioclip_taxonomy=bc_taxonomy,
-                    speciesnet_bypass_threshold=self._speciesnet_bypass_threshold,
-                )
+                # Stage 2b: Fuse - SpeciesNet-first or traditional fusion
+                if self._use_speciesnet_first:
+                    # SpeciesNet PRIMARY: returns ALL outputs, no BioClip weighting
+                    fusion = fuse_species_speciesnet_first(
+                        sn_results,
+                        bioclip=bc_results,
+                    )
+                else:
+                    # Traditional: weighted fusion of BioClip + SpeciesNet
+                    fusion = fuse_species(
+                        bc_results,
+                        sn_results,
+                        weights=(self._bioclip_weight, self._speciesnet_weight),
+                        is_night=is_night,
+                        bioclip_taxonomy=bc_taxonomy,
+                        speciesnet_bypass_threshold=self._speciesnet_bypass_threshold,
+                    )
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]
                 agreement = fusion["agreement"]

@@ -28,6 +28,7 @@ const NAV_GROUPS = [
       { path: "/community", label: "Community", icon: "group" },
       { path: "/spatial", label: "Spatial & Map", icon: "map" },
       { path: "/species", label: "Species Library", icon: "menu_book" },
+      { path: "/storage", label: "Storage Management", icon: "storage" },
     ],
   },
   {

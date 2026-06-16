@@ -16,6 +16,7 @@ import SpeciesLibrary from "./pages/SpeciesLibrary";
 import Corridor from "./pages/Corridor";
 import ProjectConfig from "./pages/ProjectConfig";
 import ArcGIS from "./pages/ArcGIS";
+import Storage from "./pages/Storage";
 
 function wrap(label: string, element: React.ReactElement) {
   return <ErrorBoundary label={label}>{element}</ErrorBoundary>;
@@ -44,6 +45,7 @@ export default function App() {
               <Route path="/corridor"     element={wrap("Corridor",        <Corridor />)} />
               <Route path="/project"      element={wrap("Project Config",  <ProjectConfig />)} />
               <Route path="/arcgis"       element={wrap("ArcGIS",          <ArcGIS />)} />
+              <Route path="/storage"      element={wrap("Storage",         <Storage />)} />
             </Routes>
           </main>
         </div>

@@ -36,6 +36,9 @@ class AppConfig:
     speciesnet_weight: float = 0.95
     # Bypass fusion and use SpeciesNet directly when its top confidence >= this (0 = disabled)
     speciesnet_bypass_threshold: float = 0.60
+    # NEW: Use SpeciesNet as PRIMARY classifier, disable BioClip entirely
+    # Returns ALL SpeciesNet outputs instead of just top-5
+    use_speciesnet_first: bool = True
 
 
 @dataclass
@@ -51,6 +54,7 @@ class AppState:
 
     # Service objects
     db_manager: Optional[Any] = None
+    file_manager: Optional[Any] = None
     station_manager: Optional[Any] = None
     review_engine: Optional[Any] = None
     scrubber: Optional[Any] = None

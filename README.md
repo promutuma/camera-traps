@@ -2,7 +2,9 @@
 
 A **FastAPI + React platform** for automated analysis of wildlife camera trap images, designed for the **Gambella Wetland Landscape Baseline Survey** and similar conservation programmes.
 
-The system runs a full multi-model AI ensemble pipeline — OCR metadata extraction, parallel animal detection (**MegaDetector V5a + V1000**), species identification (**BioCLIP + SpeciesNet**), taxonomy-aware detection fusion, independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard with real-time per-model output streaming.
+The system runs a full multi-model AI ensemble pipeline — OCR metadata extraction, parallel animal detection (**MegaDetector V5a + V1000**), species identification with **SpeciesNet-First mode** (returning all 50-100+ candidate species, not just top-5), taxonomy-aware detection fusion, independent detection event (IDE) computation, QC flagging, privacy scrubbing, and spatial export — all through a modern browser-based dashboard with real-time per-model output streaming.
+
+**SpeciesNet-First mode is the default**, prioritizing Google's 65M-image camera trap classifier over generic BioCLIP names ("African Lion" instead of "cat"). See [SPECIESNET_FIRST_CONFIG.md](SPECIESNET_FIRST_CONFIG.md) for configuration options.
 
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.111+-green)
 ![React](https://img.shields.io/badge/React-19-blue)
@@ -165,7 +167,22 @@ If credentials are absent, SpeciesNet logs a warning at startup and the pipeline
 | **Taxonomy output** | Full path with genus/family/order | Full path via label hierarchy |
 | **Best for** | Unusual or rare species, taxonomic fallback, cross-checking | High-volume common species ID, blank filtering |
 
-**Design implication:** SpeciesNet is the dominant species signal (95% default weight). BioCLIP contributes a 5% minority vote as a zero-shot cross-check and provides the taxonomic path used for agreement scoring — particularly valuable when SpeciesNet encounters a rare or out-of-distribution species. Both weights are configurable in the sidebar.
+**Design implication:** By default, **SpeciesNet-First mode is enabled** — SpeciesNet predictions are used directly (100% weight, no BioCLIP weighting), and ALL candidate species (50-100+) are returned ranked by confidence, instead of just top-5.
+
+BioCLIP is kept for agreement scoring only, particularly valuable when SpeciesNet encounters a rare or out-of-distribution species.
+
+**Configuration options:**
+- **SpeciesNet-First (Recommended, DEFAULT):** Pure SpeciesNet predictions, all candidates returned
+  - Better accuracy (~92% on camera trap data)
+  - Complete species rankings for advanced filtering
+  - No generic names like "cat" or "dog" (BioClip issue)
+  
+- **Traditional Fusion (Legacy):** Weighted fusion (95% SpeciesNet + 5% BioCLIP), top-5 only
+  - Set `use_speciesnet_first: false` in config to revert
+  - Smaller database footprint (~500 bytes vs ~2-5 KB per detection)
+  - Used when backwards compatibility is critical
+
+See [SPECIESNET_FIRST_CONFIG.md](SPECIESNET_FIRST_CONFIG.md) for detailed configuration.
 
 ---
 
@@ -193,9 +210,16 @@ The pipeline runs a two-stage ensemble architecture:
 │    → SpeciesNet classify_crop()  → label JSON with          │
 │                                    common_name + hierarchy  │
 │                                                             │
-│  Fusion (day):   0.05 × BioCLIP + 0.95 × SpeciesNet        │
-│  Fusion (night): 0.02 × BioCLIP + 0.98 × SpeciesNet        │
-│  Bypass: if SpeciesNet top ≥ threshold → skip fusion        │
+│  MODE 1 (DEFAULT - SpeciesNet-First):                       │
+│    Use SpeciesNet ONLY (100% weight, no BioCLIP weighting) │
+│    Return ALL candidates (50-100+), not just top-5         │
+│    BioCLIP used for agreement scoring only                 │
+│                                                             │
+│  MODE 2 (Legacy - Traditional Fusion):                      │
+│    Fusion (day):   0.05 × BioCLIP + 0.95 × SpeciesNet      │
+│    Fusion (night): 0.02 × BioCLIP + 0.98 × SpeciesNet      │
+│    Return top-5 only                                        │
+│    Set use_speciesnet_first: false to enable               │
 │                                                             │
 │  Agreement bonus (taxonomy-aware):                          │
 │    +0.08 if BioCLIP genus appears in SpeciesNet hierarchy   │
@@ -258,6 +282,37 @@ BioCLIP's `predict_taxonomy()` computes two independent signals in a single forw
 - Family-level scoring against 31 family text prompts (e.g. `"a photo of a wild cat such as a lion, leopard, cheetah…"`)
 
 The family-level prediction serves as an independent cross-check — if both the species prediction and the independent family prediction map to the same family as SpeciesNet's hierarchy, agreement is elevated to Medium even if species labels differ.
+
+---
+
+### SpeciesNet-First Mode (DEFAULT)
+
+As of the latest release, **SpeciesNet is the primary classifier** with two fusion modes available:
+
+**Mode 1: SpeciesNet-First (Recommended, enabled by default)**
+- Uses SpeciesNet predictions exclusively (100% weight)
+- Returns ALL candidate species (typically 50-100+) ranked by confidence
+- BioCLIP is kept for agreement scoring only
+- Eliminates generic names like "cat" or "dog" that BioCLIP produces
+- ~92% accuracy on camera trap data
+- Better for advanced filtering and research applications
+
+**Mode 2: Traditional Fusion (Legacy)**
+- Weighted combination: 95% SpeciesNet + 5% BioCLIP
+- Returns only top-5 candidates
+- Smaller database footprint (~500 bytes vs ~2-5 KB per detection)
+- Useful for backwards compatibility with older systems
+- To enable: Set `use_speciesnet_first: false` in configuration
+
+**Switching modes:**
+
+In AppConfig (backend/models/state.py):
+```python
+use_speciesnet_first = True   # SpeciesNet-First (default)
+use_speciesnet_first = False  # Traditional Fusion (legacy)
+```
+
+For detailed configuration options and migration guide, see [SPECIESNET_FIRST_CONFIG.md](SPECIESNET_FIRST_CONFIG.md).
 
 ---
 

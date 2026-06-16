@@ -86,7 +86,7 @@ def _safe_filename(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 @router.post("/upload")
-async def upload_images(files: List[UploadFile] = File(...)):
+async def upload_images(files: List[UploadFile] = File(...), state: AppState = Depends(get_state)):
     """Save uploaded files; return job_id immediately so SSE can attach."""
     job = job_manager.create()
     temp_dir = tempfile.mkdtemp()
@@ -183,6 +183,7 @@ def _run_processing(job_id: str, state: AppState) -> None:
                 bioclip_weight=cfg.bioclip_weight,
                 speciesnet_weight=cfg.speciesnet_weight,
                 speciesnet_bypass_threshold=cfg.speciesnet_bypass_threshold,
+                use_speciesnet_first=cfg.use_speciesnet_first,
             )
 
             processor = ImageProcessor(
@@ -260,6 +261,46 @@ def _run_processing(job_id: str, state: AppState) -> None:
                 df = pd.DataFrame(results)
                 try:
                     state.db_manager.save_results(df)
+
+                    # Update file info and tier classification
+                    if state.file_manager:
+                        for idx, result in enumerate(results):
+                            filename = result.get("filename")
+                            detected_animal = result.get("detected_animal", "")
+                            confidence = result.get("detection_confidence", 0.0)
+
+                            # Classify tier: empty if no animal, low_conf if 0.2-0.4, valid if >0.4
+                            # Treat Person/Vehicle as "empty" for storage purposes (not wildlife)
+                            is_person_or_vehicle = detected_animal and (
+                                detected_animal.lower() in ("person", "vehicle", "human")
+                                or "person" in detected_animal.lower()
+                                or "vehicle" in detected_animal.lower()
+                            )
+
+                            if is_person_or_vehicle or not detected_animal or confidence == 0:
+                                has_animal = False  # Tier: empty
+                            else:
+                                has_animal = confidence > 0.4  # Tier: valid or low_conf
+
+                            try:
+                                conn = state.db_manager.get_connection()
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "SELECT id FROM images WHERE filename = ? ORDER BY id DESC LIMIT 1",
+                                    (filename,),
+                                )
+                                img_result = cursor.fetchone()
+                                conn.close()
+
+                                if img_result:
+                                    image_id = img_result[0]
+                                    file_path = str(UPLOADS_DIR / filename)
+                                    state.file_manager.update_image_with_file_info(
+                                        image_id, file_path, has_animal
+                                    )
+                            except Exception as info_exc:
+                                logger.warning(f"Could not update file info for {filename}: {info_exc}")
+
                 except Exception as db_exc:
                     logger.error("Failed to persist results to DB for job %s: %s", job_id, db_exc)
 

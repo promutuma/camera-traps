@@ -71,6 +71,7 @@ from backend.routers import (
     project as project_router,
     arcgis as arcgis_router,
     exports as exports_router,
+    storage as storage_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
     from core.arcgis_sync import ArcGISSync
     from core.independence_engine import IndependenceEngine
     from core.qc_engine import QCEngine
+    from backend.services.file_manager import FileManager
 
     cfg = state.config
 
@@ -150,6 +152,10 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
 
     db_path = os.environ.get("DB_PATH", "wildlife_data.db")
     state.db_manager = DatabaseManager(db_path)
+
+    uploads_dir = Path(db_path).parent / "uploads"
+    state.file_manager = FileManager(uploads_dir, state.db_manager)
+
     state.station_manager = StationManager(db_path)
     state.review_engine = ReviewEngine(db_path)
     state.scrubber = PrivacyScrubber(blur_strength=cfg.blur_strength)
@@ -170,6 +176,19 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
 # Lifespan — load all models once at startup (off the event loop)
 # ---------------------------------------------------------------------------
 
+def _cleanup_expired_files(state: AppState) -> None:
+    """Background cleanup: delete empty images and marked files."""
+    if not state.file_manager:
+        return
+
+    try:
+        logger.info("Running scheduled file cleanup...")
+        result = state.file_manager.cleanup_empty_images(dry_run=False)
+        logger.info(f"Cleanup result: {result}")
+    except Exception as e:
+        logger.warning(f"Cleanup failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state: AppState = app.state.app_state
@@ -180,8 +199,30 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         state.models_error = str(exc)
         logger.exception("Failed to load models: %s", exc)
+
+    # Start background cleanup task (runs every hour)
+    cleanup_task = asyncio.create_task(_schedule_cleanup(state))
+
     yield
+
     logger.info("Shutting down.")
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _schedule_cleanup(state: AppState) -> None:
+    """Run cleanup every hour."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Run every hour
+            await asyncio.to_thread(_cleanup_expired_files, state)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Cleanup task error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +271,7 @@ def create_app() -> FastAPI:
     application.include_router(project_router.router, prefix=prefix)
     application.include_router(arcgis_router.router, prefix=prefix)
     application.include_router(exports_router.router, prefix=prefix)
+    application.include_router(storage_router.router, prefix=prefix)
 
     # Serve built React app in production
     dist_path = Path(__file__).parent.parent / "frontend" / "dist"

@@ -32,7 +32,16 @@ class DatabaseManager:
                 temperature TEXT,
                 day_night TEXT,
                 brightness REAL,
-                user_notes TEXT
+                user_notes TEXT,
+                file_hash TEXT UNIQUE,
+                file_size_bytes INTEGER,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                has_animal BOOLEAN DEFAULT 0,
+                file_tier TEXT DEFAULT 'valid',
+                file_status TEXT DEFAULT 'available',
+                marked_for_deletion_at TIMESTAMP,
+                deleted_at TIMESTAMP,
+                can_delete BOOLEAN DEFAULT 1
             )
         ''')
 
@@ -49,6 +58,8 @@ class DatabaseManager:
                 bioclip_confidence REAL DEFAULT 0.0,
                 speciesnet_confidence REAL DEFAULT 0.0,
                 agreement TEXT,
+                is_exported BOOLEAN DEFAULT 0,
+                exported_at TIMESTAMP,
                 FOREIGN KEY (image_id) REFERENCES images (id)
             )
         ''')
@@ -83,9 +94,58 @@ class DatabaseManager:
             )
         ''')
 
+        # Downloads audit table — track all downloads
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS downloads_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                download_id TEXT UNIQUE NOT NULL,
+                download_type TEXT,
+                image_count INTEGER,
+                total_size_bytes INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP,
+                status TEXT DEFAULT 'preparing',
+                error_message TEXT,
+                file_hash TEXT
+            )
+        ''')
+
+        # Download image mappings — which images were in which download
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS download_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                download_id TEXT,
+                image_id INTEGER,
+                FOREIGN KEY (download_id) REFERENCES downloads_audit(download_id),
+                FOREIGN KEY (image_id) REFERENCES images(id)
+            )
+        ''')
+
+        # Exports table — track exports of results
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS exports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                export_id TEXT UNIQUE NOT NULL,
+                export_type TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                image_count INTEGER,
+                detection_count INTEGER,
+                exported_detection_ids TEXT
+            )
+        ''')
+
         # Add new columns to existing tables if this is a schema migration
         self._migrate_columns(cursor, "images", [
             ("station_id", "TEXT DEFAULT 'Station-1'"),
+            ("file_hash", "TEXT UNIQUE"),
+            ("file_size_bytes", "INTEGER"),
+            ("uploaded_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("has_animal", "BOOLEAN DEFAULT 0"),
+            ("file_tier", "TEXT DEFAULT 'valid'"),
+            ("file_status", "TEXT DEFAULT 'available'"),
+            ("marked_for_deletion_at", "TIMESTAMP"),
+            ("deleted_at", "TIMESTAMP"),
+            ("can_delete", "BOOLEAN DEFAULT 1"),
         ])
         self._migrate_columns(cursor, "detections", [
             ("ide_id", "TEXT"),
@@ -93,6 +153,8 @@ class DatabaseManager:
             ("speciesnet_confidence", "REAL DEFAULT 0.0"),
             ("agreement", "TEXT"),
             ("model_breakdown", "TEXT"),
+            ("is_exported", "BOOLEAN DEFAULT 0"),
+            ("exported_at", "TIMESTAMP"),
         ])
 
         conn.commit()
@@ -227,6 +289,71 @@ class DatabaseManager:
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------
+
+    def delete_detection(self, detection_id: int):
+        """Delete a detection record. If it's the last detection for an image, mark image for deletion."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Get the image_id for this detection
+            cursor.execute('SELECT image_id FROM detections WHERE id = ?', (detection_id,))
+            result = cursor.fetchone()
+            if not result:
+                return False
+
+            image_id = result[0]
+
+            # Delete the detection
+            cursor.execute('DELETE FROM detections WHERE id = ?', (detection_id,))
+
+            # Check if this image has any remaining detections
+            cursor.execute('SELECT COUNT(*) FROM detections WHERE image_id = ?', (image_id,))
+            remaining = cursor.fetchone()[0]
+
+            # If no detections left, mark image for deletion
+            if remaining == 0:
+                cursor.execute('''
+                    UPDATE images SET marked_for_deletion_at = CURRENT_TIMESTAMP
+                    WHERE id = ? AND marked_for_deletion_at IS NULL
+                ''', (image_id,))
+
+            conn.commit()
+            return True
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
+
+    def delete_detections_batch(self, detection_ids: list) -> int:
+        """Delete multiple detections. Returns count deleted."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        deleted_count = 0
+        try:
+            for det_id in detection_ids:
+                cursor.execute('SELECT image_id FROM detections WHERE id = ?', (det_id,))
+                result = cursor.fetchone()
+                if result:
+                    image_id = result[0]
+                    cursor.execute('DELETE FROM detections WHERE id = ?', (det_id,))
+                    deleted_count += cursor.rowcount
+
+                    # Mark image for deletion if no detections remain
+                    cursor.execute('SELECT COUNT(*) FROM detections WHERE image_id = ?', (image_id,))
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute('''
+                            UPDATE images SET marked_for_deletion_at = CURRENT_TIMESTAMP
+                            WHERE id = ? AND marked_for_deletion_at IS NULL
+                        ''', (image_id,))
+
+            conn.commit()
+            return deleted_count
+        except Exception as e:
+            conn.rollback()
+            raise e
+        finally:
+            conn.close()
 
     def update_detection(self, detection_id: int, fields: dict):
         """Update a single detection row and/or its parent image row."""
@@ -405,6 +532,308 @@ class DatabaseManager:
         except Exception as exc:
             print(f"Warning: could not load jobs: {exc}")
             return []
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # File Management
+    # ------------------------------------------------------------------
+
+    def update_image_file_info(self, image_id: int, file_hash: str, file_size_bytes: int, has_animal: bool, file_tier: str = 'valid'):
+        """Update image with file metadata and tier classification."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE images SET file_hash = ?, file_size_bytes = ?, has_animal = ?, file_tier = ?, uploaded_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (file_hash, file_size_bytes, has_animal, file_tier, image_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_images_by_tier(self, tier: str, limit: int = 1000, offset: int = 0):
+        """Get images by file tier (empty, low_conf, valid)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                SELECT id, filename, file_size_bytes, file_status, uploaded_at
+                FROM images
+                WHERE file_tier = ? AND file_status = 'available'
+                ORDER BY uploaded_at DESC
+                LIMIT ? OFFSET ?
+            ''', (tier, limit, offset))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def get_storage_stats(self):
+        """Get storage breakdown by tier."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                SELECT
+                    file_tier,
+                    COUNT(*) as count,
+                    SUM(COALESCE(file_size_bytes, 0)) as total_bytes,
+                    MIN(uploaded_at) as oldest_upload
+                FROM images
+                WHERE file_status = 'available'
+                GROUP BY file_tier
+            ''')
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def mark_for_deletion(self, image_id: int):
+        """Mark image for deletion (starts grace period)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE images SET marked_for_deletion_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (image_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_image_file(self, image_id: int):
+        """Mark image as deleted in database."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE images SET file_status = 'deleted', deleted_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (image_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_deletable_images(self, tier: str, days_old: int = 7):
+        """Get images eligible for deletion (old enough, marked for deletion)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'''
+                SELECT id, filename, file_size_bytes
+                FROM images
+                WHERE file_tier = ?
+                  AND file_status = 'available'
+                  AND can_delete = 1
+                  AND datetime(marked_for_deletion_at) < datetime('now', '-{days_old} days')
+            ''', (tier,))
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def get_images_for_deletion_warning(self, days_until_deletion: int = 3):
+        """Get images about to be deleted (for user warnings)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'''
+                SELECT id, filename, marked_for_deletion_at
+                FROM images
+                WHERE file_status = 'available'
+                  AND marked_for_deletion_at IS NOT NULL
+                  AND datetime(marked_for_deletion_at) > datetime('now', '-{days_until_deletion} days')
+                  AND file_tier IN ('empty', 'low_conf')
+            ''')
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Downloads & Exports
+    # ------------------------------------------------------------------
+
+    def create_download(self, download_id: str, download_type: str, image_ids: list, total_size_bytes: int):
+        """Create a download record and link images."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                INSERT INTO downloads_audit (download_id, download_type, image_count, total_size_bytes, status)
+                VALUES (?, ?, ?, ?, 'preparing')
+            ''', (download_id, download_type, len(image_ids), total_size_bytes))
+
+            for image_id in image_ids:
+                cursor.execute('''
+                    INSERT INTO download_images (download_id, image_id)
+                    VALUES (?, ?)
+                ''', (download_id, image_id))
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    def complete_download(self, download_id: str, file_hash: str = None):
+        """Mark download as completed."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE downloads_audit
+                SET status = 'completed', completed_at = CURRENT_TIMESTAMP, file_hash = ?
+                WHERE download_id = ?
+            ''', (file_hash, download_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def mark_exports_as_exported(self, detection_ids: list, export_type: str):
+        """Mark detections as exported."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            for det_id in detection_ids:
+                cursor.execute('''
+                    UPDATE detections
+                    SET is_exported = 1, exported_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                ''', (det_id,))
+
+            cursor.execute('''
+                INSERT INTO exports (export_type, image_count, detection_count, exported_detection_ids)
+                VALUES (?, ?, ?, ?)
+            ''', (export_type, 0, len(detection_ids), json.dumps(detection_ids)))
+
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Hash Management (for performance optimization)
+    # ------------------------------------------------------------------
+
+    def get_hash_stats(self):
+        """Get hash statistics for storage optimization."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                SELECT
+                    COUNT(*) as total_images,
+                    SUM(CASE WHEN file_hash IS NOT NULL THEN 1 ELSE 0 END) as with_hashes,
+                    SUM(CASE WHEN file_hash IS NULL THEN 1 ELSE 0 END) as without_hashes,
+                    COUNT(DISTINCT file_hash) as unique_hashes
+                FROM images
+            ''')
+            result = cursor.fetchone()
+            if result:
+                return {
+                    "total_images": result[0],
+                    "with_hashes": result[1],
+                    "without_hashes": result[2],
+                    "unique_hashes": result[3],
+                }
+            return {"total_images": 0, "with_hashes": 0, "without_hashes": 0, "unique_hashes": 0}
+        finally:
+            conn.close()
+
+    def clear_hashes_by_tier(self, tier: str):
+        """Clear file hashes for a specific tier (reduces processing time)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE images SET file_hash = NULL
+                WHERE file_tier = ?
+            ''', (tier,))
+            count = cursor.rowcount
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def clear_hashes_by_status(self, status: str):
+        """Clear file hashes for images with specific status (deleted, archived)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                UPDATE images SET file_hash = NULL
+                WHERE file_status = ?
+            ''', (status,))
+            count = cursor.rowcount
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def clear_old_hashes(self, days_old: int = 30):
+        """Clear hashes for old images (older than N days)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f'''
+                UPDATE images SET file_hash = NULL
+                WHERE datetime(uploaded_at) < datetime('now', '-{days_old} days')
+            ''')
+            count = cursor.rowcount
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def clear_duplicate_hashes(self):
+        """Clear hashes for duplicate images (keep only first occurrence of each hash)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            # Find duplicate hashes
+            cursor.execute('''
+                SELECT file_hash, MIN(id) as keep_id
+                FROM images
+                WHERE file_hash IS NOT NULL
+                GROUP BY file_hash
+                HAVING COUNT(*) > 1
+            ''')
+            duplicates = cursor.fetchall()
+
+            cleared = 0
+            for file_hash, keep_id in duplicates:
+                cursor.execute('''
+                    UPDATE images SET file_hash = NULL
+                    WHERE file_hash = ? AND id != ?
+                ''', (file_hash, keep_id))
+                cleared += cursor.rowcount
+
+            conn.commit()
+            return cleared
+        finally:
+            conn.close()
+
+    def clear_all_hashes(self):
+        """Clear all file hashes (maximum performance gain)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('UPDATE images SET file_hash = NULL')
+            count = cursor.rowcount
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+
+    def find_duplicate_files(self):
+        """Find duplicate files by hash (shows which images could be deduplicated)."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute('''
+                SELECT file_hash, COUNT(*) as count, GROUP_CONCAT(id) as image_ids
+                FROM images
+                WHERE file_hash IS NOT NULL
+                GROUP BY file_hash
+                HAVING count > 1
+                ORDER BY count DESC
+            ''')
+            return cursor.fetchall()
         finally:
             conn.close()
 

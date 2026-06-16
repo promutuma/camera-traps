@@ -20,6 +20,7 @@ _AGREEMENT_BONUS = 0.08
 # BioClip is a general CLIP model not trained on camera-trap imagery, so we
 # trust it less than SpeciesNet for this domain.
 _DEFAULT_WEIGHTS: Tuple[float, float] = (0.05, 0.95)
+_SPECIESNET_FIRST_WEIGHTS: Tuple[float, float] = (0.0, 1.0)  # SpeciesNet only (BioClip disabled)
 
 # Night-time weights: SpeciesNet was explicitly trained on nocturnal/IR camera
 # trap images; BioCLIP has no such specialisation and is nearly blind to IR.
@@ -344,4 +345,73 @@ def fuse_species(
             (name_map.get(k, k.title()), round(v, 4))
             for k, v in ranked[:5]
         ],
+    }
+
+
+def fuse_species_speciesnet_first(
+    speciesnet: List[Tuple[str, float]],
+    bioclip: Optional[List[Tuple[str, float]]] = None,
+    speciesnet_bypass_threshold: float = 0.0,
+) -> Dict:
+    """
+    SpeciesNet-first fusion: returns ALL SpeciesNet outputs, no BioClip weighting.
+
+    This is the recommended approach since:
+    - SpeciesNet trained on 65M camera-trap images (domain-specific)
+    - BioClip is a general CLIP model (outputs generic names: "cat", "dog", etc.)
+    - SpeciesNet outputs precise species names with taxonomy
+
+    Parameters
+    ----------
+    speciesnet : list of ALL (label, confidence) from SpeciesNet
+    bioclip    : optional, for agreement scoring only (not used in weighting)
+    speciesnet_bypass_threshold : ignored (always use SpeciesNet)
+
+    Returns
+    -------
+    dict with:
+      - species: top SpeciesNet prediction
+      - confidence: SpeciesNet top-1 confidence
+      - agreement: Low (we're bypassing BioClip)
+      - speciesnet_top: top SpeciesNet prediction
+      - all_candidates: ALL SpeciesNet outputs (not just top-5)
+      - bioclip_top: None (not used)
+    """
+    if not speciesnet:
+        return {
+            "species": "Unknown",
+            "confidence": 0.0,
+            "agreement": "Low",
+            "bioclip_top": None,
+            "speciesnet_top": None,
+            "all_candidates": [],
+        }
+
+    def _display(label: str) -> str:
+        """Extract human-readable name from SpeciesNet JSON label."""
+        meta = _parse_snet_meta(label)
+        return meta.get("display") or meta.get("common_name") or label.strip()
+
+    # Top prediction from SpeciesNet
+    sn_top_raw = speciesnet[0]
+    sn_display = _display(sn_top_raw[0])
+    sn_confidence = sn_top_raw[1]
+
+    # Agreement score: check if BioClip agrees (optional)
+    agreement = "Low"  # We're not weighting BioClip
+    if bioclip and bioclip[0]:
+        bc_top_name = bioclip[0][0]
+        sn_meta = _parse_snet_meta(sn_top_raw[0])
+        agreement = _taxonomy_agreement(bc_top_name, sn_meta)
+
+    # Return ALL SpeciesNet outputs, not just top-5
+    all_candidates = [(_display(label), round(conf, 4)) for label, conf in speciesnet]
+
+    return {
+        "species": sn_display,
+        "confidence": round(min(sn_confidence, 1.0), 4),
+        "agreement": agreement,
+        "bioclip_top": bioclip[0] if bioclip else None,
+        "speciesnet_top": (sn_display, round(sn_confidence, 4)),
+        "all_candidates": all_candidates,  # ← ALL outputs, not top-5
     }

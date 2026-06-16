@@ -59,10 +59,59 @@ def update_result(detection_id: int, update: ResultUpdate, state: AppState = Dep
     return {"ok": True, "detection_id": detection_id}
 
 
+@router.delete("/{detection_id}")
+def delete_result(detection_id: int, state: AppState = Depends(get_state)):
+    """Delete a detection result. If it's the last detection for an image, mark image for deletion."""
+    if not state.db_manager:
+        raise HTTPException(status_code=503, detail="DB not ready")
+    try:
+        success = state.db_manager.delete_detection(detection_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Detection not found")
+        return {"ok": True, "deleted_id": detection_id, "message": "Detection deleted"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("")
+def delete_results_batch(state: AppState = Depends(get_state), detection_ids: str = Query(...)):
+    """Delete multiple detection results (CSV of IDs)."""
+    if not state.db_manager:
+        raise HTTPException(status_code=503, detail="DB not ready")
+    try:
+        ids = [int(x.strip()) for x in detection_ids.split(",") if x.strip()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="No detection IDs provided")
+        count = state.db_manager.delete_detections_batch(ids)
+        return {"ok": True, "deleted_count": count, "message": f"Deleted {count} detections"}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid detection IDs")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/export/excel")
 def export_excel(state: AppState = Depends(get_state)):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
+
+    # Mark detections as exported
+    try:
+        conn = state.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id FROM detections
+            WHERE is_exported = 0 AND detected_animal IS NOT NULL
+        ''')
+        detection_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        if detection_ids:
+            state.db_manager.mark_exports_as_exported(detection_ids, 'excel')
+    except Exception as e:
+        import logging
+        logging.warning(f"Could not mark detections as exported: {e}")
+
     import pandas as pd
     df = state.db_manager.get_history_df()
     buf = io.BytesIO()
@@ -80,6 +129,24 @@ def export_excel(state: AppState = Depends(get_state)):
 def export_csv(state: AppState = Depends(get_state)):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
+
+    # Mark detections as exported
+    try:
+        conn = state.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id FROM detections
+            WHERE is_exported = 0 AND detected_animal IS NOT NULL
+        ''')
+        detection_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        if detection_ids:
+            state.db_manager.mark_exports_as_exported(detection_ids, 'csv')
+    except Exception as e:
+        import logging
+        logging.warning(f"Could not mark detections as exported: {e}")
+
     df = state.db_manager.get_history_df()
     buf = io.StringIO()
     df.to_csv(buf, index=False)

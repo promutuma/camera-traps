@@ -50,6 +50,10 @@ export const getResults = (params?: Record<string, string | number>) =>
   api.get("/results", { params }).then((r) => r.data as { total: number; limit: number; offset: number; items: Record<string, unknown>[] });
 export const updateResult = (imageId: number, patch: Record<string, unknown>) =>
   api.patch(`/results/${imageId}`, patch).then((r) => r.data);
+export const deleteResult = (detectionId: number) =>
+  api.delete(`/results/${detectionId}`).then((r) => r.data);
+export const deleteResults = (detectionIds: number[]) =>
+  api.delete("/results", { params: { detection_ids: detectionIds.join(",") } }).then((r) => r.data);
 export const exportExcel = () => `/api/results/export/excel`;
 export const exportCsv = () => `/api/results/export/csv`;
 
@@ -166,3 +170,23 @@ export const pushArcGIS = (body: Record<string, unknown>) =>
   api.post("/arcgis/push", body).then((r) => r.data);
 export const getArcGISStatus = () =>
   api.get("/arcgis/status").then((r) => r.data);
+
+// ── Storage Management ────────────────────────────────────────────────────────
+export const getStorageStatus = () =>
+  api.get("/storage/status").then((r) => r.data);
+export const getStorageWarnings = () =>
+  api.get("/storage/warnings").then((r) => r.data);
+export const getDeletionPreview = (tier: string, daysOld: number = 7) =>
+  api.get("/storage/deletion-preview", { params: { tier, days_old: daysOld } }).then((r) => r.data);
+export const createBatchDownload = (tier: string, includeMetadata: boolean = true) =>
+  api.post("/storage/downloads/batch", undefined, { params: { tier, include_metadata: includeMetadata } }).then((r) => r.data);
+export const cleanupImages = (action: string, daysOld: number = 7, dryRun: boolean = true) =>
+  api.post("/storage/cleanup", undefined, { params: { action, days_old: daysOld, dry_run: dryRun } }).then((r) => r.data);
+export const markForDeletion = (imageId: number) =>
+  api.post(`/storage/mark-for-deletion/${imageId}`).then((r) => r.data);
+
+// ── Hash Management (Performance Optimization) ──────────────────────────────
+export const getHashStats = () =>
+  api.get("/storage/hash-stats").then((r) => r.data);
+export const clearHashes = (strategy: string) =>
+  api.post("/storage/clear-hashes", undefined, { params: { strategy } }).then((r) => r.data);
