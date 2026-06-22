@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getStorageStatus, getStorageWarnings, getDeletionPreview, createBatchDownload, getHashStats, clearHashes } from "../api/client";
+import { getStorageStatus, getStorageWarnings, createBatchDownload, getHashStats, clearHashes } from "../api/client";
 
 type StorageStats = {
   total_mb: number;
@@ -29,7 +29,6 @@ export default function Storage() {
   const [hashStats, setHashStats] = useState<HashStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedTier, setSelectedTier] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [clearingHashes, setClearingHashes] = useState(false);
 

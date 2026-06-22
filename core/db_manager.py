@@ -137,9 +137,9 @@ class DatabaseManager:
         # Add new columns to existing tables if this is a schema migration
         self._migrate_columns(cursor, "images", [
             ("station_id", "TEXT DEFAULT 'Station-1'"),
-            ("file_hash", "TEXT UNIQUE"),
+            ("file_hash", "TEXT"),
             ("file_size_bytes", "INTEGER"),
-            ("uploaded_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+            ("uploaded_at", "TIMESTAMP"),
             ("has_animal", "BOOLEAN DEFAULT 0"),
             ("file_tier", "TEXT DEFAULT 'valid'"),
             ("file_status", "TEXT DEFAULT 'available'"),
@@ -156,6 +156,12 @@ class DatabaseManager:
             ("is_exported", "BOOLEAN DEFAULT 0"),
             ("exported_at", "TIMESTAMP"),
         ])
+
+        # Backfill uploaded_at for existing records
+        cursor.execute("UPDATE images SET uploaded_at = CURRENT_TIMESTAMP WHERE uploaded_at IS NULL")
+
+        # Create unique index for file_hash if it doesn't exist
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_images_file_hash ON images (file_hash)")
 
         conn.commit()
         conn.close()
@@ -191,8 +197,8 @@ class DatabaseManager:
                 cursor.execute('''
                     INSERT INTO images (
                         filename, station_id, capture_date, capture_time,
-                        temperature, day_night, brightness, user_notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        temperature, day_night, brightness, user_notes, uploaded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ''', (
                     row['filename'],
                     row.get('station_id', 'Station-1'),
