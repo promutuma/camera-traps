@@ -38,6 +38,17 @@ class CommunityObserver:
     def _conn(self):
         return sqlite3.connect(self.db_path)
 
+    @property
+    def active_project_id(self) -> int:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT id FROM projects WHERE is_active = 1 LIMIT 1").fetchone()
+            return row[0] if row else 1
+        except Exception:
+            return 1
+        finally:
+            conn.close()
+
     def _init_tables(self):
         conn = self._conn()
         conn.execute("""
@@ -110,16 +121,22 @@ class CommunityObserver:
     # ------------------------------------------------------------------
 
     def get_observations(self, station_id: Optional[str] = None) -> pd.DataFrame:
-        """Return all observations, optionally filtered by station."""
+        """Return all observations, optionally filtered by station, scoped by active project."""
         conn = self._conn()
         try:
             if station_id:
                 return pd.read_sql_query(
-                    "SELECT * FROM community_observations WHERE station_id = ? ORDER BY obs_date DESC",
-                    conn, params=(station_id,)
+                    """SELECT * FROM community_observations 
+                       WHERE station_id = ? 
+                         AND station_id IN (SELECT station_id FROM stations WHERE project_id = ?)
+                       ORDER BY obs_date DESC""",
+                    conn, params=(station_id, self.active_project_id)
                 )
             return pd.read_sql_query(
-                "SELECT * FROM community_observations ORDER BY obs_date DESC", conn
+                """SELECT * FROM community_observations 
+                   WHERE station_id IN (SELECT station_id FROM stations WHERE project_id = ?)
+                   ORDER BY obs_date DESC""",
+                conn, params=(self.active_project_id,)
             )
         finally:
             conn.close()

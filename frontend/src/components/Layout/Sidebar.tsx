@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useConfigStore } from "../../store/configStore";
+import { listProjects, setActiveProject, getStations } from "../../api/client";
 
 const NAV_GROUPS = [
   {
@@ -43,13 +44,38 @@ const NAV_GROUPS = [
 export default function Sidebar() {
   const { config, fetch, patch } = useConfigStore();
   const [activeTab, setActiveTab] = useState<"nav" | "config">("nav");
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    return localStorage.getItem("sidebar-collapsed") === "true";
+  });
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     return (localStorage.getItem("color-scheme") as "light" | "dark") || 
       (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
   });
+  const [projects, setProjects] = useState<any[]>([]);
+  const [activeProjId, setActiveProjId] = useState<number | null>(null);
+  const [stationIds, setStationIds] = useState<string[]>([]);
 
   useEffect(() => {
     fetch();
+
+    listProjects()
+      .then((list: any) => {
+        setProjects(list);
+        const active = list.find((p: any) => p.is_active === 1);
+        if (active) {
+          setActiveProjId(active.id);
+        }
+      })
+      .catch((err) => console.error("Failed to load projects in sidebar", err));
+
+    getStations()
+      .then((list: any) => {
+        const ids = (Array.isArray(list) ? list : [])
+          .map((s: any) => String(s.station_id))
+          .filter(Boolean);
+        setStationIds(ids);
+      })
+      .catch(() => {});
     
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const handler = (e: MediaQueryListEvent) => {
@@ -78,70 +104,146 @@ export default function Sidebar() {
     }
   };
 
+  const handleToggleCollapse = (val: boolean) => {
+    setCollapsed(val);
+    localStorage.setItem("sidebar-collapsed", String(val));
+    if (val && activeTab === "config") {
+      setActiveTab("nav");
+    }
+  };
+
   if (!config) return <div className="p-4 text-sm text-slate-400">Loading config…</div>;
 
   const toggle = (key: string, val: boolean) => patch({ [key]: val });
   const num = (key: string, val: number) => patch({ [key]: val });
   const str = (key: string, val: string) => patch({ [key]: val });
 
+  const handleProjectChange = async (projId: number) => {
+    try {
+      await setActiveProject(projId);
+      window.location.reload();
+    } catch (err) {
+      console.error("Failed to switch active project", err);
+      alert("Failed to switch active project.");
+    }
+  };
+
   return (
-    <aside className="w-72 h-full bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 shrink-0">
+    <aside className={`h-full bg-slate-900 text-slate-100 flex flex-col border-r border-slate-800 shrink-0 transition-all duration-300 ${
+      collapsed ? "w-16" : "w-72"
+    }`}>
       {/* Brand Header */}
-      <div className="p-5 border-b border-slate-800 flex items-center gap-3 bg-slate-950/40">
-        <span className="material-symbols-outlined text-emerald-400 text-3xl select-none">
-          nature_people
-        </span>
-        <div>
-          <h1 className="text-md font-bold tracking-tight text-white">ViumbeLens</h1>
-          <p className="text-xs text-emerald-500 font-medium">Camera Trap Auto-Analyzer</p>
-        </div>
+      <div className={`p-5 border-b border-slate-800 flex items-center ${
+        collapsed ? "justify-center" : "justify-between"
+      } gap-3 bg-slate-950/40`}>
+        {collapsed ? (
+          <button
+            onClick={() => handleToggleCollapse(false)}
+            className="text-slate-400 hover:text-white cursor-pointer select-none focus:outline-none"
+            title="Expand Sidebar"
+          >
+            <span className="material-symbols-outlined text-2xl">menu</span>
+          </button>
+        ) : (
+          <>
+            <div className="flex items-center gap-3 overflow-hidden">
+              <span className="material-symbols-outlined text-emerald-400 text-3xl select-none">
+                nature_people
+              </span>
+              <div className="whitespace-nowrap">
+                <h1 className="text-md font-bold tracking-tight text-white">ViumbeLens</h1>
+                <p className="text-xs text-emerald-500 font-medium">Camera Trap Auto-Analyzer</p>
+              </div>
+            </div>
+            <button
+              onClick={() => handleToggleCollapse(true)}
+              className="text-slate-400 hover:text-white cursor-pointer select-none focus:outline-none"
+              title="Collapse Sidebar"
+            >
+              <span className="material-symbols-outlined text-lg">menu_open</span>
+            </button>
+          </>
+        )}
       </div>
+
+      {/* Project Selector */}
+      {!collapsed && projects.length > 0 && (
+        <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-950/20">
+          <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1 flex items-center gap-1">
+            <span className="material-symbols-outlined text-xs select-none">folder</span>
+            Current Project
+          </label>
+          <div className="relative">
+            <select
+              value={activeProjId || ""}
+              onChange={(e) => handleProjectChange(Number(e.target.value))}
+              className="w-full bg-slate-900/60 border border-slate-850 hover:border-slate-800 rounded px-2.5 py-1.5 text-xs text-slate-200 hover:text-white font-medium focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer appearance-none pr-8 transition"
+            >
+              {projects.map((p: any) => (
+                <option key={p.id} value={p.id} className="bg-slate-900 text-slate-100">
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <span className="material-symbols-outlined absolute right-2.5 top-2 text-slate-500 text-xs pointer-events-none select-none">
+              unfold_more
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Segmented Control */}
-      <div className="p-3 border-b border-slate-800">
-        <div className="flex bg-slate-950/60 p-1 rounded-lg border border-slate-800/80">
-          <button
-            onClick={() => setActiveTab("nav")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === "nav"
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <span className="material-symbols-outlined text-sm select-none">explore</span>
-            Navigation
-          </button>
-          <button
-            onClick={() => setActiveTab("config")}
-            className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 ${
-              activeTab === "config"
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "text-slate-400 hover:text-slate-200"
-            }`}
-          >
-            <span className="material-symbols-outlined text-sm select-none">tune</span>
-            Settings
-          </button>
+      {!collapsed && (
+        <div className="p-3 border-b border-slate-800">
+          <div className="flex bg-slate-950/60 p-1 rounded-lg border border-slate-800/80">
+            <button
+              onClick={() => setActiveTab("nav")}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 ${
+                activeTab === "nav"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="material-symbols-outlined text-sm select-none">explore</span>
+              Navigation
+            </button>
+            <button
+              onClick={() => setActiveTab("config")}
+              className={`flex-1 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center justify-center gap-1.5 ${
+                activeTab === "config"
+                  ? "bg-emerald-600 text-white shadow-sm"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="material-symbols-outlined text-sm select-none">tune</span>
+              Settings
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-6">
+      <div className={`flex-1 overflow-y-auto custom-scrollbar ${collapsed ? "p-2 py-4" : "p-4"} space-y-6`}>
         {activeTab === "nav" ? (
           <div className="space-y-5">
             {NAV_GROUPS.map((group) => (
               <div key={group.title} className="space-y-1">
-                <h3 className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                  {group.title}
-                </h3>
+                {!collapsed && (
+                  <h3 className="px-3 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                    {group.title}
+                  </h3>
+                )}
                 <div className="space-y-0.5">
                   {group.items.map((item) => (
                     <NavLink
                       key={item.path}
                       to={item.path}
                       end={item.path === "/"}
+                      title={collapsed ? item.label : undefined}
                       className={({ isActive }) =>
-                        `flex items-center gap-3 px-3 py-2 text-sm font-medium rounded-lg transition-all ${
+                        `flex items-center ${
+                          collapsed ? "justify-center px-1" : "gap-3 px-3"
+                        } py-2 text-sm font-medium rounded-lg transition-all ${
                           isActive
                             ? "bg-emerald-950/60 text-emerald-400 border-l-2 border-emerald-500 shadow-inner"
                             : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/40"
@@ -151,7 +253,7 @@ export default function Sidebar() {
                       <span className="material-symbols-outlined text-lg select-none">
                         {item.icon}
                       </span>
-                      <span>{item.label}</span>
+                      {!collapsed && <span>{item.label}</span>}
                     </NavLink>
                   ))}
                 </div>
@@ -223,45 +325,6 @@ export default function Sidebar() {
               </div>
             </section>
 
-            {/* Classifier Fusion */}
-            <section className="space-y-2.5">
-              <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                Classifier Fusion
-              </h3>
-              <div className="space-y-4 bg-slate-950/30 p-3 rounded-lg border border-slate-800/50">
-                <Slider
-                  label="BioClip Weight"
-                  value={config.bioclip_weight ?? 0.05}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  format={(v) => v.toFixed(2)}
-                  onChange={(v) => num("bioclip_weight", v)}
-                />
-                <Slider
-                  label="SpeciesNet Weight"
-                  value={config.speciesnet_weight ?? 0.95}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  format={(v) => v.toFixed(2)}
-                  onChange={(v) => num("speciesnet_weight", v)}
-                />
-                <Slider
-                  label="SpeciesNet Bypass Threshold"
-                  value={config.speciesnet_bypass_threshold ?? 0.60}
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  format={(v) => v === 0 ? "Off" : v.toFixed(2)}
-                  onChange={(v) => num("speciesnet_bypass_threshold", v)}
-                />
-                <p className="text-[10px] text-slate-500 leading-relaxed">
-                  Bypass: skip BioClip fusion when SpeciesNet top confidence ≥ threshold. Set to 0 to always fuse.
-                </p>
-              </div>
-            </section>
-
             {/* Privacy & Review */}
             <section className="space-y-2.5">
               <h3 className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
@@ -309,12 +372,25 @@ export default function Sidebar() {
                   <label className="block text-xs font-semibold text-slate-400 mb-1">
                     Default Station ID
                   </label>
-                  <input
-                    type="text"
-                    value={config.default_station_id}
-                    onChange={(e) => str("default_station_id", e.target.value)}
-                    className="block w-full rounded border border-slate-700 bg-slate-800/50 text-white px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-                  />
+                  {stationIds.length > 0 ? (
+                    <select
+                      value={config.default_station_id}
+                      onChange={(e) => str("default_station_id", e.target.value)}
+                      className="block w-full rounded border border-slate-700 bg-slate-800/50 text-white px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 cursor-pointer"
+                    >
+                      {stationIds.map((id) => (
+                        <option key={id} value={id}>{id}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      value={config.default_station_id}
+                      onChange={(e) => str("default_station_id", e.target.value)}
+                      placeholder="No stations registered"
+                      className="block w-full rounded border border-slate-700 bg-slate-800/50 text-white px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
+                    />
+                  )}
                 </div>
                 <Slider
                   label="Independence Window"
@@ -343,17 +419,25 @@ export default function Sidebar() {
         )}
       </div>
 
-      <div className="p-4 border-t border-slate-800 flex items-center justify-between text-[10px] text-slate-500 bg-slate-950/20">
-        <span>Changes apply dynamically</span>
+      <div className={`p-4 border-t border-slate-800 flex items-center ${
+        collapsed ? "justify-center" : "justify-between"
+      } text-[10px] text-slate-500 bg-slate-950/20`}>
+        {!collapsed && <span>Changes apply dynamically</span>}
         <button
           onClick={toggleTheme}
-          className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer select-none"
+          className={`flex items-center gap-1 ${
+            collapsed ? "p-2" : "px-2 py-1"
+          } rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer select-none`}
           title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
         >
           <span className="material-symbols-outlined text-[14px] leading-none select-none">
             {theme === "light" ? "dark_mode" : "light_mode"}
           </span>
-          <span className="capitalize text-[10px] font-semibold">{theme === "light" ? "dark" : "light"}</span>
+          {!collapsed && (
+            <span className="capitalize text-[10px] font-semibold">
+              {theme === "light" ? "dark" : "light"}
+            </span>
+          )}
         </button>
       </div>
     </aside>

@@ -33,7 +33,7 @@ export default class ErrorBoundary extends Component<Props, State> {
       <div className="flex items-center justify-center min-h-[40vh] p-8">
         <div className="max-w-lg w-full bg-red-50 border border-red-200 rounded-xl p-6 space-y-4">
           <div className="flex items-center gap-3">
-            <span className="text-red-500 text-2xl">⚠</span>
+            <span className="material-symbols-outlined text-red-500 text-2xl">warning</span>
             <h2 className="text-lg font-semibold text-red-800">
               {label}Something went wrong
             </h2>

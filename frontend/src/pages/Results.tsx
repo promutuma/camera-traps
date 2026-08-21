@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { getResults, updateResult, exportExcel, exportCsv, storedImageUrl, confirmDetection, flagDetection } from "../api/client";
+import { getResults, updateResult, exportExcel, exportCsv, storedThumbUrl, storedImageUrl, confirmDetection, flagDetection, getStations } from "../api/client";
 
 type Row = Record<string, unknown>;
 type SortDir = "asc" | "desc" | null;
@@ -33,29 +33,24 @@ function confBoxColor(conf: number): string {
   return "#ef4444";                  // red-400
 }
 
-/** Extract ranked species candidates from the model_breakdown JSON field. */
-function getCandidates(row: Row): { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] {
-  let bd: Record<string, any> | null = null;
+/** Extract ranked SpeciesNet candidates from the top_candidates JSON column. */
+function getCandidates(row: Row): { label: string; conf: number; scientific?: string; source: "SpeciesNet" }[] {
+  let cands: any[] | null = null;
   try {
-    if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown);
-    else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
+    if (typeof row.top_candidates === "string") cands = JSON.parse(row.top_candidates);
+    else if (Array.isArray(row.top_candidates)) cands = row.top_candidates as any[];
   } catch {}
-  if (!bd) return [];
+  if (!cands) return [];
 
-  const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
   const seen = new Set<string>();
-
-  for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
-    let label = String(s);
-    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
+  return cands.slice(0, 8).flatMap((c: any) => {
+    const label = c.common_name || c.display || "";
+    if (!label) return [];
     const key = label.toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
-  }
-  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
-    const key = String(s).toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
-  }
-  return out;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ label, conf: c.confidence ?? 0, scientific: c.scientific_name || undefined, source: "SpeciesNet" as const }];
+  });
 }
 
 function DayNightBadge({ value }: { value: unknown }) {
@@ -109,37 +104,21 @@ function ModelPill({ name, conf }: { name: string; conf?: number }) {
   );
 }
 
-function AgreementBadge({ level }: { level?: string | null }) {
-  if (!level) return null;
-  const styles =
-    level === "High"
-      ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50"
-      : level === "Medium"
-      ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/50"
-      : "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border-red-200 dark:border-red-900/50";
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${styles}`}>
-      {level}
-    </span>
-  );
-}
 
 function ModelBreakdown({
   method,
-  bioclipConf,
   speciesnetConf,
-  agreement,
   detected,
   modelBreakdown,
+  topCandidates,
   onTaxonClick,
   compact,
 }: {
   method: string;
-  bioclipConf?: number;
   speciesnetConf?: number;
-  agreement?: string | null;
   detected?: string;
   modelBreakdown?: unknown;
+  topCandidates?: unknown;
   onTaxonClick?: (taxon: string) => void;
   compact?: boolean;
 }) {
@@ -152,17 +131,21 @@ function ModelBreakdown({
 
   if (!detectors.length && !isAnimal) return null;
 
-  // Safely parse modelBreakdown
-  let parsedBreakdown: Record<string, any> | null = null;
+  // Parse MDv5a detections from model_breakdown
+  let mdv5a: any[] = [];
   try {
-    if (typeof modelBreakdown === "string") {
-      parsedBreakdown = JSON.parse(modelBreakdown);
-    } else if (modelBreakdown && typeof modelBreakdown === "object") {
-      parsedBreakdown = modelBreakdown as Record<string, any>;
-    }
+    let bd: any = typeof modelBreakdown === "string" ? JSON.parse(modelBreakdown) : modelBreakdown;
+    if (bd?.MDv5a) mdv5a = bd.MDv5a;
   } catch {}
 
-  const hasDetail = parsedBreakdown && Object.keys(parsedBreakdown).length > 0;
+  // Parse SpeciesNet candidates from top_candidates column
+  let snCandidates: any[] = [];
+  try {
+    let tc: any = typeof topCandidates === "string" ? JSON.parse(topCandidates) : topCandidates;
+    if (Array.isArray(tc)) snCandidates = tc;
+  } catch {}
+
+  const hasDetail = mdv5a.length > 0 || (isAnimal && snCandidates.length > 0);
 
   return (
     <div className="space-y-2 mt-1 w-full">
@@ -170,12 +153,8 @@ function ModelBreakdown({
       <div className="flex flex-wrap items-center justify-between gap-1 w-full">
         <div className="flex flex-wrap items-center gap-1">
           {detectors.map((m) => <ModelPill key={m} name={m} />)}
-          {isAnimal && (
-            <>
-              {(speciesnetConf ?? 0) > 0 && <ModelPill name="SpeciesNet" conf={speciesnetConf} />}
-              {(bioclipConf ?? 0) > 0 && <ModelPill name="BioClip" conf={bioclipConf} />}
-              <AgreementBadge level={agreement} />
-            </>
+          {isAnimal && (speciesnetConf ?? 0) > 0 && (
+            <ModelPill name="SpeciesNet" conf={speciesnetConf} />
           )}
         </div>
         {!compact && hasDetail && (
@@ -192,14 +171,14 @@ function ModelBreakdown({
       </div>
 
       {/* Expanded details accordion */}
-      {!compact && expanded && parsedBreakdown && (
+      {!compact && expanded && (
         <div className="bg-slate-100/50 dark:bg-slate-950/60 border border-slate-200 dark:border-slate-800/80 rounded-xl p-3 text-[10px] space-y-2.5 shadow-inner w-full">
-          {/* Detectors Candidates */}
-          {parsedBreakdown.MDv5a?.length > 0 && (
+          {/* MegaDetector object detection candidates */}
+          {mdv5a.length > 0 && (
             <div className="space-y-1">
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">Object Detection</span>
               <div className="space-y-0.5 font-medium pl-1">
-                {parsedBreakdown.MDv5a.map((d: any, idx: number) => (
+                {mdv5a.map((d: any, idx: number) => (
                   <div key={`md5-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
                     <span>MDv5a: {d.label}</span>
                     <span className="font-mono">{(d.conf * 100).toFixed(0)}%</span>
@@ -209,103 +188,48 @@ function ModelBreakdown({
             </div>
           )}
 
-          {/* SpeciesNet Top Detections (primary) */}
-          {parsedBreakdown.SpeciesNet?.length > 0 && (
+          {/* SpeciesNet top candidates */}
+          {isAnimal && snCandidates.length > 0 && (
             <div className="space-y-1">
               <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">SpeciesNet Taxonomy</span>
               <div className="space-y-1 font-medium pl-1">
-                {parsedBreakdown.SpeciesNet.slice(0, 3).map(([s, c]: [string, number], idx: number) => {
-                  const isJson = s.startsWith("{") && s.endsWith("}");
-                  if (isJson) {
-                    try {
-                      const parsed = JSON.parse(s);
-                      return (
-                        <div key={`sn-${idx}`} className="border-b border-slate-200/40 dark:border-slate-800/40 pb-1.5 last:border-b-0 last:pb-0 space-y-0.5 text-slate-600 dark:text-slate-400">
-                          <div className="flex justify-between items-center">
-                            <span className="font-bold text-slate-700 dark:text-slate-300">
-                              {onTaxonClick ? (
-                                <button
-                                  onClick={() => onTaxonClick(parsed.common_name)}
-                                  className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer font-bold text-left"
-                                >
-                                  {parsed.common_name}
-                                </button>
-                              ) : (
-                                parsed.common_name
-                              )}
-                            </span>
-                            <span className="font-mono">{(c * 100).toFixed(0)}%</span>
-                          </div>
-                          {parsed.scientific_name && (
-                            <div className="text-[10px] italic text-slate-500 dark:text-slate-400">
-                              {onTaxonClick ? (
-                                <button
-                                  onClick={() => onTaxonClick(parsed.scientific_name)}
-                                  className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer italic"
-                                >
-                                  {parsed.scientific_name}
-                                </button>
-                              ) : (
-                                parsed.scientific_name
-                              )}
-                            </div>
-                          )}
-                          {parsed.hierarchy && parsed.hierarchy.length > 0 && (
-                            <div className="text-[10px] text-slate-400 dark:text-slate-500 flex flex-wrap gap-1 items-center mt-0.5 select-none">
-                              <span className="material-symbols-outlined text-[10px] leading-none shrink-0">schema</span>
-                              {parsed.hierarchy.map((h: string, hIdx: number) => (
-                                <span key={hIdx} className="inline-flex items-center gap-1">
-                                  {onTaxonClick ? (
-                                    <button
-                                      onClick={() => onTaxonClick(h)}
-                                      className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer"
-                                    >
-                                      {h}
-                                    </button>
-                                  ) : (
-                                    <span>{h}</span>
-                                  )}
-                                  {hIdx < parsed.hierarchy.length - 1 && <span className="text-[10px] text-slate-300 dark:text-slate-600">&gt;</span>}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    } catch {}
-                  }
-                  return (
-                    <div key={`sn-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
-                      <span>{s}</span>
-                      <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                {snCandidates.slice(0, 5).map((c: any, idx: number) => (
+                  <div key={`sn-${idx}`} className="border-b border-slate-200/40 dark:border-slate-800/40 pb-1.5 last:border-b-0 last:pb-0 space-y-0.5 text-slate-600 dark:text-slate-400">
+                    <div className="flex justify-between items-center">
+                      <span className="font-bold text-slate-700 dark:text-slate-300">
+                        {onTaxonClick ? (
+                          <button onClick={() => onTaxonClick(c.common_name)} className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer font-bold text-left">
+                            {c.common_name}
+                          </button>
+                        ) : c.common_name}
+                      </span>
+                      <span className="font-mono">{Math.round((c.confidence ?? 0) * 100)}%</span>
                     </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* BioClip supplement (only ran when SpeciesNet was uncertain) */}
-          {parsedBreakdown.BioClip?.length > 0 && (
-            <div className="space-y-1">
-              <span className="font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wide">BioClip <span className="font-normal normal-case">supplement</span></span>
-              <div className="space-y-0.5 font-medium pl-1">
-                {parsedBreakdown.BioClip.slice(0, 3).map(([s, c]: [string, number], idx: number) => (
-                  <div key={`bc-${idx}`} className="flex justify-between items-center text-slate-600 dark:text-slate-400">
-                    <span>{s}</span>
-                    <span className="font-mono">{(c * 100).toFixed(0)}%</span>
+                    {c.scientific_name && (
+                      <div className="text-[10px] italic text-slate-500 dark:text-slate-400">
+                        {onTaxonClick ? (
+                          <button onClick={() => onTaxonClick(c.scientific_name)} className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer italic">
+                            {c.scientific_name}
+                          </button>
+                        ) : c.scientific_name}
+                      </div>
+                    )}
+                    {idx === 0 && Array.isArray(c.hierarchy) && c.hierarchy.length > 0 && (
+                      <div className="text-[10px] text-slate-400 dark:text-slate-500 flex flex-wrap gap-1 items-center mt-0.5 select-none">
+                        <span className="material-symbols-outlined text-[10px] leading-none shrink-0">schema</span>
+                        {c.hierarchy.map((h: string, hIdx: number) => (
+                          <span key={hIdx} className="inline-flex items-center gap-1">
+                            {onTaxonClick ? (
+                              <button onClick={() => onTaxonClick(h)} className="hover:text-emerald-600 dark:hover:text-emerald-400 hover:underline cursor-pointer">{h}</button>
+                            ) : <span>{h}</span>}
+                            {hIdx < c.hierarchy.length - 1 && <span className="text-[10px] text-slate-300 dark:text-slate-600">&gt;</span>}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-
-          {/* Fusion agreement detail */}
-          {parsedBreakdown.Fusion && (
-            <div className="border-t border-slate-200/50 dark:border-slate-800/50 pt-1.5 flex justify-between items-center text-[10px] text-slate-500 dark:text-slate-400 font-semibold select-none">
-              <span>Agreement: {agreement}</span>
-              {agreement === "High" && <span className="text-emerald-500 font-bold">+0.08 Agreement Bonus</span>}
-              {agreement === "Medium" && <span className="text-amber-500 font-bold">+0.04 Agreement Bonus</span>}
             </div>
           )}
         </div>
@@ -345,6 +269,7 @@ function Lightbox({
   const [saving, setSaving] = useState(false);
   const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
   const [actionBusy, setActionBusy] = useState<"verify" | "flag" | null>(null);
+  const [hoveredDetIdx, setHoveredDetIdx] = useState<number | null>(null);
 
   const filmstripRef = useRef<HTMLDivElement>(null);
 
@@ -558,16 +483,26 @@ function Lightbox({
                   const sw = Math.max(2, imgNatural.w / 400);
                   const fs = Math.max(14, imgNatural.w / 55);
                   const conf = rowConf > 0 ? ` (${rowConf.toFixed(2)})` : "";
+                  const isHovered = hoveredDetIdx === i;
                   return (
-                    <g key={i}>
+                    <g
+                      key={i}
+                      className="pointer-events-auto cursor-pointer"
+                      onMouseEnter={() => setHoveredDetIdx(i)}
+                      onMouseLeave={() => setHoveredDetIdx(null)}
+                    >
                       <rect
                         x={bbox[0] * imgNatural.w} y={bbox[1] * imgNatural.h}
                         width={bbox[2] * imgNatural.w} height={bbox[3] * imgNatural.h}
-                        fill="none" stroke={color} strokeWidth={sw}
+                        fill={isHovered ? `${color}18` : "none"}
+                        stroke={color}
+                        strokeWidth={isHovered ? sw + 2 : sw}
+                        className="transition-all duration-200"
                       />
                       <text
                         x={bbox[0] * imgNatural.w + 4} y={bbox[1] * imgNatural.h - 8}
-                        fill={color} fontWeight="bold" fontSize={fs}
+                        fill={color} fontWeight="bold" fontSize={isHovered ? fs + 2 : fs}
+                        className="pointer-events-none transition-all duration-200"
                         style={{ filter: "drop-shadow(0 1px 2px #000)" }}
                       >
                         {String(row.detected_animal ?? "")}{conf}
@@ -623,16 +558,26 @@ function Lightbox({
               const boxColor = rows.length > 1 ? BOX_COLORS[i % BOX_COLORS.length] : confBoxColor(rawConf);
               const isEditingDet = detEdit?.idx === i;
               const candidates = getCandidates(row);
+              const isHovered = hoveredDetIdx === i;
 
               return (
-                <div key={i} className="rounded-xl border border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/20 p-3 space-y-2">
+                <div
+                  key={i}
+                  onMouseEnter={() => setHoveredDetIdx(i)}
+                  onMouseLeave={() => setHoveredDetIdx(null)}
+                  className={`rounded-xl border transition-all duration-200 p-3 space-y-2 ${
+                    isHovered
+                      ? "border-emerald-500/80 bg-emerald-50/20 dark:bg-emerald-950/15 shadow-sm ring-1 ring-emerald-500/50 scale-[1.01]"
+                      : "border-slate-100 dark:border-slate-800/80 bg-slate-50/50 dark:bg-slate-900/20"
+                  }`}
+                >
                   {isEditingDet ? (
                     /* ── Candidate dropdown + manual override ── */
                     <div className="space-y-2.5">
                       {candidates.length > 0 && (
                         <div className="space-y-1">
                           <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Model candidates</p>
-                          <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                          <div className="space-y-0.5 max-h-48 overflow-y-auto">
                             {candidates.map((c, ci) => (
                               <button
                                 key={ci}
@@ -643,14 +588,13 @@ function Lightbox({
                                     : "bg-white dark:bg-slate-900 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 text-slate-700 dark:text-slate-300 border border-slate-100 dark:border-slate-800"
                                 }`}
                               >
-                                <span className="truncate">{c.label}</span>
-                                <div className="flex items-center gap-1 shrink-0 ml-2">
+                                <div className="flex-1 min-w-0 mr-2">
+                                  <span className="block truncate font-medium">{c.label}</span>
+                                  {c.scientific && <span className="block truncate text-[9px] italic text-slate-400 dark:text-slate-500 leading-tight">{c.scientific}</span>}
+                                </div>
+                                <div className="flex items-center gap-1 shrink-0">
                                   <span className="text-[10px] font-mono text-slate-400 dark:text-slate-500">{Math.round(c.conf * 100)}%</span>
-                                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${
-                                    c.source === "BioClip"
-                                      ? "bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400"
-                                      : "bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400"
-                                  }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                                  <span className="text-[10px] font-bold px-1 py-0.5 rounded bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400">SN</span>
                                 </div>
                               </button>
                             ))}
@@ -682,15 +626,22 @@ function Lightbox({
                   ) : (
                     <>
                       {/* Species + confidence */}
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-sm shrink-0 shadow-sm" style={{ background: boxColor }} />
-                        <span
-                          className="font-bold text-slate-800 dark:text-slate-200 text-sm flex-1 truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
-                          title="Click to correct species"
-                          onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
-                        >
-                          {String(row.detected_animal ?? "Unknown")}
-                        </span>
+                      <div className="flex items-start gap-2">
+                        <span className="w-2 h-2 rounded-sm shrink-0 shadow-sm mt-1" style={{ background: boxColor }} />
+                        <div className="flex-1 min-w-0">
+                          <span
+                            className="font-bold text-slate-800 dark:text-slate-200 text-sm block truncate cursor-pointer hover:text-emerald-500 dark:hover:text-emerald-400 hover:underline underline-offset-2"
+                            title="Click to correct species"
+                            onClick={() => setDetEdit({ idx: i, val: String(row.detected_animal ?? "") })}
+                          >
+                            {String(row.detected_animal ?? "Unknown")}
+                          </span>
+                          {!!row.scientific_name && (
+                            <span className="block text-[10px] italic text-slate-400 dark:text-slate-500 truncate leading-tight">
+                              {String(row.scientific_name)}
+                            </span>
+                          )}
+                        </div>
                         {conf !== null && (
                           <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full text-white font-bold shrink-0"
                             style={{ background: boxColor }}>
@@ -702,11 +653,10 @@ function Lightbox({
                       {/* Model breakdown */}
                       <ModelBreakdown
                         method={String(row.detection_method ?? "")}
-                        bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
                         speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
-                        agreement={row.agreement as string | null}
                         detected={String(row.detected_animal ?? "")}
                         modelBreakdown={row.model_breakdown}
+                        topCandidates={row.top_candidates}
                         onTaxonClick={onTaxonClick}
                       />
 
@@ -791,7 +741,7 @@ function Lightbox({
                       <div className="flex flex-col gap-1.5">
                         <button onClick={commitEdit} disabled={saving}
                           className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded-lg font-semibold hover:shadow transition disabled:opacity-50 cursor-pointer">
-                          {saving ? "…" : "✓"}
+                          {saving ? "…" : <span className="material-symbols-outlined text-xs leading-none select-none">check</span>}
                         </button>
                         <button onClick={() => setEditField(null)}
                           className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs rounded-lg transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
@@ -842,7 +792,7 @@ function Lightbox({
                 style={{ width: 64, height: 48 }}
               >
                 <img
-                  src={storedImageUrl(g.filename)}
+                  src={storedThumbUrl(g.filename, 160)}
                   alt=""
                   className="w-full h-full object-cover"
                   onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
@@ -892,7 +842,7 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
     >
       <div className="relative bg-slate-900 aspect-video overflow-hidden">
         <img
-          src={storedImageUrl(filename)}
+          src={storedThumbUrl(filename, 640)}
           alt={filename}
           className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           onLoad={(e) => {
@@ -957,14 +907,31 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
         </p>
         <ModelBreakdown
           method={String(bestRow.detection_method ?? "")}
-          bioclipConf={typeof bestRow.bioclip_confidence === "number" ? bestRow.bioclip_confidence as number : undefined}
           speciesnetConf={typeof bestRow.speciesnet_confidence === "number" ? bestRow.speciesnet_confidence as number : undefined}
-          agreement={bestRow.agreement as string | null}
           detected={String(bestRow.detected_animal ?? "")}
           modelBreakdown={bestRow.model_breakdown}
+          topCandidates={bestRow.top_candidates}
         />
       </div>
     </div>
+  );
+}
+
+// ── Filter chip ───────────────────────────────────────────────────────────────
+
+function Chip({ label, onRemove, color = "slate" }: { label: string; onRemove: () => void; color?: "slate" | "amber" | "emerald" }) {
+  const cls = color === "amber"
+    ? "bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/40"
+    : color === "emerald"
+    ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/40"
+    : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700";
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border ${cls}`}>
+      {label}
+      <button onClick={onRemove} className="hover:opacity-70 cursor-pointer leading-none">
+        <span className="material-symbols-outlined text-[11px] leading-none select-none">close</span>
+      </button>
+    </span>
   );
 }
 
@@ -1011,8 +978,9 @@ export default function Results() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
-  const [filter, setFilter] = useState({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" });
+  const [filter, setFilter] = useState({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: true, lowConfOnly: false });
   const [selectedTaxon, setSelectedTaxon] = useState<string | null>(null);
+  const [stations, setStations] = useState<string[]>([]);
   const [editing, setEditing] = useState<{ id: number; field: string } | null>(null);
   const [editVal, setEditVal] = useState("");
   const [lightbox, setLightbox] = useState<ImageGroup | null>(null);
@@ -1020,66 +988,74 @@ export default function Results() {
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState<"verify" | "flag" | null>(null);
-  const speciesInputRef = useRef<HTMLInputElement>(null);
+  const speciesInputRef = useRef<HTMLSelectElement>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setPage(1);
     setSelectedIds(new Set());
     try {
-      const params: Record<string, string> = {};
-      // Confidence range goes to server; text filters are applied client-side
-      if (filter.min_conf) params.min_conf = filter.min_conf;
-      if (filter.max_conf) params.max_conf = filter.max_conf;
-      const data = await getResults(params);
-      setRows(data.items as Row[]);
+      const data = await getResults({ limit: 50000 });
+      const items = Array.isArray(data) ? data : (data?.items ?? []);
+      setRows(items as Row[]);
     } finally {
       setLoading(false);
     }
-  }, [filter.min_conf, filter.max_conf]);
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    getStations().then((data: any) => {
+      const list: any[] = Array.isArray(data) ? data : (data?.items ?? []);
+      setStations(list.map((s) => s.station_id).filter(Boolean));
+    }).catch(() => {});
+  }, []);
+
+  // Reset to page 1 whenever any filter changes — without this, changing a filter
+  // while on page 2+ leaves the user past the last page and the table appears empty.
+  useEffect(() => {
+    setPage(1);
+  }, [filter.species, filter.station, filter.day_night, filter.hideEmpty, filter.min_conf, filter.max_conf, filter.lowConfOnly, selectedTaxon]);
 
   const filteredRows = useMemo(() => {
+    const minConf = filter.min_conf !== "" ? parseFloat(filter.min_conf) : null;
+    const maxConf = filter.max_conf !== "" ? parseFloat(filter.max_conf) : null;
+
     return rows.filter((r) => {
-      // Live client-side text filters
-      if (filter.species) {
-        const s = filter.species.toLowerCase();
-        if (!String(r.detected_animal ?? "").toLowerCase().includes(s)) return false;
-      }
-      if (filter.station) {
-        const s = filter.station.toLowerCase();
-        if (!String(r.station_id ?? "").toLowerCase().includes(s)) return false;
-      }
+      if (filter.species && String(r.detected_animal ?? "") !== filter.species) return false;
+      if (filter.station && r.station_id !== filter.station) return false;
       if (filter.day_night && r.day_night !== filter.day_night) return false;
+      if (filter.hideEmpty && String(r.detected_animal ?? "").toLowerCase() === "empty") return false;
+
+      const conf = typeof r.detection_confidence === "number"
+        ? r.detection_confidence as number
+        : parseFloat(String(r.detection_confidence ?? ""));
+      const confNum = isNaN(conf) ? 0 : conf;
+
+      if (minConf !== null && !isNaN(minConf) && confNum < minConf) return false;
+      if (maxConf !== null && !isNaN(maxConf) && confNum > maxConf) return false;
+      if (filter.lowConfOnly && confNum >= 0.4) return false;
 
       // Taxon drill-down from ModelBreakdown clicks
       if (selectedTaxon) {
         const taxonLower = selectedTaxon.toLowerCase();
-        let breakdown: any = null;
+        let candidates: any[] = [];
         try {
-          if (typeof r.model_breakdown === "string") breakdown = JSON.parse(r.model_breakdown);
-          else if (r.model_breakdown) breakdown = r.model_breakdown;
+          const tc = typeof r.top_candidates === "string" ? JSON.parse(r.top_candidates) : r.top_candidates;
+          if (Array.isArray(tc)) candidates = tc;
         } catch {}
-        const top5: [string, number][] = breakdown?.SpeciesNet?.top5 ?? [];
-        const hasTaxon = top5.some(([label]) => {
-          if (label.startsWith("{") && label.endsWith("}")) {
-            try {
-              const p = JSON.parse(label);
-              return (p.common_name ?? "").toLowerCase().includes(taxonLower)
-                || (p.scientific_name ?? "").toLowerCase().includes(taxonLower)
-                || (p.hierarchy ?? []).some((h: string) => h.toLowerCase() === taxonLower);
-            } catch {}
-          }
-          return label.toLowerCase().includes(taxonLower);
-        });
+        const hasTaxon = candidates.some((c: any) =>
+          (c.common_name ?? "").toLowerCase().includes(taxonLower)
+          || (c.scientific_name ?? "").toLowerCase().includes(taxonLower)
+          || (c.hierarchy ?? []).some((h: string) => h.toLowerCase() === taxonLower)
+        );
         const inDetected = String(r.detected_animal ?? "").toLowerCase().includes(taxonLower);
-        const inLabel = String(r.species_label ?? "").toLowerCase().includes(taxonLower);
-        if (!hasTaxon && !inDetected && !inLabel) return false;
+        const inScientific = String(r.scientific_name ?? "").toLowerCase().includes(taxonLower);
+        if (!hasTaxon && !inDetected && !inScientific) return false;
       }
       return true;
     });
-  }, [rows, filter.species, filter.station, filter.day_night, selectedTaxon]);
+  }, [rows, filter.species, filter.station, filter.day_night, filter.hideEmpty, filter.min_conf, filter.max_conf, filter.lowConfOnly, selectedTaxon]);
 
   const sorted = [...filteredRows].sort((a, b) => {
     if (!sort.col || !sort.dir) return 0;
@@ -1089,9 +1065,9 @@ export default function Results() {
     return sort.dir === "asc" ? cmp : -cmp;
   });
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const paginated = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
+  // Gallery groups by image — must paginate on unique images, not detection rows,
+  // otherwise a single image with 3 detections splits across 3 page slots and
+  // the same image card appears on multiple pages with only partial detections.
   const galleryGroups = useMemo<ImageGroup[]>(() => {
     const map = new Map<string, Row[]>();
     for (const row of sorted) {
@@ -1102,15 +1078,17 @@ export default function Results() {
     return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
   }, [sorted]);
 
-  const pagedGalleryGroups = useMemo<ImageGroup[]>(() => {
-    const map = new Map<string, Row[]>();
-    for (const row of paginated) {
-      const fn = String(row.filename ?? "");
-      if (!map.has(fn)) map.set(fn, []);
-      map.get(fn)!.push(row);
-    }
-    return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
-  }, [paginated]);
+  const GALLERY_PAGE_SIZE = 48;
+  const totalPages = viewMode === "gallery"
+    ? Math.max(1, Math.ceil(galleryGroups.length / GALLERY_PAGE_SIZE))
+    : Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const paginated = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const pagedGalleryGroups = galleryGroups.slice((page - 1) * GALLERY_PAGE_SIZE, page * GALLERY_PAGE_SIZE);
+
+  // Count empty rows hidden by the hideEmpty toggle
+  const hiddenEmptyCount = filter.hideEmpty
+    ? rows.filter((r) => String(r.detected_animal ?? "").toLowerCase() === "empty").length
+    : 0;
 
   const toggleSort = (col: string) => {
     setSort((s) =>
@@ -1181,10 +1159,20 @@ export default function Results() {
     } finally { setBulkBusy(null); }
   };
 
+  const speciesList = useMemo(() => {
+    const s = new Set<string>();
+    for (const r of rows) {
+      const v = String(r.detected_animal ?? "").trim();
+      if (v && v.toLowerCase() !== "empty") s.add(v);
+    }
+    return Array.from(s).sort((a, b) => a.localeCompare(b));
+  }, [rows]);
+
+  const uniqueImages = new Set(rows.map((r) => String(r.filename))).size;
   const totalAnimals = rows.filter((r) => String(r.primary_label ?? r.detected_animal ?? "").toLowerCase() !== "empty").length;
-  const dayCount = rows.filter((r) => r.day_night === "Day").length;
-  const nightCount = rows.filter((r) => r.day_night === "Night").length;
-  const uniqueSpecies = new Set(rows.map((r) => r.detected_animal)).size;
+  const dayImages = new Set(rows.filter((r) => r.day_night === "Day").map((r) => String(r.filename))).size;
+  const nightImages = new Set(rows.filter((r) => r.day_night === "Night").map((r) => String(r.filename))).size;
+  const uniqueSpecies = new Set(rows.filter((r) => String(r.detected_animal ?? "").toLowerCase() !== "empty").map((r) => r.detected_animal)).size;
   const lowConfCount = rows.filter((r) => {
     const v = typeof r.detection_confidence === "number" ? r.detection_confidence as number : parseFloat(String(r.detection_confidence ?? "1"));
     return !isNaN(v) && v < 0.4;
@@ -1229,12 +1217,16 @@ export default function Results() {
           <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
             <button
               onClick={() => setViewMode("table")}
-              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
-            >☰ Table</button>
+              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer flex items-center gap-1 ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+            >
+              <span className="material-symbols-outlined text-sm select-none">view_list</span> Table
+            </button>
             <button
               onClick={() => setViewMode("gallery")}
-              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
-            >⊞ Gallery</button>
+              className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer flex items-center gap-1 ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
+            >
+              <span className="material-symbols-outlined text-sm select-none">grid_view</span> Gallery
+            </button>
           </div>
           <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition">Export Excel</a>
           <a href={exportCsv()} className="px-4 py-2 bg-slate-600 dark:bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 dark:hover:bg-slate-700 shadow-sm transition">Export CSV</a>
@@ -1245,10 +1237,10 @@ export default function Results() {
       {rows.length > 0 && (
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
-            ["Total Images", rows.length, "text-slate-700 dark:text-slate-200"],
+            ["Total Images", uniqueImages, "text-slate-700 dark:text-slate-200"],
             ["Animals", totalAnimals, "text-green-700 dark:text-emerald-400"],
             ["Unique Species", uniqueSpecies, "text-indigo-700 dark:text-indigo-400"],
-            ["Day / Night", `${dayCount} / ${nightCount}`, "text-amber-700 dark:text-amber-400"],
+            ["Day / Night", `${dayImages} / ${nightImages}`, "text-amber-700 dark:text-amber-400"],
             ["Needs Review", lowConfCount, lowConfCount > 0 ? "text-red-600 dark:text-red-400" : "text-slate-400 dark:text-slate-500"],
           ].map(([label, val, cls]) => (
             <div key={String(label)} className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 px-4 py-3 shadow-sm">
@@ -1260,49 +1252,102 @@ export default function Results() {
       )}
 
       {/* Filters */}
-      <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 p-3 flex flex-wrap gap-2 items-end shadow-sm">
-        <input ref={speciesInputRef} placeholder="Species (live)…" value={filter.species}
-          onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
-        <input placeholder="Station (live)…" value={filter.station}
-          onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
-        <select value={filter.day_night}
-          onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
-          className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300">
-          <option value="">All times</option>
-          <option value="Day">☀ Day</option>
-          <option value="Night">🌙 Night</option>
-        </select>
-        <div className="flex items-center gap-1">
-          <input placeholder="Min conf" value={filter.min_conf}
-            onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value }))}
-            onKeyDown={(e) => e.key === "Enter" && load()}
-            className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
-          <span className="text-slate-500 dark:text-slate-600 text-sm">–</span>
-          <input placeholder="Max conf" value={filter.max_conf}
-            onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value }))}
-            onKeyDown={(e) => e.key === "Enter" && load()}
-            className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm w-24 focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300" />
+      <div className="bg-white dark:bg-slate-900/60 rounded-xl border border-slate-200 dark:border-slate-800/80 shadow-sm overflow-hidden">
+        <div className="px-3 py-2.5 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
+          {/* Species */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Species</label>
+            <select ref={speciesInputRef} value={filter.species}
+              onChange={(e) => setFilter((f) => ({ ...f, species: e.target.value }))}
+              className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full">
+              <option value="">All species</option>
+              {speciesList.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {/* Station */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Station</label>
+            {stations.length > 0 ? (
+              <select value={filter.station}
+                onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
+                className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full">
+                <option value="">All stations</option>
+                {stations.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            ) : (
+              <input placeholder="Search…" value={filter.station}
+                onChange={(e) => setFilter((f) => ({ ...f, station: e.target.value }))}
+                className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full" />
+            )}
+          </div>
+
+          {/* Time of day */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Time of day</label>
+            <select value={filter.day_night}
+              onChange={(e) => setFilter((f) => ({ ...f, day_night: e.target.value }))}
+              className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full">
+              <option value="">All</option>
+              <option value="Day">Day</option>
+              <option value="Night">Night</option>
+            </select>
+          </div>
+
+          {/* Min confidence */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Min confidence</label>
+            <input type="number" placeholder="0.0" min="0" max="1" step="0.05" value={filter.min_conf}
+              onChange={(e) => setFilter((f) => ({ ...f, min_conf: e.target.value, lowConfOnly: false }))}
+              className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full" />
+          </div>
+
+          {/* Max confidence */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Max confidence</label>
+            <input type="number" placeholder="1.0" min="0" max="1" step="0.05" value={filter.max_conf}
+              onChange={(e) => setFilter((f) => ({ ...f, max_conf: e.target.value, lowConfOnly: false }))}
+              className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-400 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-300 w-full" />
+          </div>
+
+          {/* Toggles */}
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Show</label>
+            <div className="flex flex-col gap-1 pt-0.5">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={filter.hideEmpty}
+                  onChange={(e) => setFilter((f) => ({ ...f, hideEmpty: e.target.checked }))}
+                  className="rounded border-slate-300 dark:border-slate-700 text-green-600 focus:ring-green-400 bg-white dark:bg-slate-950 cursor-pointer" />
+                <span className="text-xs text-slate-600 dark:text-slate-400">Hide empty</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={filter.lowConfOnly}
+                  onChange={(e) => setFilter((f) => ({ ...f, lowConfOnly: e.target.checked, min_conf: "", max_conf: "" }))}
+                  className="rounded border-slate-300 dark:border-slate-700 text-amber-500 focus:ring-amber-400 bg-white dark:bg-slate-950 cursor-pointer" />
+                <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Low conf only</span>
+              </label>
+            </div>
+          </div>
         </div>
-        <button onClick={load} title="Apply confidence range filter" className="px-4 py-1.5 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 cursor-pointer shadow-sm">Apply Conf</button>
-        {selectedTaxon && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/50 rounded-lg text-xs font-bold leading-none h-[34px] tracking-wide uppercase select-none">
-            <span>Taxon: {selectedTaxon}</span>
-            <button onClick={() => setSelectedTaxon(null)} className="hover:text-emerald-900 dark:hover:text-emerald-300 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 rounded">
-              <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+
+        {/* Active filter chips + clear */}
+        {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || (filter.station && stations.length === 0) || filter.station || filter.lowConfOnly || selectedTaxon) && (
+          <div className="px-3 py-2 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center gap-2">
+            <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider shrink-0">Active:</span>
+            {filter.species && <Chip label={`Species: ${filter.species}`} onRemove={() => setFilter((f) => ({ ...f, species: "" }))} />}
+            {filter.station && <Chip label={`Station: ${filter.station}`} onRemove={() => setFilter((f) => ({ ...f, station: "" }))} />}
+            {filter.day_night && <Chip label={filter.day_night} onRemove={() => setFilter((f) => ({ ...f, day_night: "" }))} />}
+            {filter.min_conf && <Chip label={`Conf ≥ ${filter.min_conf}`} onRemove={() => setFilter((f) => ({ ...f, min_conf: "" }))} />}
+            {filter.max_conf && <Chip label={`Conf ≤ ${filter.max_conf}`} onRemove={() => setFilter((f) => ({ ...f, max_conf: "" }))} />}
+            {filter.lowConfOnly && <Chip label="Low conf < 40%" onRemove={() => setFilter((f) => ({ ...f, lowConfOnly: false }))} color="amber" />}
+            {selectedTaxon && <Chip label={`Taxon: ${selectedTaxon}`} onRemove={() => setSelectedTaxon(null)} color="emerald" />}
+            <button onClick={() => {
+              setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: true, lowConfOnly: false });
+              setSelectedTaxon(null);
+            }} className="ml-auto text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer px-2 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+              Clear all
             </button>
           </div>
-        )}
-        {(filter.species || filter.day_night || filter.min_conf || filter.max_conf || filter.station || selectedTaxon) && (
-          <button
-            onClick={() => {
-              setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "" });
-              setSelectedTaxon(null);
-              setTimeout(load, 0);
-            }}
-            className="px-3 py-1.5 text-slate-500 dark:text-slate-400 text-sm rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
-          >Clear</button>
         )}
       </div>
 
@@ -1333,6 +1378,20 @@ export default function Results() {
         </div>
       )}
 
+      {/* Hidden-empty notice */}
+      {!loading && hiddenEmptyCount > 0 && sorted.length > 0 && (
+        <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400">
+          <span className="material-symbols-outlined text-base select-none text-slate-400 shrink-0">hide_image</span>
+          <span className="flex-1">
+            <span className="font-semibold text-slate-600 dark:text-slate-300">{hiddenEmptyCount}</span> image{hiddenEmptyCount !== 1 ? "s" : ""} with no animal detected {hiddenEmptyCount !== 1 ? "are" : "is"} hidden.
+          </span>
+          <button
+            onClick={() => setFilter((f) => ({ ...f, hideEmpty: false }))}
+            className="text-xs font-semibold text-green-600 dark:text-green-400 hover:underline cursor-pointer shrink-0"
+          >Show them</button>
+        </div>
+      )}
+
       {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-16 text-slate-400 dark:text-slate-500 gap-2">
@@ -1343,10 +1402,27 @@ export default function Results() {
           Loading…
         </div>
       ) : sorted.length === 0 ? (
-        <div className="text-center py-16 text-slate-400 dark:text-slate-500 space-y-2">
-          <div className="text-4xl">📷</div>
-          <p className="font-semibold">No results yet</p>
-          <p className="text-sm">Process images in the Upload tab first.</p>
+        <div className="text-center py-16 text-slate-400 dark:text-slate-500 space-y-3">
+          <span className="material-symbols-outlined text-5xl select-none opacity-40">photo_camera</span>
+          {rows.length === 0 ? (
+            <>
+              <p className="font-semibold">No results yet</p>
+              <p className="text-sm">Process images in the Upload tab first.</p>
+            </>
+          ) : (
+            <>
+              <p className="font-semibold text-slate-600 dark:text-slate-400">No images match the current filters</p>
+              <p className="text-sm">{rows.length} detection{rows.length !== 1 ? "s" : ""} in database
+                {hiddenEmptyCount > 0 && ` · ${hiddenEmptyCount} hidden (no detection)`}</p>
+              <button
+                onClick={() => {
+                  setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: false, lowConfOnly: false });
+                  setSelectedTaxon(null);
+                }}
+                className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 cursor-pointer transition"
+              >Clear all filters</button>
+            </>
+          )}
         </div>
       ) : viewMode === "gallery" ? (
         <>
@@ -1426,7 +1502,7 @@ export default function Results() {
                           title="View image"
                         >
                           <img
-                            src={storedImageUrl(filename)}
+                            src={storedThumbUrl(filename, 240)}
                             alt={filename}
                             className="w-full h-full object-cover"
                             onError={(e) => {
@@ -1455,24 +1531,23 @@ export default function Results() {
                               <div className="min-w-[200px] space-y-1.5">
                                 {getCandidates(row).length > 0 && (
                                   <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
-                                    {getCandidates(row).slice(0, 4).map((c, ci) => (
+                                    {getCandidates(row).slice(0, 5).map((c, ci) => (
                                       <button
                                         key={ci}
                                         onClick={() => setEditVal(c.label)}
-                                        className={`w-full flex items-center justify-between px-2 py-1 text-xs text-left cursor-pointer border-b last:border-b-0 border-slate-100 dark:border-slate-800 transition ${
+                                        className={`w-full flex items-center justify-between px-2 py-1.5 text-xs text-left cursor-pointer border-b last:border-b-0 border-slate-100 dark:border-slate-800 transition ${
                                           editVal === c.label
                                             ? "bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400"
                                             : "bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
                                         }`}
                                       >
-                                        <span className="truncate font-medium">{c.label}</span>
-                                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                                        <div className="flex-1 min-w-0 mr-1">
+                                          <span className="block truncate font-medium">{c.label}</span>
+                                          {c.scientific && <span className="block truncate text-[9px] italic text-slate-400 dark:text-slate-500 leading-tight">{c.scientific}</span>}
+                                        </div>
+                                        <div className="flex items-center gap-1 shrink-0">
                                           <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
-                                          <span className={`text-[8px] font-bold px-1 rounded ${
-                                            c.source === "BioClip"
-                                              ? "bg-violet-100 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400"
-                                              : "bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400"
-                                          }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                                          <span className="text-[8px] font-bold px-1 rounded bg-teal-100 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400">SN</span>
                                         </div>
                                       </button>
                                     ))}
@@ -1487,8 +1562,12 @@ export default function Results() {
                                     placeholder="Type species name…"
                                     className="flex-1 min-w-0 border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-xs focus:outline-none bg-white dark:bg-slate-900 text-slate-800 dark:text-white"
                                   />
-                                  <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer">✓</button>
-                                  <button onClick={() => setEditing(null)} className="text-slate-400 shrink-0 cursor-pointer">✕</button>
+                                  <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer flex items-center justify-center" title="Save">
+                                    <span className="material-symbols-outlined text-sm leading-none select-none">check</span>
+                                  </button>
+                                  <button onClick={() => setEditing(null)} className="text-slate-400 shrink-0 cursor-pointer flex items-center justify-center" title="Cancel">
+                                    <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
+                                  </button>
                                 </div>
                               </div>
                             ) : isEditing ? (
@@ -1497,7 +1576,9 @@ export default function Results() {
                                   onChange={(e) => setEditVal(e.target.value)}
                                   onKeyDown={(e) => e.key === "Enter" && saveEdit(id)}
                                   className="border border-green-400 dark:border-emerald-500 rounded px-2 py-0.5 text-sm w-full focus:outline-none bg-white dark:bg-slate-900 text-slate-800 dark:text-white" />
-                                <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer">✓</button>
+                                <button onClick={() => saveEdit(id)} className="text-green-600 dark:text-emerald-500 font-bold shrink-0 cursor-pointer flex items-center justify-center" title="Save">
+                                  <span className="material-symbols-outlined text-sm leading-none select-none">check</span>
+                                </button>
                                 <button onClick={() => setEditing(null)} className="text-slate-300 dark:text-slate-600 hover:text-red-500 shrink-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 rounded">
                                   <span className="material-symbols-outlined text-sm leading-none select-none">close</span>
                                 </button>
@@ -1509,24 +1590,31 @@ export default function Results() {
                             ) : key === "detection_method" ? (
                               <ModelBreakdown
                                 method={String(val ?? "")}
-                                bioclipConf={typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined}
                                 speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
-                                agreement={row.agreement as string | null}
                                 detected={String(row.detected_animal ?? "")}
+                                modelBreakdown={row.model_breakdown}
+                                topCandidates={row.top_candidates}
                                 compact
                               />
                             ) : key === "detected_animal" ? (
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-start gap-1.5">
                                 {isLowConf && (
-                                  <span className="material-symbols-outlined text-amber-400 text-sm shrink-0" title="Low confidence">warning</span>
+                                  <span className="material-symbols-outlined text-amber-400 text-sm shrink-0 mt-0.5" title="Low confidence">warning</span>
                                 )}
-                                <span
-                                  className="block truncate font-semibold cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2"
-                                  title={`${String(val ?? "")} — click to correct`}
-                                  onClick={() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); }}
-                                >
-                                  {String(val ?? "")}
-                                </span>
+                                <div className="min-w-0">
+                                  <span
+                                    className="block truncate font-semibold cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2"
+                                    title={`${String(val ?? "")} — click to correct`}
+                                    onClick={() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); }}
+                                  >
+                                    {String(val ?? "")}
+                                  </span>
+                                  {!!row.scientific_name && (
+                                    <span className="block truncate text-[10px] italic text-slate-400 dark:text-slate-500 leading-tight">
+                                      {String(row.scientific_name)}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             ) : (
                               <span

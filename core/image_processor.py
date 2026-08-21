@@ -146,10 +146,11 @@ class ImageProcessor:
                     row['bbox'] = det['bbox']
                     row['detection_method'] = det.get('method', 'Unknown')
                     row['species_data'] = det.get('species_data', [])
-                    row['bioclip_confidence'] = det.get('bioclip_confidence', 0.0)
                     row['speciesnet_confidence'] = det.get('speciesnet_confidence', 0.0)
-                    row['agreement'] = det.get('agreement')
+                    row['sn_raw_results'] = det.get('sn_raw_results', [])
                     row['model_breakdown'] = det.get('model_breakdown')
+                    row['md_confidence'] = det.get('md_confidence')
+                    row['raw_model_output'] = det.get('raw_model_output')
                     if '_model_events' in det:
                         row['_model_events'] = det['_model_events']
                     final_results.append(row)
@@ -194,23 +195,10 @@ class ImageProcessor:
             md_debug = raw_result.get('detections', []) if isinstance(raw_result, dict) else []
             md_status = self.animal_detector.megadetector.get_status()
             
-        bc_debug = []
-        if hasattr(self.animal_detector, 'bioclip') and self.animal_detector.bioclip:
-             try:
-                 # Load image for BioClip
-                 img = cv2.imread(image_path)
-                 if img is not None:
-                      img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                      pil_img = Image.fromarray(img)
-                      bc_debug = self.animal_detector.bioclip.predict_list(pil_img, threshold=0.0, top_k=20)
-             except Exception as e:
-                 print(f"BioClip debug error: {e}")
-            
         return {
             'ocr': ocr_debug,
             'megadetector': md_debug,
             'megadetector_status': md_status,
-            'bioclip': bc_debug
         }
     
     def process_batch(self, image_paths: list, progress_callback: Optional[Callable] = None) -> list:

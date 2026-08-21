@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
+import pytest
 
 # Add current dir to path
 sys.path.append(os.getcwd())
@@ -12,6 +13,17 @@ sys.path.append(os.getcwd())
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+@pytest.fixture
+def ocr_processor():
+    from core.ocr_processor import OCRProcessor
+    return OCRProcessor()
+
+@pytest.fixture
+def dn_classifier():
+    from core.day_night_classifier import DayNightClassifier
+    return DayNightClassifier()
+
 
 def test_imports():
     logger.info("--- Testing Imports ---")

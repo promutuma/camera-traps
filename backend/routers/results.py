@@ -23,25 +23,20 @@ def get_results(
     min_conf: Optional[float] = Query(None),
     max_conf: Optional[float] = Query(None),
     station: Optional[str] = Query(None),
-    limit: int = Query(500, ge=1, le=5000),
+    limit: int = Query(5000, ge=1, le=50000),
     offset: int = Query(0, ge=0),
 ):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
-    df = state.db_manager.get_history_df()
+    df = state.db_manager.get_history_df(
+        station_id=station or None,
+        species=species or None,
+        day_night=day_night or None,
+        min_conf=min_conf,
+        max_conf=max_conf,
+    )
     if df.empty:
-        return []
-
-    if species:
-        df = df[df["detected_animal"].str.contains(species, case=False, na=False)]
-    if day_night:
-        df = df[df["day_night"] == day_night]
-    if min_conf is not None:
-        df = df[df["detection_confidence"] >= min_conf]
-    if max_conf is not None:
-        df = df[df["detection_confidence"] <= max_conf]
-    if station:
-        df = df[df["station_id"] == station]
+        return {"total": 0, "limit": limit, "offset": offset, "items": []}
 
     total = len(df)
     page = df.iloc[offset: offset + limit]

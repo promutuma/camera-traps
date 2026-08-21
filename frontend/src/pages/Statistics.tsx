@@ -63,7 +63,7 @@ export default function Statistics() {
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-slate-800 dark:text-slate-100">Analysis Statistics</h1>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Summary metrics and activity patterns computed across all sessions.</p>
@@ -135,18 +135,64 @@ export default function Statistics() {
       )}
 
       {/* Confidence series */}
-      <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
-        <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Detection Confidence Distribution</h2>
-        <ResponsiveContainer width="100%" height={200}>
-          <LineChart
-            data={(data.confidence_series as number[]).map((v, i) => ({ i, confidence: v }))}
-          >
-            <XAxis dataKey="i" hide />
-            <YAxis domain={[0, 1]} />
-            <Tooltip />
-            <Line type="monotone" dataKey="confidence" stroke="#10b981" dot={false} strokeWidth={1.5} />
-          </LineChart>
-        </ResponsiveContainer>
+      {Array.isArray(data.confidence_series) && (data.confidence_series as number[]).length > 0 && (
+        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
+          <h2 className="font-semibold text-slate-700 dark:text-slate-300 mb-3">Detection Confidence Distribution</h2>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart
+              data={(data.confidence_series as number[]).map((v, i) => ({ i, confidence: v }))}
+            >
+              <XAxis dataKey="i" hide />
+              <YAxis domain={[0, 1]} />
+              <Tooltip />
+              <Line type="monotone" dataKey="confidence" stroke="#10b981" dot={false} strokeWidth={1.5} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* Export section */}
+      <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-6 space-y-4 shadow-sm">
+        <div>
+          <h3 className="text-base font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+            <span className="material-symbols-outlined text-emerald-500">ios_share</span>
+            Export Analysis Statistics
+          </h3>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+            Download computed summary statistics, distributions, and activity patterns in standard CSV or Excel spreadsheets.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {[
+            { label: "Summary Metrics Table", metric: "summary" },
+            { label: "Species Distribution", metric: "species" },
+            { label: "Day / Night Distribution", metric: "daynight" },
+            { label: "Daily Hourly Activity Patterns", metric: "hourly" },
+            { label: "Detection Confidence Data", metric: "confidence" },
+          ].map((m) => (
+            <div
+              key={m.metric}
+              className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-900/40 border border-slate-200/40 dark:border-slate-800/40 rounded-xl"
+            >
+              <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{m.label}</span>
+              <div className="flex gap-1.5">
+                <a
+                  href={`/api/stats/export?metric=${m.metric}&format=csv`}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-[10px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400 rounded-md transition shadow-sm"
+                >
+                  CSV
+                </a>
+                <a
+                  href={`/api/stats/export?metric=${m.metric}&format=excel`}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-[10px] font-bold uppercase tracking-wide text-green-600 dark:text-green-400 rounded-md transition shadow-sm"
+                >
+                  EXCEL
+                </a>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

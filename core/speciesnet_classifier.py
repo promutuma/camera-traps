@@ -97,7 +97,7 @@ class SpeciesNetWrapper:
     def classify_crop(
         self,
         crop: Image.Image,
-        top_k: int = 5,
+        top_k: int = 50,
         lat: Optional[float] = None,
         lng: Optional[float] = None,
         country: Optional[str] = None,

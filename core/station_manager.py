@@ -30,6 +30,17 @@ class StationManager:
         self.db_path = db_path
         self._init_tables()
 
+    @property
+    def active_project_id(self) -> int:
+        conn = self._conn()
+        try:
+            row = conn.execute("SELECT id FROM projects WHERE is_active = 1 LIMIT 1").fetchone()
+            return row[0] if row else 1
+        except Exception:
+            return 1
+        finally:
+            conn.close()
+
     def _conn(self):
         return sqlite3.connect(self.db_path)
 
@@ -37,22 +48,86 @@ class StationManager:
         conn = self._conn()
         cur = conn.cursor()
 
+        # Migrate stations table if it exists but lacks project_id
+        try:
+            cur.execute("PRAGMA table_info(stations)")
+            cols = [r[1] for r in cur.fetchall()]
+            if cols and "project_id" not in cols:
+                cur.execute("ALTER TABLE stations RENAME TO stations_old")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS stations (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        project_id    INTEGER DEFAULT 1,
+                        station_id    TEXT NOT NULL,
+                        gps_lat       REAL,
+                        gps_lon       REAL,
+                        habitat_stratum TEXT,
+                        camera_model  TEXT,
+                        team_member   TEXT,
+                        notes         TEXT,
+                        created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(project_id, station_id)
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO stations (project_id, station_id, gps_lat, gps_lon, habitat_stratum, camera_model, team_member, notes, created_at)
+                    SELECT 1, station_id, gps_lat, gps_lon, habitat_stratum, camera_model, team_member, notes, created_at FROM stations_old
+                """)
+                cur.execute("DROP TABLE stations_old")
+                conn.commit()
+        except Exception as e:
+            print(f"Error migrating stations table: {e}")
+
+        # Migrate deployments table if it exists but lacks project_id
+        try:
+            cur.execute("PRAGMA table_info(deployments)")
+            cols_dep = [r[1] for r in cur.fetchall()]
+            if cols_dep and "project_id" not in cols_dep:
+                cur.execute("ALTER TABLE deployments RENAME TO deployments_old")
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS deployments (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        project_id       INTEGER DEFAULT 1,
+                        station_id       TEXT NOT NULL,
+                        deployment_date  TEXT,
+                        retrieval_date   TEXT,
+                        team_member      TEXT,
+                        sd_card_id       TEXT,
+                        camera_down_days INTEGER DEFAULT 0,
+                        notes            TEXT,
+                        created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                cur.execute("""
+                    INSERT INTO deployments (id, project_id, station_id, deployment_date, retrieval_date, team_member, sd_card_id, camera_down_days, notes, created_at)
+                    SELECT id, 1, station_id, deployment_date, retrieval_date, team_member, sd_card_id, camera_down_days, notes, created_at FROM deployments_old
+                """)
+                cur.execute("DROP TABLE deployments_old")
+                conn.commit()
+        except Exception as e:
+            print(f"Error migrating deployments table: {e}")
+
+        # Fresh creation fallback
         cur.execute("""
             CREATE TABLE IF NOT EXISTS stations (
-                station_id    TEXT PRIMARY KEY,
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id    INTEGER DEFAULT 1,
+                station_id    TEXT NOT NULL,
                 gps_lat       REAL,
                 gps_lon       REAL,
                 habitat_stratum TEXT,
                 camera_model  TEXT,
                 team_member   TEXT,
                 notes         TEXT,
-                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_id, station_id)
             )
         """)
 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS deployments (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id       INTEGER DEFAULT 1,
                 station_id       TEXT NOT NULL,
                 deployment_date  TEXT,
                 retrieval_date   TEXT,
@@ -60,8 +135,7 @@ class StationManager:
                 sd_card_id       TEXT,
                 camera_down_days INTEGER DEFAULT 0,
                 notes            TEXT,
-                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (station_id) REFERENCES stations (station_id)
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
@@ -82,17 +156,16 @@ class StationManager:
         team_member: str = "",
         notes: str = "",
     ) -> bool:
-        """
-        Insert a new station. Returns False if station_id already exists.
-        """
+        """Insert a new station. Returns False if station_id already exists in project."""
         conn = self._conn()
+        proj_id = self.active_project_id
         try:
             conn.execute("""
                 INSERT INTO stations
-                    (station_id, gps_lat, gps_lon, habitat_stratum,
+                    (project_id, station_id, gps_lat, gps_lon, habitat_stratum,
                      camera_model, team_member, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (station_id, gps_lat, gps_lon, habitat_stratum,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (proj_id, station_id.strip(), gps_lat, gps_lon, habitat_stratum,
                   camera_model, team_member, notes))
             conn.commit()
             return True
@@ -102,17 +175,18 @@ class StationManager:
             conn.close()
 
     def update_station(self, station_id: str, **kwargs) -> bool:
-        """Update any subset of station fields by keyword argument."""
+        """Update any subset of station fields by keyword argument. Backward-compatible: unknown keys ignored."""
         allowed = {"gps_lat", "gps_lon", "habitat_stratum",
                    "camera_model", "team_member", "notes"}
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
             return False
         sets = ", ".join(f"{k} = ?" for k in updates)
-        vals = list(updates.values()) + [station_id]
+        proj_id = self.active_project_id
+        vals = list(updates.values()) + [proj_id, station_id]
         conn = self._conn()
         try:
-            conn.execute(f"UPDATE stations SET {sets} WHERE station_id = ?", vals)
+            conn.execute(f"UPDATE stations SET {sets} WHERE project_id = ? AND station_id = ?", vals)
             conn.commit()
             return True
         finally:
@@ -121,9 +195,10 @@ class StationManager:
     def delete_station(self, station_id: str) -> bool:
         """Delete a station and all its deployments."""
         conn = self._conn()
+        proj_id = self.active_project_id
         try:
-            conn.execute("DELETE FROM deployments WHERE station_id = ?", (station_id,))
-            conn.execute("DELETE FROM stations WHERE station_id = ?", (station_id,))
+            conn.execute("DELETE FROM deployments WHERE project_id = ? AND station_id = ?", (proj_id, station_id))
+            conn.execute("DELETE FROM stations WHERE project_id = ? AND station_id = ?", (proj_id, station_id))
             conn.commit()
             return True
         finally:
@@ -132,9 +207,10 @@ class StationManager:
     def get_stations(self) -> pd.DataFrame:
         """Return all stations as a DataFrame."""
         conn = self._conn()
+        proj_id = self.active_project_id
         try:
             df = pd.read_sql_query(
-                "SELECT * FROM stations ORDER BY station_id", conn
+                "SELECT * FROM stations WHERE project_id = ? ORDER BY station_id", conn, params=(proj_id,)
             )
             return df
         finally:
@@ -160,13 +236,14 @@ class StationManager:
         retrieval_date=None means the deployment is still active.
         """
         conn = self._conn()
+        proj_id = self.active_project_id
         try:
             cur = conn.execute("""
                 INSERT INTO deployments
-                    (station_id, deployment_date, retrieval_date, team_member,
+                    (project_id, station_id, deployment_date, retrieval_date, team_member,
                      sd_card_id, camera_down_days, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (station_id, deployment_date, retrieval_date,
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (proj_id, station_id, deployment_date, retrieval_date,
                   team_member, sd_card_id, camera_down_days, notes))
             conn.commit()
             return cur.lastrowid
@@ -204,15 +281,17 @@ class StationManager:
     def get_deployments(self, station_id: Optional[str] = None) -> pd.DataFrame:
         """Return deployments, optionally filtered to one station."""
         conn = self._conn()
+        proj_id = self.active_project_id
         try:
             if station_id:
                 df = pd.read_sql_query(
-                    "SELECT * FROM deployments WHERE station_id = ? ORDER BY deployment_date",
-                    conn, params=(station_id,)
+                    "SELECT * FROM deployments WHERE project_id = ? AND station_id = ? ORDER BY deployment_date",
+                    conn, params=(proj_id, station_id)
                 )
             else:
                 df = pd.read_sql_query(
-                    "SELECT * FROM deployments ORDER BY station_id, deployment_date", conn
+                    "SELECT * FROM deployments WHERE project_id = ? ORDER BY station_id, deployment_date",
+                    conn, params=(proj_id,)
                 )
             return df
         finally:

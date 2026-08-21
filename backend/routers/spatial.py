@@ -25,14 +25,18 @@ def get_geojson(state: AppState = Depends(get_state)):
     df = _get_df(state)
     if not state.spatial_exporter:
         raise HTTPException(status_code=503, detail="Service not ready")
-    geojson = state.spatial_exporter.to_geojson(df)
+    stations_df = state.station_manager.get_stations() if state.station_manager else None
+    geojson = state.spatial_exporter.to_geojson(df, stations_df)
     return geojson if isinstance(geojson, dict) else json.loads(geojson)
 
 
 @router.get("/export/geojson")
 def export_geojson(state: AppState = Depends(get_state)):
     df = _get_df(state)
-    geojson = state.spatial_exporter.to_geojson(df)
+    if not state.spatial_exporter:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    stations_df = state.station_manager.get_stations() if state.station_manager else None
+    geojson = state.spatial_exporter.to_geojson(df, stations_df)
     data = json.dumps(geojson if isinstance(geojson, dict) else json.loads(geojson), indent=2)
     return StreamingResponse(
         io.BytesIO(data.encode()),
@@ -44,11 +48,12 @@ def export_geojson(state: AppState = Depends(get_state)):
 @router.get("/export/csv")
 def export_csv(state: AppState = Depends(get_state)):
     df = _get_df(state)
-    buf = io.StringIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
+    if not state.spatial_exporter:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    stations_df = state.station_manager.get_stations() if state.station_manager else None
+    csv_str = state.spatial_exporter.detections_to_csv(df, stations_df)
     return StreamingResponse(
-        io.BytesIO(buf.getvalue().encode()),
+        io.BytesIO(csv_str.encode()),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=wildlife_georeferenced.csv"},
     )
@@ -59,8 +64,9 @@ def export_shapefile(state: AppState = Depends(get_state)):
     df = _get_df(state)
     if not state.spatial_exporter:
         raise HTTPException(status_code=503, detail="Service not ready")
+    stations_df = state.station_manager.get_stations() if state.station_manager else None
     try:
-        shp_bytes = state.spatial_exporter.to_shapefile_bytes(df)
+        shp_bytes = state.spatial_exporter.to_shapefile_bytes(df, stations_df)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return StreamingResponse(
@@ -75,7 +81,8 @@ def export_kml(state: AppState = Depends(get_state)):
     df = _get_df(state)
     if not state.spatial_exporter:
         raise HTTPException(status_code=503, detail="Service not ready")
-    kml_str = state.spatial_exporter.to_kml(df)
+    stations_df = state.station_manager.get_stations() if state.station_manager else None
+    kml_str = state.spatial_exporter.to_kml(df, stations_df)
     return StreamingResponse(
         io.BytesIO(kml_str.encode() if isinstance(kml_str, str) else kml_str),
         media_type="application/vnd.google-earth.kml+xml",

@@ -335,6 +335,7 @@ For detailed configuration options and migration guide, see [SPECIESNET_FIRST_CO
 | Corridor Analysis | Directional flow detection, passage frequency, bottleneck identification |
 | Project Config | Multi-project support, indicator thresholds, baseline locking, JSON export |
 | ArcGIS Sync | Offline file exports (GeoJSON, Shapefile, KML) + live push to ArcGIS Online / Enterprise |
+| Storage Management | Tiered storage breakdown (empty/low_conf/valid); real-time storage gauge; 5 hash deduplication clearing strategies; grace-period warnings; batch ZIP download |
 
 ---
 
@@ -344,7 +345,7 @@ For detailed configuration options and migration guide, see [SPECIESNET_FIRST_CO
 camera-traps/
 ├── backend/                      # FastAPI application
 │   ├── main.py                   # App factory, CORS, lifespan model loading
-│   ├── routers/                  # One router per feature tab (16 total)
+│   ├── routers/                  # One router per feature tab (17 total)
 │   │   ├── config.py             # GET/PATCH /api/config
 │   │   ├── images.py             # Upload, processing, SSE stream; MIME validation
 │   │   ├── results.py            # Review, edit, export
@@ -360,23 +361,26 @@ camera-traps/
 │   │   ├── species.py            # Species library, synonym resolver
 │   │   ├── corridor.py           # Corridor movement analysis
 │   │   ├── project.py            # Project configuration
+│   │   ├── storage.py            # Storage metrics, cleanup & hash management endpoints
 │   │   └── arcgis.py             # ArcGIS push and exports
 │   ├── models/
 │   │   ├── state.py              # AppState (md_model, md_v1000_model, bio_model,
 │   │   │                         #           speciesnet_model, …) + AppConfig
 │   │   └── schemas.py            # Pydantic request/response models
 │   └── services/
+│       ├── file_manager.py       # Tier classification, ZIP downloads & cleanup service
 │       └── job_manager.py        # In-memory job tracker with model_events queue
 │
 ├── frontend/                     # React + TypeScript + Vite application
 │   ├── vite.config.ts            # Vite dev proxy: /api → localhost:8000
 │   └── src/
-│       ├── App.tsx               # React Router with 15 routes; Error Boundary on each
+│       ├── App.tsx               # React Router with 16 routes; Error Boundary on each
 │       ├── components/
 │       │   └── ErrorBoundary.tsx # Class-based Error Boundary — catches render errors
 │       ├── api/client.ts         # Typed axios client
 │       ├── store/configStore.ts  # Zustand global config store
 │       └── pages/
+│           ├── Storage.tsx       # Real-time storage gauge & deduplication control
 │           ├── Upload.tsx        # Auto-upload + live model output panel
 │           └── …                 # 14 other page components
 │
@@ -405,6 +409,7 @@ camera-traps/
 │   └── arcgis_sync.py            # ArcGIS REST API sync
 │
 ├── dev.sh                        # One command: starts both servers
+├── camera-traps.service          # systemd service config for production deployment
 ├── wildlife_data.db              # SQLite database (auto-created on first run)
 ├── requirements.txt              # Python ML dependencies
 ├── backend/requirements.txt      # FastAPI/server dependencies
@@ -824,6 +829,21 @@ git pull && install.bat
 ---
 
 ## Recent Changes
+
+### File Lifecycle & Storage Management System (June 2026)
+
+**Tiered File Storage & Classification:**
+- Detections and images are automatically sorted into `valid` (confidence > 0.4), `low_conf` (confidence 0.2 - 0.4), and `empty` (no wildlife detected or priority Person/Vehicle detections) tiers to optimize host system storage.
+- Deleted results are soft-deleted via SQLite audit records (`deleted_at`), initiating a 7-day grace period during which files can be recovered or downloaded before permanent erasure.
+- Bulk downloading files is optimized using asynchronous, chunked ZIP streaming of images alongside a custom manifest and structured `metadata.json` layout.
+
+**Hash-based Deduplication & Clearing Strategies:**
+- Computes SHA256 hashes for all uploaded images, preventing duplicate database entries and warning the user in real-time.
+- Implements 5 hash-clearing strategies (Empty, Deduplicate, Old, All, and Custom Tiers) directly controllable from the frontend to optimize database performance.
+
+**Storage Dashboard UI:**
+- Created [frontend/src/pages/Storage.tsx](file:///home/mutuma/Downloads/camera-traps/frontend/src/pages/Storage.tsx) displaying overall storage usage metrics, interactive progress gauges, deletion warning countdowns, and quick access buttons for batch download and optimization strategies.
+- Fully integrated loading skeletons and error boundaries with recovery buttons.
 
 ### Concurrency & Threading Improvements (May 2026)
 

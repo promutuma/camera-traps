@@ -1,27 +1,32 @@
 """
-Multi-Model Wildlife Identification Pipeline
+Wildlife Identification Pipeline
 ─────────────────────────────────────────────
-Stage 1 – Detection
-  MDv5a → candidates
-
-Stage 2 – Crop + Classify   (SpeciesNet-first; BioClip only when uncertain)
-  SpeciesNet  → [(species, conf), ...]          primary classifier
-  BioClip     → [(species, conf), ...]          supplement if SN conf < bypass threshold
-  Ensemble fusion → final species + agreement score
+Stage 1 – Detection    MDv5a → candidates
+Stage 2 – Classify     SpeciesNet → [(species, conf), ...] with full taxonomy
 
 Each result dict includes a '_model_events' list for real-time SSE display.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import cv2
 import numpy as np
 from PIL import Image
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
-from .bioclip_classifier import BioClipClassifier
-from .ensemble_engine import nms_merge_detections, fuse_species, fuse_species_speciesnet_first
+from .ensemble_engine import nms_merge_detections, fuse_species_speciesnet_first
+
+
+def _parse_sn_label(label: str) -> Dict:
+    """Parse a SpeciesNet JSON-encoded taxonomy label into a plain dict."""
+    if isinstance(label, str) and label.startswith('{'):
+        try:
+            return json.loads(label)
+        except Exception:
+            pass
+    return {'display': str(label).strip(), 'common_name': str(label).strip()}
 
 # MegaDetector (Official Package)
 try:
@@ -93,26 +98,44 @@ class MegaDetectorWrapper:
     def get_status(self) -> Dict:
         return {"loaded": self.model is not None, "error": self.load_error}
 
-    def detect_all_candidates(self, image_path: str) -> List[Dict]:
-        """Run inference; return all detections above threshold."""
+    def detect_all_candidates(
+        self,
+        image_path: str,
+        _capture_raw: bool = False,
+    ) -> Union[List[Dict], Tuple[List[Dict], List[Dict]]]:
+        """Run inference; return detections above threshold.
+
+        When _capture_raw=True, returns (filtered, raw_all) where raw_all
+        contains every box the model produced, regardless of threshold.
+        This avoids running the model twice when raw output is needed.
+        """
         if self.model is None:
-            return []
+            return ([], []) if _capture_raw else []
         try:
             image = Image.open(image_path)
             result = self.model.generate_detections_one_image(image)
-            out = []
+            filtered: List[Dict] = []
+            raw_all: List[Dict] = []
             for det in result.get("detections", []):
-                if det["conf"] >= self.confidence_threshold:
-                    label = self.CLASS_MAP.get(det["category"], "Unknown")
-                    out.append({
-                        "label": label,
-                        "conf": float(det["conf"]),
-                        "bbox": det["bbox"],
+                conf = float(det["conf"])
+                label = self.CLASS_MAP.get(det["category"], "Unknown")
+                bbox = det.get("bbox")
+                if bbox:
+                    raw_all.append({
+                        "category": label,
+                        "confidence": round(conf, 4),
+                        "bbox": bbox,
                     })
-            return out
+                    if conf >= self.confidence_threshold:
+                        filtered.append({
+                            "label": label,
+                            "conf": conf,
+                            "bbox": bbox,
+                        })
+            return (filtered, raw_all) if _capture_raw else filtered
         except Exception as exc:
             print(f"{self.model_version} inference error: {exc}")
-            return []
+            return ([], []) if _capture_raw else []
 
     # Legacy single-result interface kept for backward compat
     def detect_primary(
@@ -138,20 +161,7 @@ class MegaDetectorWrapper:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class AnimalDetector:
-    """
-    Orchestrates the full multi-model wildlife ID pipeline.
-
-    Parameters
-    ----------
-    megadetector : MegaDetectorWrapper
-        Detector (MDv5a).
-    bioclip : BioClipClassifier
-        Zero-shot species classifier.
-    confidence_threshold : float
-        Detection threshold.
-    speciesnet : SpeciesNetWrapper | None
-        Google SpeciesNet classifier. None → BioClip-only mode.
-    """
+    """Orchestrates the MDv5a + SpeciesNet wildlife ID pipeline."""
 
     WILDLIFE_CLASSES = [
         # ── Bovids & antelope ──
@@ -207,19 +217,14 @@ class AnimalDetector:
     def __init__(
         self,
         megadetector: Optional[MegaDetectorWrapper],
-        bioclip: Optional[BioClipClassifier],
         confidence_threshold: float = 0.2,
         speciesnet=None,  # SpeciesNetWrapper | None
-        bioclip_weight: float = 0.05,
-        speciesnet_weight: float = 0.95,
         speciesnet_bypass_threshold: float = 0.60,
-        use_speciesnet_first: bool = True,  # NEW: SpeciesNet as primary, returns ALL outputs
+        use_speciesnet_first: bool = True,
+        **kwargs,  # absorb any legacy keyword args
     ):
         self.megadetector = megadetector
-        self.bioclip = bioclip
         self.speciesnet = speciesnet
-        self._bioclip_weight = bioclip_weight
-        self._speciesnet_weight = speciesnet_weight
         self._speciesnet_bypass_threshold = speciesnet_bypass_threshold
         self._use_speciesnet_first = use_speciesnet_first
 
@@ -231,39 +236,11 @@ class AnimalDetector:
     # Classification helpers
     # ------------------------------------------------------------------
 
-    def _classify(
-        self, crop: Image.Image
-    ) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]], Optional[Dict], bool]:
-        """
-        SpeciesNet-first classification. Returns (bc_pairs, sn_pairs, bc_taxonomy, bioclip_skipped).
-
-        SpeciesNet runs first. If its top confidence meets the bypass threshold
-        BioClip is skipped entirely — no wasted inference, lower peak memory.
-        BioClip only runs when SpeciesNet is uncertain (below the threshold),
-        providing supplementary signal for the weighted fusion.
-        """
+    def _classify(self, crop: Image.Image) -> List[Tuple[str, float]]:
+        """Run SpeciesNet on an animal crop. Returns (label, confidence) pairs."""
         if not self.speciesnet or self.speciesnet.classifier is None:
-            # SpeciesNet unavailable — fall back to BioClip-only
-            if not self.bioclip:
-                return [], [], None, False
-            tax = self.bioclip.predict_taxonomy(crop, threshold=self._threshold)
-            bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
-            return bc, [], tax, False
-
-        # ── Primary: SpeciesNet ──────────────────────────────────────────
-        sn = self.speciesnet.classify_crop(crop)
-        sn_top_conf = sn[0][1] if sn else 0.0
-
-        # SpeciesNet confident → skip BioClip
-        if self._speciesnet_bypass_threshold > 0.0 and sn_top_conf >= self._speciesnet_bypass_threshold:
-            return [], sn, None, True
-
-        # ── Supplement: BioClip (SpeciesNet uncertain) ───────────────────
-        if not self.bioclip:
-            return [], sn, None, False
-        tax = self.bioclip.predict_taxonomy(crop, threshold=self._threshold)
-        bc = [(c["species"], c["confidence"]) for c in tax.get("candidates", [])]
-        return bc, sn, tax, False
+            return []
+        return self.speciesnet.classify_crop(crop)
 
     # ------------------------------------------------------------------
     # Crop helpers
@@ -307,9 +284,8 @@ class AnimalDetector:
         Parameters
         ----------
         image_path : path to the image file
-        is_night   : when True, the ensemble engine applies night-time weights
-                     that favour SpeciesNet over BioCLIP (SpeciesNet was trained
-                     on nocturnal/IR camera-trap images; BioCLIP was not).
+        is_night   : passed through to the ensemble engine (reserved for future
+                     night-time weight adjustments).
 
         Returns a list of result dicts — one per detected subject.
         The first result also carries '_model_events' for SSE streaming.
@@ -329,11 +305,19 @@ class AnimalDetector:
         if not self.megadetector:
             result = dict(_empty)
             result["_model_events"] = []
+            result["raw_model_output"] = {"megadetector": {"all_boxes": [], "confidence_threshold": None}, "speciesnet": None}
             return [result]
 
         # ── Stage 1: Detection ──────────────────────────────────────────
-        candidates = self.megadetector.detect_all_candidates(image_path)
+        # _capture_raw=True returns (filtered_candidates, all_raw_boxes) in one
+        # model pass so we never run MegaDetector twice.
+        candidates, raw_md_all = self.megadetector.detect_all_candidates(image_path, _capture_raw=True)
         merged = nms_merge_detections(candidates, [])
+
+        _raw_md_block = {
+            "all_boxes": raw_md_all,
+            "confidence_threshold": self._threshold,
+        }
 
         model_events: List[Dict] = [
             {
@@ -353,6 +337,7 @@ class AnimalDetector:
         if not merged:
             result = dict(_empty)
             result["_model_events"] = model_events
+            result["raw_model_output"] = {"megadetector": _raw_md_block, "speciesnet": None}
             return [result]
 
         # ── Stage 2: Classify each animal crop ──────────────────────────
@@ -376,6 +361,7 @@ class AnimalDetector:
                 if is_first:
                     base["_model_events"] = model_events
                     is_first = False
+                base["raw_model_output"] = {"megadetector": _raw_md_block, "speciesnet": None}
                 final_results.append(base)
                 continue
 
@@ -398,67 +384,34 @@ class AnimalDetector:
                     final_results.append(base)
                     continue
 
-                # Stage 2a: SpeciesNet-first classification
-                bc_results, sn_results, bc_taxonomy, bioclip_skipped = self._classify(crop)
+                # Stage 2: SpeciesNet classification
+                sn_results = self._classify(crop)
 
-                # BioClip fallback only when not intentionally skipped and SpeciesNet gave nothing
-                if not bc_results and not bioclip_skipped and not sn_results and self.bioclip:
-                    fb = self.bioclip.predict_taxonomy(crop, threshold=0.0, top_k=1)
-                    bc_results = [(c["species"], c["confidence"]) for c in fb.get("candidates", [])]
-                    if bc_taxonomy is None:
-                        bc_taxonomy = fb
-
-                # Classification events
-                ev_bc = (
-                    {"model": "BioClip", "top5": [], "skipped": True}
-                    if bioclip_skipped
-                    else {"model": "BioClip", "top5": [[s, round(c, 3)] for s, c in bc_results[:5]]}
-                )
                 ev_sn = {
                     "model": "SpeciesNet",
                     "top5": [[s, round(c, 3)] for s, c in sn_results[:5]],
                 } if sn_results else {"model": "SpeciesNet", "top5": [], "skipped": True}
 
-                # Stage 2b: Fuse - SpeciesNet-first or traditional fusion
-                if self._use_speciesnet_first:
-                    # SpeciesNet PRIMARY: returns ALL outputs, no BioClip weighting
-                    fusion = fuse_species_speciesnet_first(
-                        sn_results,
-                        bioclip=bc_results,
-                    )
-                else:
-                    # Traditional: weighted fusion of BioClip + SpeciesNet
-                    fusion = fuse_species(
-                        bc_results,
-                        sn_results,
-                        weights=(self._bioclip_weight, self._speciesnet_weight),
-                        is_night=is_night,
-                        bioclip_taxonomy=bc_taxonomy,
-                        speciesnet_bypass_threshold=self._speciesnet_bypass_threshold,
-                    )
+                fusion = fuse_species_speciesnet_first(sn_results)
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]
-                agreement = fusion["agreement"]
 
                 ev_result = {
                     "model": "Result",
                     "species": top_species,
                     "confidence": top_conf,
-                    "agreement": agreement,
                     "all_candidates": fusion["all_candidates"],
                 }
 
                 carries_events = is_first
                 if is_first:
-                    model_events += [ev_bc, ev_sn, ev_result]
+                    model_events += [ev_sn, ev_result]
                     is_first = False
 
-                # Build species label string
                 species_label = ", ".join(
                     f"{s} {c:.2f}" for s, c in fusion["all_candidates"][:3]
                 )
 
-                # Structured per-species data (for DB / results page)
                 species_data = [
                     {
                         "species_label": f"{s} {c:.2f}",
@@ -471,6 +424,18 @@ class AnimalDetector:
                     for s, c in fusion["all_candidates"]
                 ]
 
+                # Build raw SpeciesNet output: all predictions with full taxonomy
+                raw_sn = [
+                    {
+                        "id": (m := _parse_sn_label(lbl)).get("id"),
+                        "common_name": m.get("common_name") or m.get("display") or str(lbl),
+                        "scientific_name": m.get("scientific_name") or None,
+                        "hierarchy": m.get("hierarchy") or [],
+                        "confidence": round(float(conf_sn), 6),
+                    }
+                    for lbl, conf_sn in sn_results
+                ]
+
                 base.update({
                     "primary_label": "Animal",
                     "detected_animal": top_species,
@@ -480,20 +445,16 @@ class AnimalDetector:
                     "md_confidence": conf,
                     "md_bbox": bbox,
                     "md_category": "1",
-                    "bioclip_confidence": bc_results[0][1] if bc_results else 0.0,
                     "speciesnet_confidence": sn_results[0][1] if sn_results else 0.0,
-                    "agreement": agreement,
+                    "sn_raw_results": sn_results,  # full ranked list with raw JSON labels
                     "method": self._method_label(),
-                    "secondary_method": "BioClip+SpeciesNet",
+                    "secondary_method": "SpeciesNet",
                     "model_breakdown": {
                         "MDv5a": [c for c in candidates if c.get("label") == "Animal"],
-                        "BioClip": bc_results[:5],
-                        "SpeciesNet": sn_results[:5],
-                        "Fusion": {
-                            "species": top_species,
-                            "confidence": top_conf,
-                            "agreement": agreement,
-                        },
+                    },
+                    "raw_model_output": {
+                        "megadetector": _raw_md_block,
+                        "speciesnet": raw_sn,
                     },
                     "_model_events": model_events if carries_events else [],
                 })
@@ -504,11 +465,13 @@ class AnimalDetector:
                 if is_first:
                     base["_model_events"] = model_events
                     is_first = False
+                base["raw_model_output"] = {"megadetector": _raw_md_block, "speciesnet": None}
                 final_results.append(base)
 
         if not final_results:
             result = dict(_empty)
             result["_model_events"] = model_events
+            result["raw_model_output"] = {"megadetector": _raw_md_block, "speciesnet": None}
             return [result]
 
         # Ensure exactly one result carries the image-level model events
@@ -518,7 +481,7 @@ class AnimalDetector:
         return final_results
 
     def _method_label(self) -> str:
-        parts = ["MDv5a", "BioClip"]
+        parts = ["MDv5a"]
         if self.speciesnet and self.speciesnet.classifier is not None:
             parts.append("SpeciesNet")
         return " + ".join(parts)

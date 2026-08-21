@@ -188,42 +188,140 @@ export default function Ecological() {
               <DataTable rows={groupSize} cols={["station_id", "species", "mean_group_size", "min_group", "max_group", "ide_count"]} />
             </Card>
           )}
-
           {/* Visitation */}
           {visitation && visitation.visitation.length > 0 && (
             <Card title="Visitation Rate">
-              <DataTable rows={visitation.visitation} cols={["station_id", "species", "visits_per_night"]} />
+              <DataTable
+                rows={visitation.visitation}
+                cols={["station_id", "species", "visit_count", "trap_nights", "visit_rate", "diurnal_pct", "nocturnal_pct"]}
+              />
             </Card>
           )}
 
-          {/* Export */}
-          <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3 shadow-sm">
-            <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-300">Standardized Export Profiles</h3>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Download your camera trap detections in standardized formats for research publication or batch uploads.
-            </p>
-            <div className="flex flex-wrap gap-2">
-              <a
-                href="/api/ecological/export"
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg transition"
-              >
-                <span className="material-symbols-outlined text-sm">download</span>
-                IDE Summary CSV
-              </a>
-              <a
-                href="/api/exports/darwin-core"
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition"
-              >
-                <span className="material-symbols-outlined text-sm">science</span>
-                Darwin Core CSV
-              </a>
-              <a
-                href="/api/exports/wildlife-insights"
-                className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg transition"
-              >
-                <span className="material-symbols-outlined text-sm">folder_zip</span>
-                Wildlife Insights JSON
-              </a>
+          {/* Export section */}
+          <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-6 space-y-6 shadow-sm">
+            <div>
+              <h3 className="text-base font-bold text-slate-800 dark:text-slate-200 flex items-center gap-2">
+                <span className="material-symbols-outlined text-emerald-500">ios_share</span>
+                Ecological & Standardized Exports
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Download computed Independent Detection Events (IDEs) and calculated ecological indicators in various standardized and spatial formats.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Left: IDE & Standards */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Independent Detection Events (IDEs)</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <a
+                    href="/api/ecological/export?metric=ide&format=csv"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-slate-500">csv</span>
+                      IDE Summary CSV
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=excel"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-green-500">grid_on</span>
+                      IDE Summary Excel
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=darwin-core"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-emerald-500">science</span>
+                      Darwin Core CSV
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=wildlife-insights"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-indigo-500">folder_zip</span>
+                      Wildlife Insights JSON
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=geojson"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-sky-500">map</span>
+                      GeoJSON Map Points
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=shapefile"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-amber-500">layers</span>
+                      Shapefile ZIP
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                  <a
+                    href="/api/ecological/export?metric=ide&format=kml"
+                    className="flex items-center justify-between px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700/80 border border-slate-200/50 dark:border-slate-700/50 text-slate-700 dark:text-slate-300 text-xs font-medium rounded-lg transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-sm text-purple-500">public</span>
+                      KML Google Earth
+                    </span>
+                    <span className="material-symbols-outlined text-xs">download</span>
+                  </a>
+                </div>
+              </div>
+
+              {/* Right: Ecological Metrics */}
+              <div className="space-y-3">
+                <h4 className="text-xs font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Ecological Indicators & Statistics</h4>
+                <div className="space-y-2">
+                  {[
+                    { label: "Relative Abundance Index (RAI)", metric: "rai" },
+                    { label: "Mean Group Size per Species", metric: "group-size" },
+                    { label: "Visitation Rate per Station", metric: "visitation" },
+                    { label: "Species Richness per Station", metric: "richness" },
+                    { label: "Species Accumulation Curve", metric: "accumulation" },
+                  ].map((m) => (
+                    <div
+                      key={m.metric}
+                      className="flex items-center justify-between p-2.5 bg-slate-50 dark:bg-slate-900/40 border border-slate-200/40 dark:border-slate-800/40 rounded-xl"
+                    >
+                      <span className="text-xs font-medium text-slate-700 dark:text-slate-300">{m.label}</span>
+                      <div className="flex gap-1.5">
+                        <a
+                          href={`/api/ecological/export?metric=${m.metric}&format=csv`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-[10px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400 rounded-md transition shadow-sm"
+                        >
+                          CSV
+                        </a>
+                        <a
+                          href={`/api/ecological/export?metric=${m.metric}&format=excel`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 text-[10px] font-bold uppercase tracking-wide text-green-600 dark:text-green-400 rounded-md transition shadow-sm"
+                        >
+                          EXCEL
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -259,7 +357,9 @@ function DataTable({ rows, cols }: { rows: Row[]; cols: string[] }) {
             <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/30">
               {cols.map((c) => (
                 <td key={c} className="px-3 py-2 text-slate-700 dark:text-slate-300">
-                  {typeof row[c] === "number" ? (row[c] as number).toFixed(4) : String(row[c] ?? "")}
+                  {typeof row[c] === "number"
+                    ? (c.endsWith("_pct") ? `${(row[c] as number).toFixed(1)}%` : (row[c] as number).toFixed(4))
+                    : String(row[c] ?? "")}
                 </td>
               ))}
             </tr>

@@ -62,7 +62,7 @@ def cleanup_images(
         raise HTTPException(status_code=503, detail="File manager not ready")
 
     if action == "delete_empty":
-        return state.file_manager.cleanup_empty_images(dry_run=dry_run)
+        return state.file_manager.cleanup_empty_images(dry_run=dry_run, days_grace=days_old)
     else:
         return state.file_manager.cleanup_marked_for_deletion(days_grace=days_old, dry_run=dry_run)
 
@@ -223,5 +223,22 @@ def clear_hashes(
     try:
         result = state.file_manager.clear_hashes_for_optimization(strategy)
         return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reset-db")
+def reset_database(
+    state: AppState = Depends(get_state),
+    confirm: bool = Query(False),
+):
+    """Reset database completely by truncating all tables. Requires confirm=true."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Pass confirm=true to reset the database")
+    if not state.db_manager:
+        raise HTTPException(status_code=503, detail="Database service not ready")
+    try:
+        state.db_manager.reset_database()
+        return {"ok": True, "message": "Database completely cleared and reset."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

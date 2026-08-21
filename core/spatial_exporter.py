@@ -242,7 +242,7 @@ class SpatialExporter:
     def stations_to_shapefile(self, stations_df: pd.DataFrame) -> bytes:
         """
         Return a ZIP archive (bytes) containing a point shapefile of stations.
-        Fields: station_id, stratum, camera_model, trap_nights, status.
+        Fields: station_id, stratum, camera_mod, trap_nights, status.
         Requires the `pyshp` package (import name: shapefile).
         """
         try:
@@ -250,13 +250,17 @@ class SpatialExporter:
         except ImportError:
             raise ImportError("Install pyshp: pip install pyshp")
 
-        w = sf.Writer(shapeType=sf.POINT)
+        shp = io.BytesIO()
+        shx = io.BytesIO()
+        dbf = io.BytesIO()
+        w = sf.Writer(shp=shp, shx=shx, dbf=dbf, shapeType=sf.POINT)
         w.field("station_id",  "C", 50)
         w.field("stratum",     "C", 50)
         w.field("camera_mod",  "C", 40)
         w.field("trap_nights", "N", 10)
         w.field("status",      "C", 30)
 
+        has_shapes = False
         for _, row in stations_df.iterrows():
             try:
                 lat = float(row["gps_lat"])
@@ -273,8 +277,14 @@ class SpatialExporter:
                 int(row.get("trap_nights", 0) or 0),
                 str(row.get("status", ""))[:30],
             )
+            has_shapes = True
 
-        return self._pack_shapefile_zip(w, "stations")
+        if not has_shapes:
+            w.null()
+            w.record("", "", "", 0, "")
+
+        w.close()
+        return self._pack_shapefile_zip(shp, shx, dbf, "stations")
 
     def detections_to_shapefile(
         self,
@@ -292,7 +302,10 @@ class SpatialExporter:
 
         station_coords = self._build_coord_lookup(stations_df)
 
-        w = sf.Writer(shapeType=sf.POINT)
+        shp = io.BytesIO()
+        shx = io.BytesIO()
+        dbf = io.BytesIO()
+        w = sf.Writer(shp=shp, shx=shx, dbf=dbf, shapeType=sf.POINT)
         w.field("ide_id",      "C", 60)
         w.field("station_id",  "C", 50)
         w.field("species",     "C", 80)
@@ -300,6 +313,7 @@ class SpatialExporter:
         w.field("max_conf",    "F", 10, 4)
         w.field("first_det",   "C", 30)
 
+        has_shapes = False
         for _, row in ide_summary.iterrows():
             sid = str(row.get("station_id", ""))
             coords = station_coords.get(sid)
@@ -315,17 +329,22 @@ class SpatialExporter:
                 float(row.get("max_confidence", 0) or 0),
                 str(row.get("first_detection", ""))[:30],
             )
+            has_shapes = True
 
-        return self._pack_shapefile_zip(w, "detections")
+        if not has_shapes:
+            w.null()
+            w.record("", "", "", 0, 0.0, "")
 
-    def _pack_shapefile_zip(self, writer, basename: str) -> bytes:
+        w.close()
+        return self._pack_shapefile_zip(shp, shx, dbf, "detections")
+
+    def _pack_shapefile_zip(self, shp: io.BytesIO, shx: io.BytesIO, dbf: io.BytesIO, basename: str) -> bytes:
         """Write a pyshp Writer to an in-memory ZIP and return raw bytes."""
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            for ext in ("shp", "shx", "dbf"):
-                part = io.BytesIO()
-                getattr(writer, ext)(part)
-                zf.writestr(f"{basename}.{ext}", part.getvalue())
+            zf.writestr(f"{basename}.shp", shp.getvalue())
+            zf.writestr(f"{basename}.shx", shx.getvalue())
+            zf.writestr(f"{basename}.dbf", dbf.getvalue())
             zf.writestr(f"{basename}.prj", _WGS84_PRJ)
         return buf.getvalue()
 
@@ -400,35 +419,71 @@ class SpatialExporter:
     # Router adapter methods (accept raw detection history df)
     # ------------------------------------------------------------------
 
-    def to_geojson(self, df: pd.DataFrame) -> dict:
-        result = self.detections_to_geojson(df)
+    def to_geojson(self, df: pd.DataFrame, stations_df: Optional[pd.DataFrame] = None) -> dict:
+        result = self.detections_to_geojson(df, stations_df)
         return json.loads(result) if isinstance(result, str) else result
 
-    def to_shapefile_bytes(self, df: pd.DataFrame) -> bytes:
+    def to_shapefile_bytes(self, df: pd.DataFrame, stations_df: Optional[pd.DataFrame] = None) -> bytes:
         try:
             import shapefile as sf
         except ImportError:
             raise ImportError("Install pyshp: pip install pyshp")
 
-        w = sf.Writer(shapeType=sf.NULL)
+        has_coords = stations_df is not None and not stations_df.empty
+        
+        shp = io.BytesIO()
+        shx = io.BytesIO()
+        dbf = io.BytesIO()
+        w = sf.Writer(shp=shp, shx=shx, dbf=dbf, shapeType=sf.POINT if has_coords else sf.NULL)
+
         keep = ["station_id", "detected_animal", "detection_confidence",
                 "capture_date", "capture_time", "day_night", "ide_id"]
         cols = [c for c in keep if c in df.columns]
         for col in cols:
             w.field(col[:10], "C", 50)
-        for _, row in df.iterrows():
-            w.null()
-            w.record(*[str(row.get(c, ""))[:50] for c in cols])
-        return self._pack_shapefile_zip(w, "detections")
 
-    def to_kml(self, df: pd.DataFrame) -> str:
+        station_coords = self._build_coord_lookup(stations_df) if has_coords else {}
+
+        has_shapes = False
+        for _, row in df.iterrows():
+            sid = str(row.get("station_id", ""))
+            coords = station_coords.get(sid) if has_coords else None
+            if has_coords and coords:
+                lat, lon = coords
+                w.point(lon, lat)
+                has_shapes = True
+            elif has_coords:
+                continue  # Skip stations with missing coords to avoid invalid POINT geom
+            else:
+                w.null()
+                has_shapes = True
+            w.record(*[str(row.get(c, ""))[:50] for c in cols])
+
+        if not has_shapes:
+            w.null()
+            w.record(*["" for _ in cols])
+
+        w.close()
+        return self._pack_shapefile_zip(shp, shx, dbf, "detections")
+
+    def to_kml(self, df: pd.DataFrame, stations_df: Optional[pd.DataFrame] = None) -> str:
         from xml.etree.ElementTree import Element, SubElement, tostring
         kml = Element("kml", xmlns="http://www.opengis.net/kml/2.2")
         doc = SubElement(kml, "Document")
         SubElement(doc, "name").text = "Wildlife Detections"
-        lat_col = next((c for c in ["gps_lat", "lat", "latitude"] if c in df.columns), None)
-        lon_col = next((c for c in ["gps_lon", "lon", "longitude"] if c in df.columns), None)
-        for _, row in df.iterrows():
+
+        # If stations_df is provided, merge it to include coordinates in df
+        out = df.copy()
+        if stations_df is not None and not stations_df.empty:
+            coord_df = stations_df[["station_id", "gps_lat", "gps_lon"]].copy()
+            coord_df.columns = ["station_id", "latitude", "longitude"]
+            if "station_id" in out.columns:
+                out = out.merge(coord_df, on="station_id", how="left")
+
+        lat_col = next((c for c in ["gps_lat", "lat", "latitude"] if c in out.columns), None)
+        lon_col = next((c for c in ["gps_lon", "lon", "longitude"] if c in out.columns), None)
+
+        for _, row in out.iterrows():
             pm = SubElement(doc, "Placemark")
             SubElement(pm, "name").text = str(row.get("detected_animal", row.get("species_label", "Unknown")))
             SubElement(pm, "description").text = "\n".join([

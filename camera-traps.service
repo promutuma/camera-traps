@@ -1,0 +1,16 @@
+[Unit]
+Description=ViumbeLens Camera Trap Auto-Analyzer FastAPI Service
+After=network.target
+
+[Service]
+Type=simple
+User=mutuma
+WorkingDirectory=/home/mutuma/Downloads/camera-traps
+ExecStart=/home/mutuma/Downloads/camera-traps/venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=DB_PATH=/home/mutuma/Downloads/camera-traps/wildlife_data.db
+
+[Install]
+WantedBy=multi-user.target

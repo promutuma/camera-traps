@@ -24,8 +24,14 @@ class FileManager:
         self.db_manager = db_manager
         self.uploads_dir.mkdir(exist_ok=True)
 
+    @staticmethod
+    def hash_bytes(data: bytes) -> str:
+        """SHA-256 hash from in-memory bytes — no disk I/O."""
+        sha256 = hashlib.sha256(data)
+        return sha256.hexdigest()
+
     def calculate_hash(self, file_path: str) -> str:
-        """Calculate SHA256 hash of file."""
+        """Calculate SHA256 hash of file from disk."""
         sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
@@ -36,10 +42,16 @@ class FileManager:
         """Get file size in bytes."""
         return os.path.getsize(file_path)
 
-    def update_image_with_file_info(self, image_id: int, file_path: str, has_animal: bool):
-        """Calculate and store file metadata (hash, size, tier)."""
+    def update_image_with_file_info(
+        self,
+        image_id: int,
+        file_path: str,
+        has_animal: bool,
+        precomputed_hash: Optional[str] = None,
+    ):
+        """Store file metadata (hash, size, tier). Uses precomputed_hash when provided."""
         try:
-            file_hash = self.calculate_hash(file_path)
+            file_hash = precomputed_hash or self.calculate_hash(file_path)
             file_size = self.get_file_size(file_path)
             file_tier = "empty" if not has_animal else "low_conf" if has_animal < 0.4 else "valid"
 
@@ -50,6 +62,23 @@ class FileManager:
         except Exception as e:
             logger.error(f"Error updating file info for image {image_id}: {e}")
             raise
+
+    def reconcile_missing_files(self) -> int:
+        """Mark DB records 'missing' when the file no longer exists on disk.
+
+        Runs once at startup to clean up stale records left by container
+        rebuilds or manual file removal.  Returns the count of newly-marked rows.
+        """
+        rows = self.db_manager.get_available_image_filenames()
+        missing_ids = [
+            row[0] for row in rows
+            if not (self.uploads_dir / row[1]).exists()
+        ]
+        if missing_ids:
+            marked = self.db_manager.mark_files_missing(missing_ids)
+            logger.info("Reconciliation: marked %d image(s) as missing (file not on disk)", marked)
+            return marked
+        return 0
 
     # ──────────────────────────────────────────────────────────────────
     # Download Operations
@@ -96,7 +125,9 @@ class FileManager:
 
         try:
             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                # Add images in batches
+                # One physical file may have multiple image_ids (one per detection
+                # crop). Track seen filenames so each file is written only once.
+                seen_filenames: set = set()
                 for image_id in image_ids:
                     try:
                         conn = self.db_manager.get_connection()
@@ -112,6 +143,10 @@ class FileManager:
                             continue
 
                         filename = result[0]
+                        if filename in seen_filenames:
+                            continue
+                        seen_filenames.add(filename)
+
                         file_path = self.uploads_dir / filename
 
                         if file_path.exists():
@@ -126,33 +161,73 @@ class FileManager:
                         logger.warning(f"Could not add image {image_id} to ZIP: {e}")
                         continue
 
-                # Add metadata file if requested
-                if include_metadata and image_ids:
+                # Add metadata file if requested.
+                # Uses seen_filenames (the deduplicated set from the loop above)
+                # so the metadata rows match exactly the files in the ZIP.
+                if include_metadata and seen_filenames:
                     try:
                         conn = self.db_manager.get_connection()
                         cursor = conn.cursor()
 
-                        placeholders = ",".join("?" * len(image_ids))
+                        # Fetch one image record per filename (most recent id)
+                        # plus all detection rows for that image.
+                        placeholders = ",".join("?" * len(seen_filenames))
                         cursor.execute(
-                            f"""SELECT id, filename, capture_date, capture_time, has_animal, file_tier
-                               FROM images WHERE id IN ({placeholders})
-                               ORDER BY id""",
-                            image_ids,
+                            f"""
+                            SELECT
+                                i.id, i.filename, i.station_id,
+                                i.capture_date, i.capture_time, i.temperature,
+                                i.day_night, i.brightness, i.file_size_bytes,
+                                i.file_hash, i.file_tier, i.user_notes,
+                                i.processed_at,
+                                d.detected_animal, d.confidence,
+                                d.speciesnet_confidence, d.method, d.bbox, d.ide_id
+                            FROM images i
+                            LEFT JOIN detections d ON d.image_id = i.id
+                            WHERE i.filename IN ({placeholders})
+                              AND i.id IN (
+                                  SELECT MAX(id) FROM images
+                                  WHERE filename IN ({placeholders})
+                                  GROUP BY filename
+                              )
+                            ORDER BY i.filename, d.confidence DESC
+                            """,
+                            list(seen_filenames) * 2,
                         )
                         rows = cursor.fetchall()
                         conn.close()
 
-                        metadata = [
-                            {
-                                "id": row[0],
-                                "filename": row[1],
-                                "capture_date": row[2],
-                                "capture_time": row[3],
-                                "has_animal": bool(row[4]),
-                                "tier": row[5],
-                            }
-                            for row in rows
-                        ]
+                        # Group detections under their parent image
+                        images_map: dict = {}
+                        for row in rows:
+                            fname = row[1]
+                            if fname not in images_map:
+                                images_map[fname] = {
+                                    "filename":        fname,
+                                    "station_id":      row[2],
+                                    "capture_date":    row[3],
+                                    "capture_time":    row[4],
+                                    "temperature":     row[5],
+                                    "day_night":       row[6],
+                                    "brightness":      row[7],
+                                    "file_size_bytes": row[8],
+                                    "file_hash":       row[9],
+                                    "tier":            row[10],
+                                    "user_notes":      row[11] or "",
+                                    "processed_at":    row[12],
+                                    "detections":      [],
+                                }
+                            if row[13]:  # detected_animal
+                                images_map[fname]["detections"].append({
+                                    "species":               row[13],
+                                    "confidence":            row[14],
+                                    "speciesnet_confidence": row[15],
+                                    "method":                row[16],
+                                    "bbox":                  json.loads(row[17]) if row[17] else None,
+                                    "ide_id":                row[18],
+                                })
+
+                        metadata = sorted(images_map.values(), key=lambda x: (x["capture_date"] or "", x["capture_time"] or ""))
                         metadata_json = json.dumps(metadata, indent=2)
                         zf.writestr("metadata.json", metadata_json)
                         file_hash.update(metadata_json.encode())
@@ -187,14 +262,16 @@ Contents:
     # Cleanup Operations
     # ──────────────────────────────────────────────────────────────────
 
-    def cleanup_empty_images(self, dry_run: bool = False) -> Dict:
-        """Delete empty image files (no animals)."""
+    def cleanup_empty_images(self, dry_run: bool = False, days_grace: int = 30) -> Dict:
+        """Delete empty image files (no animals) older than days_grace days."""
         conn = self.db_manager.get_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        cursor.execute(f'''
             SELECT id, filename, file_size_bytes
             FROM images
-            WHERE file_tier = 'empty' AND file_status = 'available'
+            WHERE file_tier = 'empty'
+              AND file_status = 'available'
+              AND datetime(uploaded_at) < datetime('now', '-{days_grace} days')
             LIMIT 10000
         ''')
         deletable = cursor.fetchall()
@@ -281,13 +358,13 @@ Contents:
                 WHERE file_tier = 'empty' AND file_status = 'available'
             ''')
         else:
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT COUNT(*), SUM(COALESCE(file_size_bytes, 0)), MIN(uploaded_at), MAX(uploaded_at)
                 FROM images
                 WHERE marked_for_deletion_at IS NOT NULL
-                AND datetime(marked_for_deletion_at) < datetime('now', '-{days_old} days')
+                AND datetime(marked_for_deletion_at) < datetime('now', ?)
                 AND file_status = 'available'
-            ''')
+            ''', (f"-{days_old} days",))
 
         result = cursor.fetchone()
         conn.close()

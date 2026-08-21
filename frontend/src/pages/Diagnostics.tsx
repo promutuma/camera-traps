@@ -35,23 +35,23 @@ export default function Diagnostics() {
   };
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-slate-800">Deep Inspection Tool</h1>
-        <p className="text-slate-500 mt-1">
-          Run a single image through all AI components and visualize dual-model detections.
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Deep Inspection Tool</h1>
+        <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm">
+          Run a single image through all AI pipeline components and visualize dual-model detections.
         </p>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+      <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 shadow-sm">
         <div
           onClick={() => inputRef.current?.click()}
-          className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center cursor-pointer hover:border-green-400"
+          className="border-2 border-dashed border-slate-300 dark:border-slate-850 hover:border-emerald-500 dark:hover:border-emerald-500 rounded-xl p-8 text-center cursor-pointer transition bg-slate-50/50 dark:bg-slate-950/20"
         >
           {file ? (
-            <p className="text-slate-700 font-medium">{file.name}</p>
+            <p className="text-slate-800 dark:text-slate-200 font-medium text-sm">{file.name}</p>
           ) : (
-            <p className="text-slate-400">Click to select an image</p>
+            <p className="text-slate-400 dark:text-slate-500 text-sm">Click or drag an image here to inspect</p>
           )}
           <input
             ref={inputRef}
@@ -72,23 +72,25 @@ export default function Diagnostics() {
         <button
           onClick={handleInspect}
           disabled={!file || loading}
-          className="w-full py-2.5 bg-green-600 hover:bg-green-700 disabled:bg-slate-300 text-white font-semibold rounded-lg"
+          className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 dark:disabled:bg-slate-800 dark:disabled:text-slate-500 text-white font-semibold rounded-lg shadow-sm hover:shadow transition cursor-pointer"
         >
-          {loading ? "Inspecting…" : "Run Deep Inspection"}
+          {loading ? "Inspecting Image…" : "Run Deep Inspection"}
         </button>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-700 text-sm">{error}</div>
+        <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/30 rounded-lg p-4 text-red-700 dark:text-red-405 text-sm">
+          {error}
+        </div>
       )}
 
       {imgSrc && (
-        <div className="bg-slate-900 rounded-xl overflow-hidden relative border border-slate-800 shadow-md">
+        <div className="bg-slate-950 rounded-xl overflow-hidden relative border border-slate-800 shadow-md">
           {/* Bounding box Legend */}
           <div className="absolute top-2 left-2 z-10 flex gap-2">
-            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/70 backdrop-blur-md text-[10px] font-semibold text-blue-400 border border-blue-500/30">
+            <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-black/75 backdrop-blur-md text-[10px] font-semibold text-blue-400 border border-blue-550/30">
               <span className="w-3 h-0.5 bg-blue-500 inline-block"></span>
-              MDv5a
+              MDv5a Candidates
             </span>
           </div>
 
@@ -154,11 +156,8 @@ export default function Diagnostics() {
           {result.megadetector != null && (
             <Section title="2. MegaDetector Raw Candidates" data={result.megadetector as object} />
           )}
-          {result.bioclip != null && (
-            <Section title="3. BioClip Top-20 Predictions" data={result.bioclip as object} />
-          )}
           {result.speciesnet != null && (
-            <Section title="4. Google SpeciesNet Predictions" data={result.speciesnet as object} />
+            <Section title="3. Google SpeciesNet Predictions" data={result.speciesnet as object} />
           )}
         </div>
       )}
@@ -168,13 +167,14 @@ export default function Diagnostics() {
 
 function Section({ title, data }: { title: string; data: object }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-        <h2 className="font-semibold text-slate-700">{title}</h2>
+    <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+      <div className="px-4 py-3 bg-slate-50 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800">
+        <h2 className="font-semibold text-slate-800 dark:text-slate-200 text-sm">{title}</h2>
       </div>
-      <pre className="p-4 text-xs text-slate-700 overflow-x-auto whitespace-pre-wrap">
+      <pre className="p-4 text-xs text-slate-700 dark:text-slate-400 overflow-x-auto whitespace-pre-wrap font-mono">
         {JSON.stringify(data, null, 2)}
       </pre>
     </div>
   );
 }
+

@@ -36,6 +36,9 @@ class Job:
     # consistent snapshot should use job_manager's lock or read under their own
     # synchronisation.
     model_events: List[Dict] = field(default_factory=list)
+    # SHA-256 hashes computed from raw bytes at upload time (filename → hex).
+    # Carried into _run_processing so the post-processing step skips a disk re-read.
+    file_hashes: Dict[str, str] = field(default_factory=dict)
 
 
 class JobManager:

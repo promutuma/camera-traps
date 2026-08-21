@@ -43,17 +43,32 @@ class ProjectConfig:
         conn = self._conn()
         conn.execute("""
             CREATE TABLE IF NOT EXISTS projects (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                name         TEXT NOT NULL UNIQUE,
-                survey_area  TEXT,
-                lead_org     TEXT,
-                start_date   TEXT,
-                end_date     TEXT,
-                notes        TEXT,
-                is_active    INTEGER DEFAULT 0,
-                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                name              TEXT NOT NULL UNIQUE,
+                survey_area       TEXT,
+                lead_org          TEXT,
+                start_date        TEXT,
+                end_date          TEXT,
+                notes             TEXT,
+                is_active         INTEGER DEFAULT 0,
+                speciesnet_lat    REAL DEFAULT -1.0,
+                speciesnet_lng    REAL DEFAULT 37.0,
+                speciesnet_country TEXT DEFAULT 'KEN',
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrate existing tables that predate the coordinate columns
+        for col, default in [
+            ("speciesnet_lat", "-1.0"),
+            ("speciesnet_lng", "37.0"),
+            ("speciesnet_country", "'KEN'"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE projects ADD COLUMN {col} REAL DEFAULT {default}"
+                             if col != "speciesnet_country"
+                             else f"ALTER TABLE projects ADD COLUMN {col} TEXT DEFAULT {default}")
+            except Exception:
+                pass  # column already exists
         conn.execute("""
             CREATE TABLE IF NOT EXISTS project_thresholds (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,14 +101,17 @@ class ProjectConfig:
         start_date: str = "",
         end_date: str = "",
         notes: str = "",
+        speciesnet_lat: float = -1.0,
+        speciesnet_lng: float = 37.0,
+        speciesnet_country: str = "KEN",
     ) -> Optional[int]:
         """Create a new project. Returns project id, or None if name exists."""
         conn = self._conn()
         try:
             cur = conn.execute("""
-                INSERT INTO projects (name, survey_area, lead_org, start_date, end_date, notes)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (name.strip(), survey_area, lead_org, start_date, end_date, notes))
+                INSERT INTO projects (name, survey_area, lead_org, start_date, end_date, notes, speciesnet_lat, speciesnet_lng, speciesnet_country)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (name.strip(), survey_area, lead_org, start_date, end_date, notes, speciesnet_lat, speciesnet_lng, speciesnet_country))
             project_id = cur.lastrowid
             conn.commit()
             # Seed default thresholds
@@ -115,7 +133,8 @@ class ProjectConfig:
             conn.close()
 
     def update_project(self, project_id: int, **kwargs) -> bool:
-        allowed = {"name", "survey_area", "lead_org", "start_date", "end_date", "notes"}
+        allowed = {"name", "survey_area", "lead_org", "start_date", "end_date", "notes",
+                   "speciesnet_lat", "speciesnet_lng", "speciesnet_country"}
         fields = {k: v for k, v in kwargs.items() if k in allowed}
         if not fields:
             return False
@@ -160,7 +179,7 @@ class ProjectConfig:
             ).fetchone()
             if not row:
                 return None
-            cols = [d[0] for d in conn.execute("PRAGMA table_info(projects)").fetchall()]
+            cols = [d[1] for d in conn.execute("PRAGMA table_info(projects)").fetchall()]
             return dict(zip(cols, row))
         finally:
             conn.close()

@@ -20,8 +20,6 @@ export interface AppConfig {
   speciesnet_lat: number;
   speciesnet_lng: number;
   speciesnet_country: string;
-  bioclip_weight: number;
-  speciesnet_weight: number;
   speciesnet_bypass_threshold: number;
 }
 

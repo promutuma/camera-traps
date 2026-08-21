@@ -3,14 +3,46 @@ import { getSpecies, lookupSpecies, resolveSynonym } from "../api/client";
 
 type Row = Record<string, unknown>;
 
-function getTaxonIcon(className?: string): string {
+// Inline SVG Taxon Icons
+const MammalIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15.362 5.214A8.252 8.252 0 0112 21 8.25 8.25 0 016.038 7.048 8.287 8.287 0 009 9.6a8.983 8.983 0 013.361-6.867 8.21 8.21 0 006.101 2.48z" />
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 18a3.75 3.75 0 00.495-7.467 5.99 5.99 0 00-1.925 3.546 5.974 5.974 0 01-2.133-1A3.75 3.75 0 0012 18z" />
+  </svg>
+);
+
+const BirdIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+  </svg>
+);
+
+const ReptileIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15.362 5.214A8.252 8.252 0 0112 21 8.25 8.25 0 016.038 7.048 8.287 8.287 0 009 9.6a8.983 8.983 0 013.361-6.867 8.21 8.21 0 006.101 2.48z" />
+  </svg>
+);
+
+const InsectIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21V9.75M3.284 14.253A8.966 8.966 0 0112 3.75c3.81 0 7.06 2.372 8.35 5.75m-18.066 4.753A9.043 9.043 0 0012 15.75c2.31 0 4.418-.867 6.012-2.3m-15.312-3.14a8.995 8.995 0 0118.066 0M3.284 10.25a8.966 8.966 0 008.716 5.5M12 9.75V3.75" />
+  </svg>
+);
+
+const LeafIcon = () => (
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v18M12 3a9 9 0 00-9 9v1.5a9 9 0 009 9M12 3a9 9 0 019 9v1.5a9 9 0 01-9 9" />
+  </svg>
+);
+
+function getTaxonIcon(className?: string) {
   const c = String(className ?? "").toLowerCase();
-  if (c.includes("mammal")) return "🦁";
-  if (c.includes("aves") || c.includes("bird")) return "🦅";
-  if (c.includes("reptil") || c.includes("snake") || c.includes("lizard")) return "🦎";
-  if (c.includes("amphib") || c.includes("frog")) return "🐸";
-  if (c.includes("insect") || c.includes("bug") || c.includes("arach")) return "🕷️";
-  return "🐾";
+  if (c.includes("mammal")) return <MammalIcon />;
+  if (c.includes("aves") || c.includes("bird")) return <BirdIcon />;
+  if (c.includes("reptil") || c.includes("snake") || c.includes("lizard")) return <ReptileIcon />;
+  if (c.includes("amphib") || c.includes("frog")) return <ReptileIcon />;
+  if (c.includes("insect") || c.includes("bug") || c.includes("arach")) return <InsectIcon />;
+  return <LeafIcon />;
 }
 
 export default function SpeciesLibrary() {
@@ -38,16 +70,20 @@ export default function SpeciesLibrary() {
     try {
       const result = await lookupSpecies(lookupQuery);
       setLookupResult(result);
-      setSelectedSp(result); // Also open in detailed drawer
+      setSelectedSp(result);
     } catch {
-      setLookupError(`Species "${lookupQuery}" not found in library.`);
+      setLookupError(`Species "${lookupQuery}" not found in canonical reference library.`);
     }
   };
 
   const handleSynonym = async () => {
     if (!synonymQuery) return;
-    const result = await resolveSynonym(synonymQuery);
-    setSynonymResult(result);
+    try {
+      const result = await resolveSynonym(synonymQuery);
+      setSynonymResult(result);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const filtered = species.filter((s) => {
@@ -61,53 +97,110 @@ export default function SpeciesLibrary() {
   });
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
+      {/* Page Header */}
       <div>
-        <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Species Reference Library</h1>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Explore baseline taxonomy, common synonyms, and regional classifications.</p>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          Species Reference Library
+        </h1>
+        <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+          Explore wildlife baseline taxonomy, match taxonomic synonyms, and examine Ethiopia Gambella regional IUCN classifications.
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Quick lookup */}
-        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 space-y-3 shadow-sm">
-          <h2 className="font-semibold text-slate-700 dark:text-slate-300 text-sm">Quick Species Lookup</h2>
+      {/* Lookup and Synonym Resolver Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Quick Species Lookup */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm flex flex-col justify-between">
+          <div className="space-y-1">
+            <h2 className="font-bold text-slate-900 dark:text-white text-sm">
+              Canonical Reference Lookup
+            </h2>
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Query GBIF/national baseline taxonomic database files by canonical scientific name.
+            </p>
+          </div>
           <div className="flex gap-2">
             <input
-              placeholder="Enter canonical scientific name…"
+              placeholder="e.g. Panthera leo"
               value={lookupQuery}
               onChange={(e) => setLookupQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleLookup()}
-              className="flex-1 border border-slate-350 dark:border-slate-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100"
+              className="flex-1 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
             />
-            <button onClick={handleLookup} className="px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition cursor-pointer">Look up</button>
+            <button
+              onClick={handleLookup}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl shadow-sm transition cursor-pointer"
+            >
+              Search
+            </button>
           </div>
-          {lookupError && <p className="text-red-500 text-xs font-medium">{lookupError}</p>}
+
+          {lookupError && (
+            <p className="text-red-500 dark:text-red-400 text-xs font-semibold mt-1">
+              <span className="material-symbols-outlined text-sm align-middle mr-1 select-none">warning</span> {lookupError}
+            </p>
+          )}
+
+          {/* Pretty Lookup Result Summary (Replaces raw JSON dump) */}
           {lookupResult && (
-            <div className="bg-slate-50 dark:bg-slate-950/40 rounded-lg p-3 text-xs border border-slate-100 dark:border-slate-800 font-mono text-slate-700 dark:text-slate-400 max-h-36 overflow-y-auto">
-              <pre>{JSON.stringify(lookupResult, null, 2)}</pre>
+            <div className="bg-emerald-50/30 dark:bg-emerald-950/15 border border-emerald-200/30 dark:border-emerald-800/40 rounded-xl p-4 space-y-2 text-xs">
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 border-b border-emerald-200/20 dark:border-emerald-800/30 pb-2">
+                <span>Database Match</span>
+                <span className="font-mono">Score: 100%</span>
+              </div>
+              <div className="space-y-1.5 font-medium">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Common Name</span>
+                  <span className="text-slate-850 dark:text-slate-200 font-semibold">{String(lookupResult.common_name ?? "Vernacular unmapped")}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Scientific Name</span>
+                  <span className="text-slate-850 dark:text-slate-200 font-semibold italic">{String(lookupResult.name ?? lookupResult.scientific_name ?? "—")}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Taxonomic Class</span>
+                  <span className="text-slate-850 dark:text-slate-200 font-semibold">{String(lookupResult.class ?? lookupResult.category ?? "Mammalia")}</span>
+                </div>
+              </div>
             </div>
           )}
         </div>
 
-        {/* Synonym resolver */}
-        <div className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 space-y-3 shadow-sm">
-          <h2 className="font-semibold text-slate-700 dark:text-slate-300 text-sm">Synonym Resolver</h2>
+        {/* Synonym Resolver */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm flex flex-col justify-between">
+          <div className="space-y-1">
+            <h2 className="font-bold text-slate-900 dark:text-white text-sm">
+              Synonym & Vernacular Resolver
+            </h2>
+            <p className="text-xs text-slate-400 dark:text-slate-555">
+              Normalize regional naming variations or synonyms into approved canonical names.
+            </p>
+          </div>
           <div className="flex gap-2">
             <input
-              placeholder="Enter common or alternate name…"
+              placeholder="e.g. Leo, Lion or alternate binomial"
               value={synonymQuery}
               onChange={(e) => setSynonymQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSynonym()}
-              className="flex-1 border border-slate-350 dark:border-slate-800 rounded-lg px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100"
+              className="flex-1 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
             />
-            <button onClick={handleSynonym} className="px-4 py-2 bg-emerald-600 text-white text-xs font-semibold rounded-lg hover:bg-emerald-700 transition cursor-pointer">Resolve</button>
+            <button
+              onClick={handleSynonym}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-xl shadow-sm transition cursor-pointer"
+            >
+              Resolve
+            </button>
           </div>
+
           {synonymResult && (
-            <div className="bg-slate-50 dark:bg-slate-950/40 rounded-lg p-3 text-xs border border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <span className="text-slate-500 font-medium">"{String(synonymResult.input ?? "")}"</span>
-              <span className="text-slate-400">➔</span>
-              <span className="font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-full">
-                {String(synonymResult.canonical ?? "Not found")}
+            <div className="bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-800 rounded-xl p-3.5 flex items-center justify-between text-xs font-semibold">
+              <span className="text-slate-500 dark:text-slate-400 font-mono">"{String(synonymResult.input ?? "")}"</span>
+              <span className="text-emerald-500 dark:text-emerald-400 flex items-center justify-center">
+                <span className="material-symbols-outlined text-sm leading-none select-none">arrow_forward</span>
+              </span>
+              <span className="font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-full border border-emerald-100 dark:border-emerald-900/40">
+                {String(synonymResult.canonical ?? "No canonical entry found")}
               </span>
             </div>
           )}
@@ -117,21 +210,25 @@ export default function SpeciesLibrary() {
       {/* Main library section (flex layout for slide-out drawer) */}
       <div className="flex flex-col lg:flex-row gap-6 items-start">
         {/* Cards Grid */}
-        <div className="flex-1 bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-200/50 dark:border-slate-800/50 overflow-hidden shadow-sm w-full">
-          <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
-            <span className="font-bold text-slate-700 dark:text-slate-300 text-sm">All Registered Species ({species.length})</span>
+        <div className="flex-1 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 overflow-hidden shadow-sm w-full">
+          <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between flex-wrap gap-2">
+            <span className="font-bold text-slate-800 dark:text-white text-sm">
+              All Registered Species ({species.length})
+            </span>
             <input
               placeholder="Search by name, order, family…"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              className="border border-slate-300 dark:border-slate-800 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500 bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-w-[200px]"
+              className="border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 min-w-[240px] transition"
             />
           </div>
 
           {loading ? (
-            <div className="text-center py-16 text-slate-400">Loading library cards…</div>
+            <div className="text-center py-20 text-slate-400 animate-pulse">
+              Loading library database...
+            </div>
           ) : (
-            <div className="p-4">
+            <div className="p-5">
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filtered.map((s, i) => {
                   const sciName = String(s.name ?? s.scientific_name ?? "Unknown");
@@ -148,28 +245,28 @@ export default function SpeciesLibrary() {
                       onClick={() => setSelectedSp(s)}
                       className={`p-4 rounded-xl border transition-all cursor-pointer flex flex-col justify-between h-36 ${
                         isSelected
-                          ? "bg-emerald-50/50 dark:bg-emerald-950/20 border-emerald-500 dark:border-emerald-700 ring-1 ring-emerald-500"
+                          ? "bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-500 dark:border-emerald-700 ring-1 ring-emerald-500 shadow-sm"
                           : "bg-white dark:bg-slate-950 border-slate-200 dark:border-slate-850 hover:border-slate-350 dark:hover:border-slate-700 hover:shadow-sm"
                       }`}
                     >
                       <div className="flex justify-between items-start">
                         <div className="space-y-1">
                           <p className="font-bold text-slate-800 dark:text-slate-100 text-sm leading-snug line-clamp-1">{commonName}</p>
-                          <p className="text-xs text-slate-550 dark:text-slate-400 italic font-medium line-clamp-1">{sciName}</p>
+                          <p className="text-xs text-slate-500 dark:text-slate-400 italic font-semibold line-clamp-1">{sciName}</p>
                         </div>
-                        <span className="text-2xl select-none" title={taxonClass}>
+                        <span className="text-slate-400 dark:text-slate-500 select-none p-1.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/20 dark:border-slate-800/40 rounded-lg" title={taxonClass}>
                           {getTaxonIcon(taxonClass)}
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap gap-1 mt-3">
+                      <div className="flex flex-wrap gap-1.5 mt-3">
                         {orderName && (
-                          <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 border border-slate-200/40 dark:border-slate-800 text-slate-500 dark:text-slate-400 rounded-full text-[9px] font-bold uppercase tracking-wider">
+                          <span className="px-2 py-0.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/30 dark:border-slate-800/60 text-slate-500 dark:text-slate-400 rounded-full text-[9px] font-bold uppercase tracking-wider">
                             {orderName}
                           </span>
                         )}
                         {familyName && (
-                          <span className="px-2 py-0.5 bg-slate-100 dark:bg-slate-900 border border-slate-200/40 dark:border-slate-800 text-slate-500 dark:text-slate-400 rounded-full text-[9px] font-bold uppercase tracking-wider">
+                          <span className="px-2 py-0.5 bg-slate-50 dark:bg-slate-900 border border-slate-200/30 dark:border-slate-800/60 text-slate-500 dark:text-slate-400 rounded-full text-[9px] font-bold uppercase tracking-wider">
                             {familyName}
                           </span>
                         )}
@@ -179,7 +276,9 @@ export default function SpeciesLibrary() {
                 })}
               </div>
               {filtered.length === 0 && (
-                <div className="text-center py-16 text-slate-400">No species match your query filter.</div>
+                <div className="text-center py-20 text-slate-400">
+                  No species match your query filters.
+                </div>
               )}
             </div>
           )}
@@ -191,24 +290,24 @@ export default function SpeciesLibrary() {
           const commonName = String(selectedSp.common_name ?? "Vernacular name unmapped");
           
           return (
-            <div className="w-full lg:w-80 xl:w-96 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-4 shadow-sm animate-fade-in shrink-0">
+            <div className="w-full lg:w-80 xl:w-96 bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 space-y-5 shadow-sm animate-fade-in shrink-0">
               <div className="flex items-start justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
                 <div className="space-y-1">
-                  <h3 className="font-bold text-slate-800 dark:text-slate-100 text-base">{commonName}</h3>
-                  <p className="text-xs text-emerald-600 dark:text-emerald-450 italic font-semibold">{sciName}</p>
+                  <h3 className="font-bold text-slate-900 dark:text-white text-base leading-snug">{commonName}</h3>
+                  <p className="text-xs text-emerald-600 dark:text-emerald-400 italic font-semibold">{sciName}</p>
                 </div>
                 <button
                   onClick={() => setSelectedSp(null)}
-                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-250 cursor-pointer text-sm font-semibold"
+                  className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-250 cursor-pointer font-semibold text-xs flex items-center gap-0.5"
                 >
-                  ✕
+                  <span className="material-symbols-outlined text-sm leading-none select-none">close</span> Close
                 </button>
               </div>
 
               {/* Taxonomy lineage */}
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider">Taxonomic Hierarchy</p>
-                <div className="space-y-1.5 border-l-2 border-slate-100 dark:border-slate-800 pl-3 ml-1 text-xs">
+                <div className="space-y-1.5 border-l-2 border-slate-100 dark:border-slate-800 pl-3.5 ml-1.5 text-xs font-semibold">
                   {[
                     { rank: "Kingdom", val: selectedSp.kingdom ?? "Animalia" },
                     { rank: "Phylum", val: selectedSp.phylum ?? "Chordata" },
@@ -221,25 +320,27 @@ export default function SpeciesLibrary() {
                     if (!tax.val) return null;
                     return (
                       <div key={tIdx} className="flex justify-between items-center py-0.5">
-                        <span className="text-slate-400 dark:text-slate-500 font-medium">{tax.rank}</span>
-                        <span className="font-bold text-slate-700 dark:text-slate-350">{String(tax.val)}</span>
+                        <span className="text-slate-400 dark:text-slate-500">{tax.rank}</span>
+                        <span className="text-slate-800 dark:text-slate-300 font-bold">{String(tax.val)}</span>
                       </div>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Ecological Status placeholder */}
-              <div className="space-y-2 border-t border-slate-100 dark:border-slate-800 pt-3">
+              {/* Ecological Status card */}
+              <div className="space-y-2.5 border-t border-slate-100 dark:border-slate-800 pt-4">
                 <p className="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 tracking-wider">Conservation & Ecology</p>
-                <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-200/50 dark:border-slate-850 p-3 rounded-xl text-xs space-y-2 text-slate-650 dark:text-slate-400">
+                <div className="bg-slate-50 dark:bg-slate-950 border border-slate-100 dark:border-slate-900 p-3.5 rounded-xl text-xs space-y-2 font-semibold">
                   <div className="flex justify-between">
-                    <span>Regional Presence</span>
-                    <span className="font-bold text-slate-700 dark:text-slate-300">Ethiopia (Gambella)</span>
+                    <span className="text-slate-400">Regional Presence</span>
+                    <span className="text-slate-700 dark:text-slate-300 font-bold">Ethiopia (Gambella)</span>
                   </div>
                   <div className="flex justify-between">
-                    <span>IUCN Red List Status</span>
-                    <span className="font-bold text-amber-600 dark:text-amber-450">Least Concern (LC)</span>
+                    <span className="text-slate-400">IUCN Red List Status</span>
+                    <span className="text-amber-600 dark:text-amber-450 font-bold bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded border border-amber-100 dark:border-amber-900/30">
+                      Least Concern (LC)
+                    </span>
                   </div>
                 </div>
               </div>

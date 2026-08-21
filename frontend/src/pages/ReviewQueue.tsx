@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedImageUrl } from "../api/client";
+import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedThumbUrl, storedImageUrl } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
 type Row = Record<string, unknown>;
@@ -16,29 +16,24 @@ function parseBbox(raw: unknown): [number, number, number, number] | null {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** Extract ranked species candidates from the model_breakdown JSON for the correction dropdown. */
-function getCandidates(row: Row): { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] {
-  let bd: Record<string, any> | null = null;
+/** Extract ranked SpeciesNet candidates from the top_candidates column. */
+function getCandidates(row: Row): { label: string; conf: number; scientific?: string; source: "SpeciesNet" }[] {
+  let cands: any[] | null = null;
   try {
-    if (typeof row.model_breakdown === "string") bd = JSON.parse(row.model_breakdown);
-    else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
+    if (typeof row.top_candidates === "string") cands = JSON.parse(row.top_candidates);
+    else if (Array.isArray(row.top_candidates)) cands = row.top_candidates as any[];
   } catch {}
-  if (!bd) return [];
+  if (!cands) return [];
 
-  const out: { label: string; conf: number; source: "BioClip" | "SpeciesNet" }[] = [];
   const seen = new Set<string>();
-
-  for (const [s, c] of ((bd.SpeciesNet ?? []) as [string, number][]).slice(0, 3)) {
-    let label = String(s);
-    if (label.startsWith("{")) { try { label = JSON.parse(label).common_name || label; } catch {} }
+  return cands.slice(0, 10).flatMap((c: any) => {
+    const label = c.common_name || c.display || "";
+    if (!label) return [];
     const key = label.toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label, conf: c, source: "SpeciesNet" }); }
-  }
-  for (const [s, c] of ((bd.BioClip ?? []) as [string, number][]).slice(0, 3)) {
-    const key = String(s).toLowerCase();
-    if (!seen.has(key)) { seen.add(key); out.push({ label: String(s), conf: c, source: "BioClip" }); }
-  }
-  return out;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ label, conf: c.confidence ?? 0, scientific: c.scientific_name || undefined, source: "SpeciesNet" as const }];
+  });
 }
 
 // ── Model breakdown components ────────────────────────────────────────────────
@@ -62,20 +57,7 @@ function ModelPill({ name, conf }: { name: string; conf?: number }) {
   );
 }
 
-function AgreementBadge({ level }: { level?: string | null }) {
-  if (!level) return null;
-  const styles =
-    level === "High"
-      ? "bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/30"
-      : level === "Medium"
-      ? "bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-900/30"
-      : "bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 border-red-200 dark:border-red-900/30";
-  return (
-    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border ${styles}`}>
-      {level}
-    </span>
-  );
-}
+
 
 function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
   let bd: Record<string, any> | null = null;
@@ -84,130 +66,79 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
     else if (row.model_breakdown && typeof row.model_breakdown === "object") bd = row.model_breakdown as Record<string, any>;
   } catch {}
 
+  let snCandidates: any[] = [];
+  try {
+    const tc = typeof row.top_candidates === "string" ? JSON.parse(row.top_candidates as string) : row.top_candidates;
+    if (Array.isArray(tc)) snCandidates = tc;
+  } catch {}
+
   const method = String(row.detection_method ?? "");
-  const bioclipConf = typeof row.bioclip_confidence === "number" ? row.bioclip_confidence as number : undefined;
   const speciesnetConf = typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined;
-  const agreement = row.agreement as string | null;
   const isAnimal = !!detected && detected !== "Empty" && detected !== "Unidentified" &&
     detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
 
   const detectors = method.split(" + ").filter((m) => m.startsWith("MDv") || m === "MegaDetector");
   const mdv5a: { label: string; conf: number }[] = bd?.MDv5a ?? [];
-  const bcResults: [string, number][] = (bd?.BioClip ?? []).slice(0, 3);
-  const snResults: [string, number][] = (bd?.SpeciesNet ?? []).slice(0, 3);
+  const topSn = snCandidates.slice(0, 7);
 
-  const hasAny = detectors.length > 0 || bcResults.length > 0 || snResults.length > 0;
-  if (!hasAny) return null;
+  if (detectors.length === 0 && topSn.length === 0) return null;
 
   return (
     <div className="space-y-1.5">
-      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Model Predictions</span>
-      <div className="border border-slate-100 rounded-xl overflow-hidden divide-y divide-slate-100">
+      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-550 uppercase tracking-wider block">Model Predictions</span>
+      <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden divide-y divide-slate-150 dark:divide-slate-800">
 
-        {/* MegaDetector detections */}
+        {/* MegaDetector */}
         {detectors.length > 0 && (
-          <div className="p-2.5 space-y-1.5 bg-slate-50/50">
+          <div className="p-2.5 space-y-1.5 bg-slate-50/50 dark:bg-slate-950/20">
             <span className="text-[10px] font-bold uppercase tracking-wider text-blue-500">Object Detector</span>
             {mdv5a.length > 0 ? mdv5a.map((d, i) => (
               <div key={`md5-${i}`} className="flex items-center gap-1.5 text-[10px]">
                 <ModelPill name="MDv5a" />
-                <span className="flex-1 font-medium text-slate-600 truncate">{d.label}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                <span className="flex-1 font-medium text-slate-650 dark:text-slate-350 truncate">{d.label}</span>
+                <div className="w-14 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden shrink-0">
                   <div className="h-1.5 bg-blue-400 rounded-full" style={{ width: `${Math.round((d.conf ?? 0) * 100)}%` }} />
                 </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
+                <span className="font-mono text-slate-400 dark:text-slate-500 w-7 text-right shrink-0">{Math.round((d.conf ?? 0) * 100)}%</span>
               </div>
             )) : <ModelPill name="MDv5a" />}
           </div>
         )}
 
-        {/* SpeciesNet ranked predictions (primary classifier) */}
-        {isAnimal && (snResults.length > 0 || (speciesnetConf !== undefined && speciesnetConf > 0)) && (
-          <div className="p-2.5 space-y-1.5">
+        {/* SpeciesNet ranked candidates with full taxonomy */}
+        {isAnimal && topSn.length > 0 && (
+          <div className="p-2.5 space-y-2 bg-white dark:bg-slate-900">
             <div className="flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-teal-500">SpeciesNet</span>
               {speciesnetConf !== undefined && speciesnetConf > 0 && (
                 <span className="text-[10px] font-mono text-teal-500">{Math.round(speciesnetConf * 100)}% top</span>
               )}
             </div>
-            {snResults.length > 0 ? snResults.map(([s, c], i) => {
-              let label = String(s);
-              let scientific = "";
-              if (label.startsWith("{")) {
-                try {
-                  const p = JSON.parse(label);
-                  label = p.common_name || label;
-                  scientific = p.scientific_name || "";
-                } catch {}
-              }
-              return (
-                <div key={`sn-${i}`} className="flex items-start gap-1.5 text-[10px]">
-                  <span className="text-slate-400 w-3 shrink-0 text-center mt-0.5">{i + 1}.</span>
+            {topSn.map((c: any, i: number) => (
+              <div key={`sn-${i}`} className="text-[10px]">
+                <div className="flex items-start gap-1.5">
+                  <span className="text-slate-400 dark:text-slate-550 w-3 shrink-0 text-center mt-0.5">{i + 1}.</span>
                   <div className="flex-1 min-w-0">
-                    <span className="font-medium text-slate-700 block truncate">{label}</span>
-                    {scientific && <span className="text-[10px] italic text-slate-400 block truncate">{scientific}</span>}
+                    <span className="font-semibold text-slate-700 dark:text-slate-200 block">{c.common_name || c.display || "—"}</span>
+                    {c.scientific_name && <span className="italic text-slate-400 dark:text-slate-500 block">{c.scientific_name}</span>}
+                    {i === 0 && Array.isArray(c.hierarchy) && c.hierarchy.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-0.5 mt-1 text-[9px] text-slate-350 dark:text-slate-600 select-none">
+                        {c.hierarchy.map((h: string, hIdx: number) => (
+                          <span key={hIdx} className="inline-flex items-center gap-0.5">
+                            <span className="text-slate-400 dark:text-slate-500">{h}</span>
+                            {hIdx < c.hierarchy.length - 1 && <span className="text-slate-300 dark:text-slate-700">›</span>}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                  <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0 mt-1.5">
-                    <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
+                  <div className="w-14 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden shrink-0 mt-1.5">
+                    <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round((c.confidence ?? 0) * 100)}%` }} />
                   </div>
-                  <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
+                  <span className="font-mono text-slate-400 dark:text-slate-500 w-7 text-right shrink-0 mt-0.5">{Math.round((c.confidence ?? 0) * 100)}%</span>
                 </div>
-              );
-            }) : (
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-slate-400 w-3 shrink-0 text-center">1.</span>
-                <span className="flex-1 font-medium text-slate-700 truncate">{detected}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-teal-400 rounded-full" style={{ width: `${Math.round((speciesnetConf ?? 0) * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((speciesnetConf ?? 0) * 100)}%</span>
               </div>
-            )}
-          </div>
-        )}
-
-        {/* BioClip supplement (only ran when SpeciesNet was uncertain) */}
-        {isAnimal && (bcResults.length > 0 || (bioclipConf !== undefined && bioclipConf > 0)) && (
-          <div className="p-2.5 space-y-1.5">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold uppercase tracking-wider text-violet-500">BioClip <span className="font-normal normal-case text-slate-400">(supplement)</span></span>
-              {bioclipConf !== undefined && bioclipConf > 0 && (
-                <span className="text-[10px] font-mono text-violet-500">{Math.round(bioclipConf * 100)}% top</span>
-              )}
-            </div>
-            {bcResults.length > 0 ? bcResults.map(([s, c], i) => (
-              <div key={`bc-${i}`} className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-slate-400 w-3 shrink-0 text-center">{i + 1}.</span>
-                <span className="flex-1 font-medium text-slate-700 truncate">{s}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round(c * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round(c * 100)}%</span>
-              </div>
-            )) : (
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <span className="text-slate-400 w-3 shrink-0 text-center">1.</span>
-                <span className="flex-1 font-medium text-slate-700 truncate">{detected}</span>
-                <div className="w-14 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
-                  <div className="h-1.5 bg-violet-400 rounded-full" style={{ width: `${Math.round((bioclipConf ?? 0) * 100)}%` }} />
-                </div>
-                <span className="font-mono text-slate-400 w-7 text-right shrink-0">{Math.round((bioclipConf ?? 0) * 100)}%</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Fusion final result */}
-        {bd?.Fusion && (
-          <div className="p-2.5 bg-slate-50/60 flex items-center justify-between gap-2">
-            <div>
-              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Final Fusion</span>
-              <span className="text-xs font-bold text-slate-800">{bd.Fusion.species}</span>
-            </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="text-[10px] font-mono text-slate-600">{Math.round((bd.Fusion.confidence ?? 0) * 100)}%</span>
-              <AgreementBadge level={agreement} />
-            </div>
+            ))}
           </div>
         )}
       </div>
@@ -245,7 +176,9 @@ function CountChip({ n }: { n: number }) {
 function EmptyState({ icon, title, sub }: { icon: string; title: string; sub: string }) {
   return (
     <div className="text-center py-16 space-y-2 text-slate-400">
-      <div className="text-5xl">{icon}</div>
+      <div className="text-5xl">
+        <span className="material-symbols-outlined text-5xl select-none">{icon}</span>
+      </div>
       <p className="font-semibold text-slate-500">{title}</p>
       <p className="text-sm">{sub}</p>
     </div>
@@ -391,8 +324,8 @@ function DetailViewport({
         </div>
 
         {isDrawing && (
-          <div className="absolute bottom-3 left-3 bg-orange-600 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg animate-pulse border border-orange-500">
-            ✏️ Drag on image to draw bounding box
+          <div className="absolute bottom-3 left-3 bg-orange-600 text-white text-[10px] font-bold px-3 py-1 rounded-full shadow-lg animate-pulse border border-orange-500 flex items-center gap-1">
+            <span className="material-symbols-outlined text-[12px] leading-none select-none">draw</span> Drag on image to draw bounding box
           </div>
         )}
       </div>
@@ -475,88 +408,91 @@ function DetailSidebar({
   }, [mode, busy, setMode, setIsDrawing, setEditedBbox]);
 
   return (
-    <div className="w-80 border-l border-slate-200 bg-white flex flex-col min-h-0 select-none">
-      <div className="p-4 border-b border-slate-100 bg-slate-50/50 shrink-0">
-        <h3 className="font-bold text-slate-800 text-sm">Metadata & Diagnosis</h3>
-        <p className="text-[10px] text-slate-400 mt-0.5 truncate">{filename}</p>
+    <div className="w-80 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col min-h-0 select-none shadow-sm">
+      <div className="p-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 shrink-0">
+        <h3 className="font-bold text-slate-800 dark:text-slate-200 text-sm">Metadata & Diagnosis</h3>
+        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 truncate">{filename}</p>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
         {/* Metadata */}
-        <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2.5">
+        <div className="bg-slate-50 dark:bg-slate-950/40 border border-slate-100 dark:border-slate-850 rounded-xl p-3 space-y-2.5 shadow-sm">
           <div>
-            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Classified Species</p>
-            <p className="font-bold text-slate-800 text-sm">{species}</p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider font-bold mb-0.5">Classified Species</p>
+            <p className="font-bold text-slate-800 dark:text-slate-100 text-sm">{species}</p>
+            {!!row.scientific_name && (
+              <p className="text-[11px] italic text-slate-400 dark:text-slate-500 mt-0.5">{String(row.scientific_name)}</p>
+            )}
           </div>
           <div>
-            <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-1">Confidence</p>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider font-bold mb-1">Confidence</p>
             <div className="flex items-center gap-2">
-              <div className="flex-1 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+              <div className="flex-1 bg-slate-200 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
                 <div
                   className={`h-1.5 rounded-full transition-all ${conf >= 0.7 ? "bg-emerald-500" : conf >= 0.4 ? "bg-amber-400" : "bg-red-400"}`}
                   style={{ width: `${Math.round(conf * 100)}%` }}
                 />
               </div>
-              <span className={`font-bold text-xs w-8 text-right shrink-0 ${conf >= 0.7 ? "text-emerald-600" : conf >= 0.4 ? "text-amber-500" : "text-red-500"}`}>
+              <span className={`font-bold text-xs w-8 text-right shrink-0 ${conf >= 0.7 ? "text-emerald-650 dark:text-emerald-450" : conf >= 0.4 ? "text-amber-500" : "text-red-500"}`}>
                 {Math.round(conf * 100)}%
               </span>
             </div>
           </div>
           {row.capture_date != null && (
             <div>
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Date / Time</p>
-              <p className="font-medium text-slate-600 text-[11px]">
+              <p className="text-[10px] text-slate-400 dark:text-slate-550 uppercase tracking-wider font-bold mb-0.5">Date / Time</p>
+              <p className="font-medium text-slate-600 dark:text-slate-400 text-[11px]">
                 {String(row.capture_date)} {String(row.capture_time ?? "")}
               </p>
             </div>
           )}
           {row.station_id != null && String(row.station_id) && (
             <div>
-              <p className="text-[10px] text-slate-400 uppercase tracking-wider font-bold mb-0.5">Station</p>
-              <p className="font-medium text-slate-600 text-[11px]">{String(row.station_id)}</p>
+              <p className="text-[10px] text-slate-400 dark:text-slate-550 uppercase tracking-wider font-bold mb-0.5">Station</p>
+              <p className="font-medium text-slate-600 dark:text-slate-400 text-[11px]">{String(row.station_id)}</p>
             </div>
           )}
         </div>
 
         <FullModelBreakdown row={row} detected={species} />
 
-        <div className="pt-1 border-t border-slate-100">
+        <div className="pt-1 border-t border-slate-100 dark:border-slate-800">
           {mode === "idle" ? (
             <div className="space-y-2">
               <button
                 onClick={() => setMode("confirm-note")}
                 disabled={busy}
-                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-sm">check_circle</span>
-                <span className="flex-1">Confirm Detection</span>
+                <span className="flex-1 text-left">Confirm Detection</span>
                 <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">A</kbd>
               </button>
               <button
                 onClick={() => setMode("correct")}
                 disabled={busy}
-                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-sm">edit</span>
-                <span className="flex-1">Correct Label / Box</span>
+                <span className="flex-1 text-left">Correct Label / Box</span>
                 <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">C</kbd>
               </button>
               <button
                 onClick={() => setMode("flag-note")}
                 disabled={busy}
-                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50"
+                className="w-full flex items-center gap-1.5 py-2.5 px-3 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-lg shadow-sm hover:shadow transition disabled:opacity-50 cursor-pointer"
               >
                 <span className="material-symbols-outlined text-sm">flag</span>
-                <span className="flex-1">Flag For Review</span>
+                <span className="flex-1 text-left">Flag For Review</span>
                 <kbd className="text-[9px] bg-white/20 px-1.5 py-0.5 rounded font-mono border border-white/20">F</kbd>
               </button>
             </div>
           ) : (
-            <div className="space-y-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3.5">
+            <div className="space-y-3 bg-slate-50 dark:bg-slate-950/40 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3.5 shadow-sm">
               {mode === "confirm-note" && (
                 <>
-                  <p className="font-bold text-emerald-800 text-[11px] uppercase tracking-wider">Confirm Species</p>
-                  <p className="text-[11px] text-slate-500">Confirming detection as <strong className="text-slate-700">{species}</strong>.</p>
+                  <p className="font-bold text-emerald-600 dark:text-emerald-450 text-[11px] uppercase tracking-wider">Confirm Species</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Confirming detection as <strong className="text-slate-700 dark:text-slate-200">{species}</strong>.</p>
                   <input
                     autoFocus
                     placeholder="Notes (optional)"
@@ -566,26 +502,30 @@ function DetailSidebar({
                       if (e.key === "Enter") run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }));
                       if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
                     }}
-                    className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
                   />
                   <div className="flex gap-2">
                     <button
                       disabled={busy}
                       onClick={() => run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }))}
-                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition"
+                      className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
                     >
                       {busy ? "Confirming…" : "Confirm"}
                     </button>
                     <button
                       type="button"
                       onClick={() => setIsDrawing(!isDrawing)}
-                      className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition ${
+                      className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition cursor-pointer ${
                         isDrawing
-                          ? "bg-orange-100 text-orange-700 border-orange-200"
-                          : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                          ? "bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-900/30"
+                          : "bg-white dark:bg-slate-955 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900/40"
                       }`}
                     >
-                      {isDrawing ? "Done Box" : "✏️ Box"}
+                      {isDrawing ? "Done Box" : (
+                        <span className="flex items-center gap-1">
+                          <span className="material-symbols-outlined text-[14px] leading-none select-none">edit</span>Box
+                        </span>
+                      )}
                     </button>
                   </div>
                 </>
@@ -595,13 +535,13 @@ function DetailSidebar({
                 const candidates = getCandidates(row);
                 return (
                   <>
-                    <p className="font-bold text-blue-800 text-[11px] uppercase tracking-wider">Correct Species</p>
+                    <p className="font-bold text-blue-600 dark:text-blue-450 text-[11px] uppercase tracking-wider">Correct Species</p>
 
                     {/* Model candidates */}
                     {candidates.length > 0 && (
                       <div className="space-y-1">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Model candidates — click to select</p>
-                        <div className="space-y-0.5 max-h-40 overflow-y-auto">
+                        <p className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Model candidates — click to select</p>
+                        <div className="space-y-0.5 max-h-48 overflow-y-auto">
                           {candidates.map((c, ci) => (
                             <button
                               key={ci}
@@ -609,18 +549,17 @@ function DetailSidebar({
                               onClick={() => setCorrectLabel(c.label)}
                               className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs text-left transition cursor-pointer ${
                                 correctLabel === c.label
-                                  ? "bg-blue-100 text-blue-700 font-semibold border border-blue-200"
-                                  : "bg-white hover:bg-blue-50 text-slate-700 border border-slate-100"
+                                  ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 font-semibold border border-blue-200 dark:border-blue-900/30"
+                                  : "bg-white dark:bg-slate-955 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-slate-700 dark:text-slate-300 border border-slate-100 dark:border-slate-850"
                               }`}
                             >
-                              <span className="truncate">{c.label}</span>
-                              <div className="flex items-center gap-1 shrink-0 ml-2">
-                                <span className="text-[9px] font-mono text-slate-400">{Math.round(c.conf * 100)}%</span>
-                                <span className={`text-[10px] font-bold px-1 py-0.5 rounded ${
-                                  c.source === "BioClip"
-                                    ? "bg-violet-100 dark:bg-violet-950/60 text-violet-600 dark:text-violet-400"
-                                    : "bg-teal-100 dark:bg-teal-950/60 text-teal-600 dark:text-teal-400"
-                                }`}>{c.source === "BioClip" ? "BC" : "SN"}</span>
+                              <div className="flex-1 min-w-0 mr-2">
+                                <span className="block truncate">{c.label}</span>
+                                {c.scientific && <span className="block truncate text-[9px] italic text-slate-400 dark:text-slate-500 leading-tight">{c.scientific}</span>}
+                              </div>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <span className="text-[9px] font-mono text-slate-400 dark:text-slate-500">{Math.round(c.conf * 100)}%</span>
+                                <span className="text-[10px] font-bold px-1 py-0.5 rounded bg-teal-100 dark:bg-teal-950/60 text-teal-600 dark:text-teal-405">SN</span>
                               </div>
                             </button>
                           ))}
@@ -629,7 +568,7 @@ function DetailSidebar({
                     )}
 
                     <div>
-                      <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                      <p className="text-[9px] font-bold text-slate-400 dark:text-slate-505 uppercase tracking-wider mb-1">
                         {candidates.length > 0 ? "Or type manually" : "Enter correct label"}
                       </p>
                       <input
@@ -638,7 +577,7 @@ function DetailSidebar({
                         value={correctLabel}
                         onChange={(e) => setCorrectLabel(e.target.value)}
                         onKeyDown={(e) => e.key === "Escape" && setMode("idle")}
-                        className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                        className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
                       />
                     </div>
                     <input
@@ -649,26 +588,30 @@ function DetailSidebar({
                         if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
                         if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
                       }}
-                      className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+                      className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
                     />
                     <div className="flex gap-2">
                       <button
                         disabled={busy || !correctLabel.trim()}
                         onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
-                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition"
+                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition cursor-pointer"
                       >
                         {busy ? "Saving…" : "Save Correction"}
                       </button>
                       <button
                         type="button"
                         onClick={() => setIsDrawing(!isDrawing)}
-                        className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition ${
+                        className={`px-2.5 py-2 rounded-lg text-xs font-semibold border transition cursor-pointer ${
                           isDrawing
-                            ? "bg-orange-100 text-orange-700 border-orange-200"
-                            : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
+                            ? "bg-orange-100 dark:bg-orange-950/60 text-orange-700 dark:text-orange-400 border-orange-200 dark:border-orange-900/30"
+                            : "bg-white dark:bg-slate-955 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-900/40"
                         }`}
                       >
-                        {isDrawing ? "Done Box" : "✏️ Box"}
+                        {isDrawing ? "Done Box" : (
+                          <span className="flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[14px] leading-none select-none">edit</span>Box
+                          </span>
+                        )}
                       </button>
                     </div>
                   </>
@@ -677,7 +620,7 @@ function DetailSidebar({
 
               {mode === "flag-note" && (
                 <>
-                  <p className="font-bold text-red-800 text-[11px] uppercase tracking-wider">Flag Detection</p>
+                  <p className="font-bold text-red-600 dark:text-red-450 text-[11px] uppercase tracking-wider">Flag Detection</p>
                   <input
                     autoFocus
                     placeholder="Reason for flagging (optional)"
@@ -687,12 +630,12 @@ function DetailSidebar({
                       if (e.key === "Enter") run(() => flagDetection(id, { reviewer_id: reviewerId, notes }));
                       if (e.key === "Escape") setMode("idle");
                     }}
-                    className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-400 bg-white"
+                    className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
                   />
                   <button
                     disabled={busy}
                     onClick={() => run(() => flagDetection(id, { reviewer_id: reviewerId, notes }))}
-                    className="w-full py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition"
+                    className="w-full py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
                   >
                     {busy ? "Flagging…" : "Flag"}
                   </button>
@@ -705,7 +648,7 @@ function DetailSidebar({
                   setIsDrawing(false);
                   setEditedBbox(null);
                 }}
-                className="w-full py-1.5 border border-slate-200 text-slate-500 rounded-lg hover:bg-slate-100 transition text-[11px] font-medium"
+                className="w-full py-1.5 border border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-900/50 transition text-[11px] font-semibold cursor-pointer"
               >
                 Cancel Form
               </button>
@@ -737,40 +680,42 @@ const AUDIT_COLS: { key: string; label: string }[] = [
 
 function DataTable({ rows, cols }: { rows: Row[]; cols: { key: string; label: string }[] }) {
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto shadow-sm">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 border-b border-slate-200">
-          <tr>
-            {cols.map((c) => (
-              <th key={c.key} className="text-left px-4 py-3 font-semibold text-slate-500 whitespace-nowrap text-xs uppercase tracking-wide">
-                {c.label}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {rows.map((row, i) => (
-            <tr key={i} className="hover:bg-slate-50">
+    <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800">
+            <tr>
               {cols.map((c) => (
-                <td key={c.key} className="px-4 py-2.5 text-slate-700 max-w-xs truncate">
-                  {c.key === "action" ? (
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-semibold ${
-                      String(row[c.key]) === "accept" ? "bg-green-100 text-green-700" :
-                      String(row[c.key]) === "correct" ? "bg-blue-100 text-blue-700" :
-                      "bg-red-100 text-red-700"
-                    }`}>
-                      {String(row[c.key] ?? "")}
-                    </span>
-                  ) : (
-                    String(row[c.key] ?? "—")
-                  )}
-                </td>
+                <th key={c.key} className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-slate-400 whitespace-nowrap text-[11px] uppercase tracking-wider">
+                  {c.label}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-      <div className="px-4 py-2 border-t border-slate-100 text-xs text-slate-400">
+          </thead>
+          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+            {rows.map((row, i) => (
+              <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors">
+                {cols.map((c) => (
+                  <td key={c.key} className="px-4 py-3 text-slate-700 dark:text-slate-300 max-w-xs truncate">
+                    {c.key === "action" ? (
+                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-bold uppercase ${
+                        String(row[c.key]) === "accept" ? "bg-green-105 dark:bg-emerald-950/30 text-green-700 dark:text-emerald-450 border border-green-200 dark:border-emerald-900/30" :
+                        String(row[c.key]) === "correct" ? "bg-blue-105 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-900/30" :
+                        "bg-red-105 dark:bg-red-950/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/30"
+                      }`}>
+                        {String(row[c.key] ?? "")}
+                      </span>
+                    ) : (
+                      String(row[c.key] ?? "—")
+                    )}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="px-4 py-2.5 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 font-medium">
         {rows.length} record(s)
       </div>
     </div>
@@ -791,7 +736,7 @@ export default function ReviewQueue() {
   const [tab, setTab] = useState<Tab>("queue");
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [showHotkeys, setShowHotkeys] = useState(false);
-  const [filterDisagreement, setFilterDisagreement] = useState(false);
+  const [filterVeryLowConf, setFilterVeryLowConf] = useState(false);
   const [sortConf, setSortConf] = useState<"asc" | "desc">("asc"); // asc = worst first
 
   // Session progress tracking
@@ -824,8 +769,11 @@ export default function ReviewQueue() {
     return sortConf === "asc" ? ca - cb : cb - ca;
   });
 
-  const displayedQueue = filterDisagreement
-    ? sortedQueue.filter((row) => row.agreement === "Low" || row.agreement === "Medium")
+  const displayedQueue = filterVeryLowConf
+    ? sortedQueue.filter((row) => {
+        const c = typeof row.detection_confidence === "number" ? row.detection_confidence as number : parseFloat(String(row.detection_confidence ?? "1"));
+        return !isNaN(c) && c < 0.4;
+      })
     : sortedQueue;
 
   const load = async (isAction = false) => {
@@ -871,33 +819,33 @@ export default function ReviewQueue() {
   ];
 
   return (
-    <div className="flex flex-col h-[calc(100vh-6.5rem)] -mt-4 -mx-6 overflow-hidden">
-      <div className="px-6 pt-4 pb-2 bg-white border-b border-slate-200 space-y-4 shrink-0">
+    <div className="flex flex-col h-[calc(100vh-6.5rem)] -mt-4 -mx-6 overflow-hidden animate-fade-in">
+      <div className="px-6 pt-4 pb-2 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 space-y-4 shrink-0 shadow-sm">
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-bold text-slate-800">Review Queue</h1>
-            <p className="text-slate-500 text-xs mt-0.5">
-              Detections with confidence below <span className="font-mono font-semibold text-slate-700">{threshold}</span> need manual review.
-              Reviewer: <span className="font-semibold text-slate-700">{reviewerId}</span>.
+            <h1 className="text-xl font-bold text-slate-905 dark:text-white">Review Queue</h1>
+            <p className="text-slate-500 dark:text-slate-405 text-xs mt-0.5">
+              Detections with confidence below <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{threshold}</span> need manual review.
+              Reviewer: <span className="font-semibold text-slate-700 dark:text-slate-300">{reviewerId}</span>.
             </p>
             {/* Session progress bar */}
             {tab === "queue" && (initialQueueSize.current ?? 0) > 0 && (
               <div className="mt-2 flex items-center gap-3">
-                <div className="flex-1 bg-slate-100 rounded-full h-1.5 overflow-hidden max-w-[200px]">
+                <div className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden max-w-[200px]">
                   <div
                     className="h-1.5 bg-emerald-500 rounded-full transition-all duration-500"
                     style={{ width: `${Math.round((sessionReviewed / (initialQueueSize.current ?? 1)) * 100)}%` }}
                   />
                 </div>
-                <span className="text-[10px] font-semibold text-slate-500">
+                <span className="text-[10px] font-semibold text-slate-500 dark:text-slate-400">
                   {sessionReviewed} / {initialQueueSize.current} reviewed this session
-                  {queue.length > 0 && <span className="text-slate-400"> · {queue.length} remaining</span>}
+                  {queue.length > 0 && <span className="text-slate-400 dark:text-slate-500"> · {queue.length} remaining</span>}
                 </span>
               </div>
             )}
           </div>
           {tab === "queue" && queue.length > 0 && (
-            <p className="text-[10px] text-slate-400 font-mono bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 shrink-0">
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 shrink-0 select-none">
               J/K or ↑/↓ navigate · A confirm · C correct · F flag · Esc cancel
             </p>
           )}
@@ -909,10 +857,10 @@ export default function ReviewQueue() {
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`flex items-center px-3 py-1.5 text-xs font-semibold rounded-lg transition ${
+                className={`flex items-center px-3 py-1.5 text-xs font-semibold rounded-lg transition cursor-pointer ${
                   tab === t.id
-                    ? "bg-slate-100 text-slate-800"
-                    : "text-slate-500 hover:text-slate-700"
+                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                 }`}
               >
                 {t.label}
@@ -926,7 +874,7 @@ export default function ReviewQueue() {
               {/* Sort control */}
               <button
                 onClick={() => { setSortConf(s => s === "asc" ? "desc" : "asc"); setFocusedIdx(0); resetItemActionState(); }}
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-350 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-900 transition shadow-sm cursor-pointer"
                 title={sortConf === "asc" ? "Sorted: worst confidence first" : "Sorted: best confidence first"}
               >
                 <span className="material-symbols-outlined text-xs">sort</span>
@@ -934,37 +882,37 @@ export default function ReviewQueue() {
               </button>
               <button
                 onClick={() => setShowHotkeys(true)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm"
+                className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-355 bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-900 transition shadow-sm cursor-pointer"
               >
                 <span className="material-symbols-outlined text-xs">keyboard</span>
                 Key Shortcuts
               </button>
-              <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 cursor-pointer select-none bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 transition shadow-sm">
+              <label className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-350 cursor-pointer select-none bg-slate-50 dark:bg-slate-955 border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-1.5 hover:bg-slate-100 dark:hover:bg-slate-900 transition shadow-sm">
                 <input
                   type="checkbox"
-                  checked={filterDisagreement}
+                  checked={filterVeryLowConf}
                   onChange={(e) => {
-                    setFilterDisagreement(e.target.checked);
+                    setFilterVeryLowConf(e.target.checked);
                     setFocusedIdx(0);
                     resetItemActionState();
                   }}
-                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5"
+                  className="rounded border-slate-305 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5 bg-white dark:bg-slate-950"
                 />
-                Disagreements Only
+                Very Low Conf (&lt;40%)
               </label>
             </div>
           )}
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 flex bg-slate-100">
+      <div className="flex-1 min-h-0 flex bg-slate-50 dark:bg-slate-950">
         {loading ? (
-          <div className="flex-1 flex items-center justify-center text-slate-400 gap-2">
-            <svg className="animate-spin w-5 h-5" fill="none" viewBox="0 0 24 24">
+          <div className="flex-1 flex items-center justify-center text-slate-400 dark:text-slate-550 gap-2">
+            <svg className="animate-spin w-5 h-5 text-emerald-600" fill="none" viewBox="0 0 24 24">
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            Loading…
+            Loading review queue…
           </div>
         ) : (
           <>
@@ -972,14 +920,14 @@ export default function ReviewQueue() {
               if (queue.length === 0) {
                 return (
                   <div className="flex-1 flex items-center justify-center">
-                    <EmptyState icon="✅" title="Queue is clear" sub="All detections are above the confidence threshold." />
+                    <EmptyState icon="check_circle" title="Queue is clear" sub="All detections are above the confidence threshold." />
                   </div>
                 );
               }
               if (displayedQueue.length === 0) {
                 return (
                   <div className="flex-1 flex items-center justify-center">
-                    <EmptyState icon="⚖️" title="No classifier disagreements found" sub="All current queue items have high classifier agreement." />
+                    <EmptyState icon="check_circle" title="No very low confidence detections" sub="No items in the queue have confidence below 40%." />
                   </div>
                 );
               }
@@ -987,29 +935,27 @@ export default function ReviewQueue() {
               const currentItem = displayedQueue[focusedIdx];
               return (
                 <div className="flex-1 flex min-h-0">
-                  <div className="w-80 border-r border-slate-200 bg-white flex flex-col min-h-0">
-                    <div className="p-3 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pending Detections</span>
-                      <span className="text-[10px] font-semibold text-slate-600 bg-slate-200/60 px-1.5 py-0.5 rounded">
+                  <div className="w-80 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col min-h-0 shadow-sm">
+                    <div className="p-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 flex justify-between items-center shrink-0">
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Pending Detections</span>
+                      <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800/80 px-1.5 py-0.5 rounded">
                         {focusedIdx + 1} / {displayedQueue.length}
                       </span>
                     </div>
-                    <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+                    <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
                       {displayedQueue.map((row, idx) => {
                         const isSelected = idx === focusedIdx;
                         const species = String(row.detected_animal ?? "Unknown");
                         const filename = String(row.filename ?? "");
                         const itemConf = typeof row.detection_confidence === "number" ? row.detection_confidence : parseFloat(String(row.detection_confidence ?? "0"));
-                        // Agreement-keyed left border: red=Low, amber=Medium, emerald=High, or selected=bright emerald
+                        // Confidence-keyed left border: red=very low, amber=low, emerald=selected
                         const borderCls = isSelected
                           ? "border-l-4 border-emerald-500"
-                          : row.agreement === "Low"
+                          : itemConf < 0.4
                           ? "border-l-4 border-red-400"
-                          : row.agreement === "Medium"
+                          : itemConf < 0.7
                           ? "border-l-4 border-amber-400"
-                          : row.agreement === "High"
-                          ? "border-l-4 border-emerald-300"
-                          : "border-l-4 border-slate-200";
+                          : "border-l-4 border-slate-200 dark:border-slate-800";
                         return (
                           <button
                             key={Number(row.id ?? row.image_id ?? idx)}
@@ -1017,13 +963,13 @@ export default function ReviewQueue() {
                               setFocusedIdx(idx);
                               resetItemActionState();
                             }}
-                            className={`w-full text-left p-3 flex gap-3 transition-colors outline-none ${
-                              isSelected ? "bg-emerald-50/80" : "hover:bg-slate-50"
+                            className={`w-full text-left p-3 flex gap-3 transition-colors outline-none cursor-pointer ${
+                              isSelected ? "bg-emerald-50/80 dark:bg-emerald-950/20" : "bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-950/40"
                             } ${borderCls}`}
                           >
-                            <div className="w-14 h-14 bg-slate-100 rounded border border-slate-200 overflow-hidden shrink-0 relative">
+                            <div className="w-14 h-14 bg-slate-100 dark:bg-slate-950 rounded border border-slate-200 dark:border-slate-800 overflow-hidden shrink-0 relative">
                               <img
-                                src={storedImageUrl(filename)}
+                                src={storedThumbUrl(filename, 160)}
                                 alt=""
                                 className="w-full h-full object-cover"
                                 onError={(e) => {
@@ -1031,32 +977,28 @@ export default function ReviewQueue() {
                                 }}
                               />
                               {/* Confidence dot on thumbnail */}
-                              <span className={`absolute bottom-0.5 right-0.5 w-2 h-2 rounded-full border border-white ${
+                              <span className={`absolute bottom-0.5 right-0.5 w-2 h-2 rounded-full border border-white dark:border-slate-900 ${
                                 itemConf >= 0.7 ? "bg-emerald-500" : itemConf >= 0.4 ? "bg-amber-400" : "bg-red-400"
                               }`} />
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
                               <div className="min-w-0">
-                                <p className={`font-bold truncate ${isSelected ? "text-emerald-700" : "text-slate-800"} text-sm`}>
+                                <p className={`font-bold truncate ${isSelected ? "text-emerald-700 dark:text-emerald-450" : "text-slate-800 dark:text-slate-200"} text-sm`}>
                                   {species}
                                 </p>
-                                <p className="text-[10px] text-slate-400 truncate mt-0.5">{filename}</p>
+                                <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{filename}</p>
                               </div>
                               <div className="flex items-center justify-between mt-1.5">
                                 <span className={`text-[10px] font-semibold ${
-                                  itemConf < 0.4 ? "text-red-500" : itemConf < 0.7 ? "text-amber-500" : "text-emerald-600"
+                                  itemConf < 0.4 ? "text-red-500" : itemConf < 0.7 ? "text-amber-500" : "text-emerald-600 dark:text-emerald-450"
                                 }`}>{Math.round(itemConf * 100)}%</span>
-                                {!!row.agreement && (
-                                  <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${
-                                    row.agreement === "High"
-                                      ? "bg-emerald-100 text-emerald-700 border-emerald-200"
-                                      : row.agreement === "Medium"
-                                      ? "bg-amber-100 text-amber-700 border-amber-200"
-                                      : "bg-red-100 text-red-700 border-red-200"
-                                  }`}>
-                                    {String(row.agreement)}
-                                  </span>
-                                )}
+                                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${
+                                  itemConf < 0.4
+                                    ? "bg-red-100 dark:bg-red-950/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800/40"
+                                    : "bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/40"
+                                }`}>
+                                  {itemConf < 0.4 ? "Very Low" : "Low"}
+                                </span>
                               </div>
                             </div>
                           </button>
@@ -1125,7 +1067,7 @@ export default function ReviewQueue() {
             {tab === "log" && (
               <div className="flex-1 overflow-auto p-6">
                 {log.length === 0
-                  ? <EmptyState icon="📋" title="No corrections yet" sub="Reviewed detections will appear here." />
+                  ? <EmptyState icon="assignment" title="No corrections yet" sub="Reviewed detections will appear here." />
                   : <DataTable rows={log} cols={LOG_COLS} />}
               </div>
             )}
@@ -1133,7 +1075,7 @@ export default function ReviewQueue() {
             {tab === "privacy" && (
               <div className="flex-1 overflow-auto p-6">
                 {audit.length === 0
-                  ? <EmptyState icon="🔒" title="No privacy audit entries" sub="Privacy scrub events will be logged here." />
+                  ? <EmptyState icon="lock" title="No privacy audit entries" sub="Privacy scrub events will be logged here." />
                   : <DataTable rows={audit} cols={AUDIT_COLS} />}
               </div>
             )}
@@ -1142,18 +1084,18 @@ export default function ReviewQueue() {
       </div>
 
       <div
-        className={`fixed inset-y-0 right-0 w-80 bg-white/95 backdrop-blur-md border-l border-slate-200 shadow-2xl z-50 transform transition-transform duration-300 ease-out flex flex-col ${
+        className={`fixed inset-y-0 right-0 w-80 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-l border-slate-200 dark:border-slate-800 shadow-2xl z-50 transform transition-transform duration-300 ease-out flex flex-col ${
           showHotkeys ? "translate-x-0" : "translate-x-full"
         }`}
       >
-        <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+        <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <span className="material-symbols-outlined text-emerald-600">keyboard</span>
-            <h3 className="font-bold text-slate-800 text-sm">Keyboard Shortcuts</h3>
+            <span className="material-symbols-outlined text-emerald-600 dark:text-emerald-450">keyboard</span>
+            <h3 className="font-bold text-slate-805 dark:text-slate-200 text-sm">Keyboard Shortcuts</h3>
           </div>
           <button
             onClick={() => setShowHotkeys(false)}
-            className="p-1 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-600 transition"
+            className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition cursor-pointer"
           >
             <span className="material-symbols-outlined text-lg">close</span>
           </button>
@@ -1161,67 +1103,67 @@ export default function ReviewQueue() {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-5">
           <div className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Navigation</h4>
+            <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Navigation</h4>
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Next Card</span>
+                <span className="text-slate-600 dark:text-slate-400">Next Card</span>
                 <div className="flex gap-1">
-                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">J</kbd>
-                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">↓</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">J</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">↓</kbd>
                 </div>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Previous Card</span>
+                <span className="text-slate-600 dark:text-slate-400">Previous Card</span>
                 <div className="flex gap-1">
-                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">K</kbd>
-                  <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">↑</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">K</kbd>
+                  <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">↑</kbd>
                 </div>
               </div>
             </div>
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Card Actions</h4>
+            <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Card Actions</h4>
             <div className="space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Confirm detection</span>
-                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">A</kbd>
+                <span className="text-slate-600 dark:text-slate-400">Confirm detection</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">A</kbd>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Correct label</span>
-                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">C</kbd>
+                <span className="text-slate-600 dark:text-slate-400">Correct label</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">C</kbd>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Flag for review</span>
-                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">F</kbd>
+                <span className="text-slate-600 dark:text-slate-400">Flag for review</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">F</kbd>
               </div>
               <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-600">Cancel / Close Form</span>
-                <kbd className="px-1.5 py-0.5 bg-slate-100 border border-slate-200 rounded font-mono shadow-sm">Esc</kbd>
+                <span className="text-slate-600 dark:text-slate-400">Cancel / Close Form</span>
+                <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 rounded font-mono shadow-sm">Esc</kbd>
               </div>
             </div>
           </div>
 
           <div className="space-y-3">
-            <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Bounding Box Adjustment</h4>
-            <div className="space-y-2.5 text-xs text-slate-600 leading-relaxed bg-orange-50/50 border border-orange-100 rounded-xl p-3">
+            <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-550 uppercase tracking-wider">Bounding Box Adjustment</h4>
+            <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-400 leading-relaxed bg-orange-50/50 dark:bg-orange-950/20 border border-orange-100 dark:border-orange-900/30 rounded-xl p-3">
               <p className="flex items-start gap-1.5">
-                <span className="text-orange-500 font-bold">1.</span>
-                Click <strong className="font-semibold text-slate-700">✏️ Box</strong> inside any active card to toggle editing.
+                <span className="text-orange-500 dark:text-orange-400 font-bold">1.</span>
+                Click <strong className="font-semibold text-slate-705 dark:text-slate-250 inline-flex items-center gap-0.5"><span className="material-symbols-outlined text-sm leading-none select-none">edit</span>Box</strong> inside any active card to toggle editing.
               </p>
               <p className="flex items-start gap-1.5">
-                <span className="text-orange-500 font-bold">2.</span>
+                <span className="text-orange-500 dark:text-orange-400 font-bold">2.</span>
                 Click and drag directly on the image to draw a new bounding box.
               </p>
               <p className="flex items-start gap-1.5">
-                <span className="text-orange-500 font-bold">3.</span>
-                The new box appears in orange. Press <strong className="font-semibold text-slate-700">Done Box</strong> or save to commit.
+                <span className="text-orange-500 dark:text-orange-400 font-bold">3.</span>
+                The new box appears in orange. Press <strong className="font-semibold text-slate-705 dark:text-slate-250">Done Box</strong> or save to commit.
               </p>
             </div>
           </div>
         </div>
 
-        <div className="p-4 border-t border-slate-100 bg-slate-50/50 text-[10px] text-slate-400 text-center">
+        <div className="p-4 border-t border-slate-100 dark:border-slate-805 bg-slate-50/50 dark:bg-slate-950/30 text-[10px] text-slate-400 dark:text-slate-500 text-center">
           Shortcuts are disabled when typing in input fields.
         </div>
       </div>
@@ -1229,7 +1171,7 @@ export default function ReviewQueue() {
       {showHotkeys && (
         <div
           onClick={() => setShowHotkeys(false)}
-          className="fixed inset-0 bg-slate-900/20 backdrop-blur-sm z-40 transition-opacity"
+          className="fixed inset-0 bg-slate-900/20 dark:bg-slate-950/40 backdrop-blur-sm z-40 transition-opacity"
         />
       )}
     </div>

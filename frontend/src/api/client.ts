@@ -34,16 +34,20 @@ export const uploadImages = (files: File[]) => {
   files.forEach((f) => form.append("files", f));
   return api.post("/images/upload", form).then((r) => r.data);
 };
-export const startProcessing = (jobId: string) =>
-  api.post(`/images/process/${jobId}`).then((r) => r.data);
+export const startProcessing = (jobId: string, stationId?: string) =>
+  api.post(`/images/process/${jobId}`, null, stationId ? { params: { station_id: stationId } } : {}).then((r) => r.data);
 export const pollJob = (jobId: string) =>
   api.get(`/images/job/${jobId}`).then((r) => r.data);
 export const getJobResults = (jobId: string) =>
   api.get(`/images/results/${jobId}`).then((r) => r.data);
 export const imageFileUrl = (jobId: string, filename: string) =>
   `/api/images/file/${jobId}/${encodeURIComponent(filename)}`;
+/** Full original image — use for lightbox / review panels where fine detail matters. */
 export const storedImageUrl = (filename: string) =>
   `/api/images/stored/${encodeURIComponent(filename)}`;
+/** Cached thumbnail — w is the max dimension in pixels (64–2560). */
+export const storedThumbUrl = (filename: string, w = 800) =>
+  `/api/images/thumb/${encodeURIComponent(filename)}?w=${w}`;
 
 // ── Results ──────────────────────────────────────────────────────────────────
 export const getResults = (params?: Record<string, string | number>) =>
@@ -96,16 +100,22 @@ export const addStation = (body: Record<string, unknown>) =>
   api.post("/stations", body).then((r) => r.data);
 export const updateStation = (id: string, body: Record<string, unknown>) =>
   api.patch(`/stations/${id}`, body).then((r) => r.data);
-export const deleteStation = (id: string) =>
-  api.delete(`/stations/${id}`).then((r) => r.data);
+export const deleteStation = (id: string, force = false) =>
+  api.delete(`/stations/${id}${force ? "?force=true" : ""}`).then((r) => r.data);
 export const getDeployments = () =>
   api.get("/stations/deployments").then((r) => r.data);
 export const addDeployment = (body: Record<string, unknown>) =>
   api.post("/stations/deployments", body).then((r) => r.data);
+export const deleteDeployment = (id: number) =>
+  api.delete(`/stations/deployments/${id}`).then((r) => r.data);
 export const getStationSummary = () =>
   api.get("/stations/summary").then((r) => r.data);
 export const getStationMap = () =>
   api.get("/stations/map").then((r) => r.data);
+export const getOrphanStations = () =>
+  api.get("/stations/orphans").then((r) => r.data);
+export const reassignStation = (fromStation: string, toStation: string) =>
+  api.post(`/stations/reassign?from_station=${encodeURIComponent(fromStation)}&to_station=${encodeURIComponent(toStation)}`).then((r) => r.data);
 
 // ── Review Queue ─────────────────────────────────────────────────────────────
 export const getReviewQueue = () =>
@@ -164,6 +174,13 @@ export const getUtilisation = (max_km = 50) =>
 export const getProject = () => api.get("/project").then((r) => r.data);
 export const updateProject = (body: Record<string, unknown>) =>
   api.patch("/project", body).then((r) => r.data);
+export const listProjects = () => api.get("/project/list").then((r) => r.data as Record<string, unknown>[]);
+export const setActiveProject = (projectId: number) =>
+  api.post(`/project/active/${projectId}`).then((r) => r.data);
+export const createProject = (params: { name: string; survey_area?: string; notes?: string }) =>
+  api.post("/project/create", undefined, { params }).then((r) => r.data);
+export const deleteProject = (projectId: number) =>
+  api.delete(`/project/${projectId}`).then((r) => r.data);
 
 // ── ArcGIS ───────────────────────────────────────────────────────────────────
 export const pushArcGIS = (body: Record<string, unknown>) =>
@@ -190,3 +207,8 @@ export const getHashStats = () =>
   api.get("/storage/hash-stats").then((r) => r.data);
 export const clearHashes = (strategy: string) =>
   api.post("/storage/clear-hashes", undefined, { params: { strategy } }).then((r) => r.data);
+
+// ── Database Reset ──────────────────────────────────────────────────────────
+export const resetDatabase = () =>
+  api.post("/storage/reset-db", null, { params: { confirm: true } }).then((r) => r.data);
+

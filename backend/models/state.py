@@ -31,13 +31,8 @@ class AppConfig:
     speciesnet_lat: float = -1.0
     speciesnet_lng: float = 37.0
     speciesnet_country: str = "KEN"
-    # Classifier fusion weights (BioClip vs SpeciesNet)
-    bioclip_weight: float = 0.05
-    speciesnet_weight: float = 0.95
-    # Bypass fusion and use SpeciesNet directly when its top confidence >= this (0 = disabled)
+    # Bypass SpeciesNet fusion when top confidence >= this (0 = disabled; currently a no-op in speciesnet_only path)
     speciesnet_bypass_threshold: float = 0.60
-    # NEW: Use SpeciesNet as PRIMARY classifier, disable BioClip entirely
-    # Returns ALL SpeciesNet outputs instead of just top-5
     use_speciesnet_first: bool = True
 
 
@@ -48,7 +43,6 @@ class AppState:
     # AI models (populated during lifespan startup)
     ocr_model: Optional[Any] = None
     md_model: Optional[Any] = None          # MegaDetector v5a
-    bio_model: Optional[Any] = None         # BioClip classifier
     speciesnet_model: Optional[Any] = None  # Google SpeciesNet classifier
     dn_model: Optional[Any] = None
 

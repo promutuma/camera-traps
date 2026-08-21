@@ -94,7 +94,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
 
     from core.ocr_processor import OCRProcessor
     from core.animal_detector import AnimalDetector, MegaDetectorWrapper
-    from core.bioclip_classifier import BioClipClassifier
+    # BioClipClassifier removed — SpeciesNet is the sole classifier
     from core.day_night_classifier import DayNightClassifier
     from core.db_manager import DatabaseManager
     from core.station_manager import StationManager
@@ -128,12 +128,6 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
         low_spec=cfg.enable_low_spec,
     )
 
-    logger.info("Loading BioClip...")
-    state.bio_model = BioClipClassifier(
-        species_list=AnimalDetector.WILDLIFE_CLASSES,
-        low_spec=cfg.enable_low_spec,
-    )
-
     if not cfg.enable_low_spec:
         logger.info("Loading SpeciesNet classifier...")
         try:
@@ -155,6 +149,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
 
     uploads_dir = Path(db_path).parent / "uploads"
     state.file_manager = FileManager(uploads_dir, state.db_manager)
+    state.file_manager.reconcile_missing_files()
 
     state.station_manager = StationManager(db_path)
     state.review_engine = ReviewEngine(db_path)
@@ -176,19 +171,6 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
 # Lifespan — load all models once at startup (off the event loop)
 # ---------------------------------------------------------------------------
 
-def _cleanup_expired_files(state: AppState) -> None:
-    """Background cleanup: delete empty images and marked files."""
-    if not state.file_manager:
-        return
-
-    try:
-        logger.info("Running scheduled file cleanup...")
-        result = state.file_manager.cleanup_empty_images(dry_run=False)
-        logger.info(f"Cleanup result: {result}")
-    except Exception as e:
-        logger.warning(f"Cleanup failed: {e}")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state: AppState = app.state.app_state
@@ -200,29 +182,16 @@ async def lifespan(app: FastAPI):
         state.models_error = str(exc)
         logger.exception("Failed to load models: %s", exc)
 
-    # Start background cleanup task (runs every hour)
-    cleanup_task = asyncio.create_task(_schedule_cleanup(state))
+    # Sync the active project's SpeciesNet coordinates into AppConfig
+    try:
+        from backend.routers.project import _sync_speciesnet_coords
+        _sync_speciesnet_coords(state)
+    except Exception as exc:
+        logger.warning("Could not sync SpeciesNet coords from active project: %s", exc)
 
     yield
 
     logger.info("Shutting down.")
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
-
-
-async def _schedule_cleanup(state: AppState) -> None:
-    """Run cleanup every hour."""
-    while True:
-        try:
-            await asyncio.sleep(3600)  # Run every hour
-            await asyncio.to_thread(_cleanup_expired_files, state)
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error(f"Cleanup task error: {e}")
 
 
 # ---------------------------------------------------------------------------

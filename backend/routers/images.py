@@ -23,7 +23,7 @@ import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ def _is_allowed_image(data: bytes) -> bool:
             return True
     return False
 
-from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, BackgroundTasks, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.models.state import AppState
@@ -62,11 +62,12 @@ router = APIRouter(prefix="/images", tags=["images"])
 # The job stays "queued" while waiting and transitions to "running" on acquire.
 _job_semaphore = threading.Semaphore(1)
 
-# Number of images to process in parallel within a single job. Capped at 2
-# to keep peak memory manageable on low-RAM deployments. Each image runs
-# BioClip then SpeciesNet sequentially, so 2 parallel images ≈ 2 active
-# inference contexts at any moment.
-_PARALLEL_IMAGES = max(1, min(2, (os.cpu_count() or 4) // 4))
+# Number of images to process in parallel within a single job.
+# Model weights (MegaDetector ~270 MB, SpeciesNet ~500 MB, OCR ~200 MB) are
+# loaded once and shared. Each additional parallel image adds ~200 MB of
+# inference buffer. Floor at 1, cap at half the CPU count so we leave cores
+# free for the OS and the OCR/day-night sub-tasks per image.
+_PARALLEL_IMAGES = max(1, (os.cpu_count() or 4) // 2)
 
 db_path = os.environ.get("DB_PATH", "wildlife_data.db")
 UPLOADS_DIR = Path(db_path).parent / "uploads"
@@ -88,27 +89,35 @@ def _safe_filename(name: str) -> str:
 @router.post("/upload")
 async def upload_images(files: List[UploadFile] = File(...), state: AppState = Depends(get_state)):
     """Save uploaded files; return job_id immediately so SSE can attach."""
+    import hashlib as _hashlib
     job = job_manager.create()
     temp_dir = tempfile.mkdtemp()
     job.temp_dir = temp_dir
-    job.total = len(files)
+    duplicates = []
+    rejected = []   # unsupported file type — skip, don't abort
 
     for upload in files:
         contents = await upload.read()
+        fname = upload.filename or "upload"
 
         if len(contents) > _MAX_UPLOAD_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"'{upload.filename}' exceeds {_MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
-            )
+            rejected.append(f"{fname} (too large)")
+            continue
 
         if not _is_allowed_image(contents):
-            raise HTTPException(
-                status_code=415,
-                detail=f"'{upload.filename}' is not a supported image file (JPEG, PNG, TIFF, BMP, WebP)",
-            )
+            rejected.append(fname)
+            continue
 
-        safe_name = _safe_filename(upload.filename or "upload")
+        # Hash from in-memory bytes — no disk I/O needed
+        file_hash = _hashlib.sha256(contents).hexdigest()
+        safe_name = _safe_filename(fname)
+
+        # Early duplicate rejection before any disk write or AI processing
+        if state.db_manager and state.db_manager.image_hash_exists(file_hash):
+            duplicates.append(fname)
+            continue
+
+        job.file_hashes[safe_name] = file_hash
 
         dest = os.path.join(temp_dir, safe_name)
         with open(dest, "wb") as f:
@@ -119,12 +128,32 @@ async def upload_images(files: List[UploadFile] = File(...), state: AppState = D
         with open(persistent, "wb") as f:
             f.write(contents)
 
-    return {"job_id": job.job_id, "file_count": len(files)}
+    job.total = len(job.image_paths)
+
+    if not job.image_paths:
+        # Return 200 with file_count=0 so the frontend can skip processing this chunk
+        # rather than treating it as a fatal error.
+        response: dict = {"file_count": 0}
+        if duplicates:
+            response["duplicates_skipped"] = duplicates
+        if rejected:
+            response["rejected"] = rejected
+        return response
+
+    response = {"job_id": job.job_id, "file_count": len(job.image_paths)}
+    if duplicates:
+        response["duplicates_skipped"] = duplicates
+    if rejected:
+        response["rejected"] = rejected
+    return response
 
 
 # ---------------------------------------------------------------------------
 # Serve images
 # ---------------------------------------------------------------------------
+
+_CACHE_HEADERS = {"Cache-Control": "public, max-age=86400, immutable"}
+
 
 @router.get("/stored/{filename}")
 def serve_stored_image(filename: str):
@@ -132,7 +161,39 @@ def serve_stored_image(filename: str):
     file_path = UPLOADS_DIR / safe_name
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    return FileResponse(str(file_path))
+    return FileResponse(str(file_path), headers=_CACHE_HEADERS)
+
+
+@router.get("/thumb/{filename}")
+def serve_thumbnail(filename: str, w: int = Query(800, ge=64, le=2560)):
+    """
+    Return a cached JPEG thumbnail scaled to fit within w×w pixels.
+    Original is never modified. Cache lives at uploads/thumbs/{w}/{safe_name}.jpg.
+    Falls back to the original if PIL is unavailable or resizing fails.
+    """
+    from PIL import Image as _PILImage
+    safe_name = _safe_filename(filename)
+    original = UPLOADS_DIR / safe_name
+    if not original.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    thumb_dir = UPLOADS_DIR / "thumbs" / str(w)
+    thumb_dir.mkdir(parents=True, exist_ok=True)
+    # Use full sanitized filename (not just stem) to avoid collisions between
+    # IMG_001.jpg and IMG_001.png mapping to the same cache entry.
+    thumb_path = thumb_dir / f"{safe_name}.jpg"
+
+    if not thumb_path.is_file():
+        try:
+            img = _PILImage.open(original)
+            img.thumbnail((w, w), _PILImage.LANCZOS)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.save(thumb_path, "JPEG", quality=82, optimize=True)
+        except Exception:
+            return FileResponse(str(original), headers=_CACHE_HEADERS)
+
+    return FileResponse(str(thumb_path), media_type="image/jpeg", headers=_CACHE_HEADERS)
 
 
 @router.get("/file/{job_id}/{filename}")
@@ -151,7 +212,7 @@ def serve_image(job_id: str, filename: str):
 # Processing worker (blocking — runs in thread)
 # ---------------------------------------------------------------------------
 
-def _run_processing(job_id: str, state: AppState) -> None:
+def _run_processing(job_id: str, state: AppState, station_id: Optional[str] = None) -> None:
     job = job_manager.get(job_id)
     if not job:
         return
@@ -177,13 +238,10 @@ def _run_processing(job_id: str, state: AppState) -> None:
 
             animal_detector = AnimalDetector(
                 megadetector=state.md_model,
-                bioclip=state.bio_model,
                 confidence_threshold=cfg.detection_confidence,
                 speciesnet=state.speciesnet_model,
-                bioclip_weight=cfg.bioclip_weight,
-                speciesnet_weight=cfg.speciesnet_weight,
                 speciesnet_bypass_threshold=cfg.speciesnet_bypass_threshold,
-                use_speciesnet_first=cfg.use_speciesnet_first,
+                use_speciesnet_first=True,
             )
 
             processor = ImageProcessor(
@@ -196,8 +254,10 @@ def _run_processing(job_id: str, state: AppState) -> None:
                 ocr_strip_percent=cfg.ocr_strip_height,
             )
 
-            # Process images in parallel. Results are collected by index so the
-            # final list preserves upload order regardless of completion order.
+            import pandas as pd
+
+            # Process images in parallel. Results are saved to the DB as each
+            # image completes so data is durable even if the job is interrupted.
             results_by_idx: dict = {}
             image_errors: list = []
             _write_lock = threading.Lock()
@@ -206,6 +266,52 @@ def _run_processing(job_id: str, state: AppState) -> None:
                 idx, path = args
                 result = processor.process_single_image(path)
                 return idx, path, result if isinstance(result, list) else [result]
+
+            def _save_image_result(image_name: str, result_list: list) -> None:
+                """Persist one image's results immediately after processing."""
+                if not state.db_manager or not result_list:
+                    return
+                try:
+                    state.db_manager.save_results(pd.DataFrame(result_list))
+
+                    if state.file_manager:
+                        best = max(
+                            result_list,
+                            key=lambda r: r.get("detection_confidence", 0.0) or 0.0,
+                        )
+                        detected_animal = best.get("detected_animal", "")
+                        confidence = best.get("detection_confidence", 0.0) or 0.0
+                        is_person_or_vehicle = detected_animal and (
+                            detected_animal.lower() in ("person", "vehicle", "human")
+                            or "person" in detected_animal.lower()
+                            or "vehicle" in detected_animal.lower()
+                        )
+                        has_animal = (
+                            False
+                            if (is_person_or_vehicle or not detected_animal or confidence == 0)
+                            else confidence > 0.4
+                        )
+                        try:
+                            conn = state.db_manager.get_connection()
+                            cursor = conn.cursor()
+                            cursor.execute(
+                                "SELECT id FROM images WHERE filename = ? ORDER BY id DESC LIMIT 1",
+                                (image_name,),
+                            )
+                            img_row = cursor.fetchone()
+                            conn.close()
+                            if img_row:
+                                state.file_manager.update_image_with_file_info(
+                                    img_row[0],
+                                    str(UPLOADS_DIR / image_name),
+                                    has_animal,
+                                    precomputed_hash=job.file_hashes.get(image_name),
+                                )
+                        except Exception as info_exc:
+                            logger.warning("Could not update file info for %s: %s", image_name, info_exc)
+
+                except Exception as db_exc:
+                    logger.error("Failed to persist result for %s (job %s): %s", image_name, job_id, db_exc)
 
             with ThreadPoolExecutor(max_workers=_PARALLEL_IMAGES) as image_pool:
                 futures = {
@@ -226,7 +332,15 @@ def _run_processing(job_id: str, state: AppState) -> None:
                     image_events = result_list[0].pop("_model_events", []) if result_list else []
                     image_name = os.path.basename(image_path)
 
+                    for r in result_list:
+                        if not r.get("station_id"):
+                            r["station_id"] = station_id or cfg.default_station_id
+
+                    # Serialise DB writes through the same lock used for job
+                    # state — SQLite tolerates concurrent readers but serialises
+                    # writers, so doing this under the lock avoids contention.
                     with _write_lock:
+                        _save_image_result(image_name, result_list)
                         for ev in image_events:
                             job.model_events.append({
                                 "type": "model_event",
@@ -237,7 +351,7 @@ def _run_processing(job_id: str, state: AppState) -> None:
                         results_by_idx[idx] = result_list
                         job.completed += 1
 
-            # Reconstruct in upload order
+            # Reconstruct in upload order for job.results (used by /results/{job_id})
             results = []
             for idx in range(len(job.image_paths)):
                 results.extend(results_by_idx.get(idx, []))
@@ -245,64 +359,11 @@ def _run_processing(job_id: str, state: AppState) -> None:
             if image_errors:
                 job.error = f"{len(image_errors)} image(s) failed: " + "; ".join(image_errors)
 
-            for r in results:
-                if not r.get("station_id"):
-                    r["station_id"] = cfg.default_station_id
-
             job.results = results
 
             if cfg.enable_scrubbing and state.scrubber:
-                import pandas as pd
                 df = pd.DataFrame(results)
                 job.scrub_audit = state.scrubber.scrub_batch(df)
-
-            if state.db_manager:
-                import pandas as pd
-                df = pd.DataFrame(results)
-                try:
-                    state.db_manager.save_results(df)
-
-                    # Update file info and tier classification
-                    if state.file_manager:
-                        for idx, result in enumerate(results):
-                            filename = result.get("filename")
-                            detected_animal = result.get("detected_animal", "")
-                            confidence = result.get("detection_confidence", 0.0)
-
-                            # Classify tier: empty if no animal, low_conf if 0.2-0.4, valid if >0.4
-                            # Treat Person/Vehicle as "empty" for storage purposes (not wildlife)
-                            is_person_or_vehicle = detected_animal and (
-                                detected_animal.lower() in ("person", "vehicle", "human")
-                                or "person" in detected_animal.lower()
-                                or "vehicle" in detected_animal.lower()
-                            )
-
-                            if is_person_or_vehicle or not detected_animal or confidence == 0:
-                                has_animal = False  # Tier: empty
-                            else:
-                                has_animal = confidence > 0.4  # Tier: valid or low_conf
-
-                            try:
-                                conn = state.db_manager.get_connection()
-                                cursor = conn.cursor()
-                                cursor.execute(
-                                    "SELECT id FROM images WHERE filename = ? ORDER BY id DESC LIMIT 1",
-                                    (filename,),
-                                )
-                                img_result = cursor.fetchone()
-                                conn.close()
-
-                                if img_result:
-                                    image_id = img_result[0]
-                                    file_path = str(UPLOADS_DIR / filename)
-                                    state.file_manager.update_image_with_file_info(
-                                        image_id, file_path, has_animal
-                                    )
-                            except Exception as info_exc:
-                                logger.warning(f"Could not update file info for {filename}: {info_exc}")
-
-                except Exception as db_exc:
-                    logger.error("Failed to persist results to DB for job %s: %s", job_id, db_exc)
 
             job.status = "done"
 
@@ -324,6 +385,7 @@ def start_processing(
     job_id: str,
     background_tasks: BackgroundTasks,
     state: AppState = Depends(get_state),
+    station_id: Optional[str] = None,
 ):
     job = job_manager.get(job_id)
     if not job:
@@ -333,7 +395,7 @@ def start_processing(
     if not state.models_loaded:
         raise HTTPException(status_code=503, detail="AI models not loaded yet")
 
-    background_tasks.add_task(_run_processing, job_id, state)
+    background_tasks.add_task(_run_processing, job_id, state, station_id or None)
     return {"job_id": job_id, "status": "started"}
 
 
@@ -360,16 +422,19 @@ def get_job_status(job_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/job/{job_id}/stream")
-async def stream_job_progress(job_id: str):
+async def stream_job_progress(job_id: str, cursor: int = 0):
     """
     Server-Sent Events stream.
 
     Yields two event types:
       {"type": "model_event", "image": "...", "model": "...", ...}
       {"type": "progress",    "status": "...", "total": N, "completed": N}
+
+    Pass ?cursor=N to resume from a known position (e.g. after a reconnect)
+    so already-delivered model events are not re-sent.
     """
     async def event_gen():
-        event_cursor = 0
+        event_cursor = max(0, cursor)
         while True:
             job = job_manager.get(job_id)
             if not job:
@@ -394,6 +459,8 @@ async def stream_job_progress(job_id: str):
             })
 
             if job.status in ("done", "error"):
+                # Free model_events from RAM — they've all been delivered.
+                job.model_events.clear()
                 return
 
             await asyncio.sleep(0.3)

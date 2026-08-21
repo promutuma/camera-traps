@@ -1,4 +1,4 @@
-"""Tab 5 — Deep Inspection: OCR + MegaDetector raw + BioClip top-20."""
+"""Tab 5 — Deep Inspection: OCR + MegaDetector raw candidates + SpeciesNet predictions."""
 
 import os
 import tempfile
@@ -41,19 +41,6 @@ async def inspect_image(file: UploadFile = File(...), state: AppState = Depends(
             except Exception as e:
                 pass
         result["megadetector"] = megadetector_candidates
-
-        # BioClip top-20
-        if state.bio_model:
-            try:
-                from PIL import Image
-                img = Image.open(tmp.name).convert("RGB")
-                predictions = state.bio_model.predict_list(img, top_k=20)
-                result["bioclip"] = [
-                    {"label": label, "score": round(float(score), 4)}
-                    for label, score in predictions
-                ]
-            except Exception as e:
-                result["bioclip"] = {"error": str(e)}
 
         # Google SpeciesNet top-5
         if state.speciesnet_model:

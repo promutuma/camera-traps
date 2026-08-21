@@ -10,6 +10,17 @@ class DatabaseManager:
         self.db_path = db_path
         self._init_db()
 
+    @property
+    def active_project_id(self) -> int:
+        conn = self.get_connection()
+        try:
+            row = conn.execute("SELECT id FROM projects WHERE is_active = 1 LIMIT 1").fetchone()
+            return row[0] if row else 1
+        except Exception:
+            return 1
+        finally:
+            conn.close()
+
     def get_connection(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -20,10 +31,31 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
 
+        # Projects table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS projects (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                name         TEXT NOT NULL UNIQUE,
+                survey_area  TEXT,
+                lead_org     TEXT,
+                start_date   TEXT,
+                end_date     TEXT,
+                notes        TEXT,
+                is_active    INTEGER DEFAULT 0,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        # Seed default project if empty
+        cursor.execute("SELECT COUNT(*) FROM projects")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute("INSERT INTO projects (id, name, is_active) VALUES (1, 'Default Project', 1)")
+            conn.commit()
+
         # Images table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS images (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER DEFAULT 1,
                 filename TEXT NOT NULL,
                 station_id TEXT DEFAULT 'Station-1',
                 processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -41,7 +73,8 @@ class DatabaseManager:
                 file_status TEXT DEFAULT 'available',
                 marked_for_deletion_at TIMESTAMP,
                 deleted_at TIMESTAMP,
-                can_delete BOOLEAN DEFAULT 1
+                can_delete BOOLEAN DEFAULT 1,
+                FOREIGN KEY (project_id) REFERENCES projects (id)
             )
         ''')
 
@@ -136,6 +169,7 @@ class DatabaseManager:
 
         # Add new columns to existing tables if this is a schema migration
         self._migrate_columns(cursor, "images", [
+            ("project_id", "INTEGER DEFAULT 1"),
             ("station_id", "TEXT DEFAULT 'Station-1'"),
             ("file_hash", "TEXT"),
             ("file_size_bytes", "INTEGER"),
@@ -149,12 +183,17 @@ class DatabaseManager:
         ])
         self._migrate_columns(cursor, "detections", [
             ("ide_id", "TEXT"),
-            ("bioclip_confidence", "REAL DEFAULT 0.0"),
+            ("bioclip_confidence", "REAL DEFAULT 0.0"),  # deprecated — always NULL for new rows
             ("speciesnet_confidence", "REAL DEFAULT 0.0"),
-            ("agreement", "TEXT"),
+            ("agreement", "TEXT"),                       # deprecated — always NULL for new rows
             ("model_breakdown", "TEXT"),
             ("is_exported", "BOOLEAN DEFAULT 0"),
             ("exported_at", "TIMESTAMP"),
+            ("scientific_name", "TEXT"),
+            ("md_confidence", "REAL"),
+            ("top_candidates", "TEXT"),
+            ("taxonomy_hierarchy", "TEXT"),
+            ("raw_model_output", "TEXT"),
         ])
 
         # Backfill uploaded_at for existing records
@@ -191,14 +230,15 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
         count = 0
+        active_project = self.active_project_id
 
         try:
             for _, row in df.iterrows():
                 cursor.execute('''
                     INSERT INTO images (
                         filename, station_id, capture_date, capture_time,
-                        temperature, day_night, brightness, user_notes, uploaded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        temperature, day_night, brightness, user_notes, uploaded_at, project_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 ''', (
                     row['filename'],
                     row.get('station_id', 'Station-1'),
@@ -207,17 +247,62 @@ class DatabaseManager:
                     row.get('temperature'),
                     row.get('day_night'),
                     row.get('brightness', 0.0),
-                    row.get('user_notes', '')
+                    row.get('user_notes', ''),
+                    active_project
                 ))
 
                 image_id = cursor.lastrowid
                 bbox_json = json.dumps(row.get('bbox')) if row.get('bbox') else None
 
+                # Parse all SpeciesNet raw results (JSON-encoded taxonomy objects).
+                # sn_raw_results is the full ranked list: [(raw_json_label, conf), ...]
+                sn_raw = row.get('sn_raw_results') or []
+
+                def _parse_sn_label(label):
+                    """Parse a SpeciesNet JSON label string into a metadata dict."""
+                    if isinstance(label, str) and label.startswith('{'):
+                        try:
+                            return json.loads(label)
+                        except Exception:
+                            pass
+                    return {'display': str(label).strip(), 'common_name': str(label).strip()}
+
+                # Top-1 structured fields
+                scientific_name = None
+                taxonomy_hierarchy = None
+                if sn_raw:
+                    top_meta = _parse_sn_label(sn_raw[0][0] if isinstance(sn_raw[0], (list, tuple)) else sn_raw[0])
+                    scientific_name = top_meta.get('scientific_name') or None
+                    hierarchy = top_meta.get('hierarchy')
+                    if hierarchy:
+                        taxonomy_hierarchy = json.dumps(hierarchy)
+
+                # Full structured candidates list (all top_k results from SpeciesNet)
+                top_candidates = None
+                if sn_raw:
+                    cands = []
+                    for entry in sn_raw:
+                        lbl, conf = (entry[0], entry[1]) if isinstance(entry, (list, tuple)) else (entry, 0.0)
+                        meta = _parse_sn_label(lbl)
+                        cands.append({
+                            'id': meta.get('id'),
+                            'common_name': meta.get('common_name') or meta.get('display') or str(lbl),
+                            'scientific_name': meta.get('scientific_name') or None,
+                            'hierarchy': meta.get('hierarchy') or [],
+                            'confidence': round(float(conf), 4),
+                        })
+                    top_candidates = json.dumps(cands)
+
+                raw_output = row.get('raw_model_output')
+                raw_output_json = json.dumps(raw_output) if raw_output else None
+
                 cursor.execute('''
                     INSERT INTO detections (
                         image_id, detected_animal, confidence, method, bbox, ide_id,
-                        bioclip_confidence, speciesnet_confidence, agreement, model_breakdown
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        speciesnet_confidence, model_breakdown,
+                        scientific_name, md_confidence, top_candidates, taxonomy_hierarchy,
+                        raw_model_output
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     image_id,
                     row['detected_animal'],
@@ -225,10 +310,13 @@ class DatabaseManager:
                     row.get('detection_method', 'Unknown'),
                     bbox_json,
                     row.get('ide_id'),
-                    row.get('bioclip_confidence', 0.0),
                     row.get('speciesnet_confidence', 0.0),
-                    row.get('agreement'),
                     json.dumps(row.get('model_breakdown', {})) if row.get('model_breakdown') else None,
+                    scientific_name,
+                    row.get('md_confidence'),
+                    top_candidates,
+                    taxonomy_hierarchy,
+                    raw_output_json,
                 ))
 
                 count += 1
@@ -384,10 +472,42 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    def get_history_df(self, limit: int = None, offset: int = 0):
-        """Retrieve detection history as a flat DataFrame, optionally paginated."""
+    def count_images_by_station(self, station_id: str) -> int:
+        """Return the number of detection records referencing this station_id."""
         conn = self.get_connection()
-        query = '''
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM images WHERE station_id = ?", (station_id,)
+            ).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
+
+    def get_history_df(self, limit: int = None, offset: int = 0,
+                       station_id: str = None, species: str = None,
+                       day_night: str = None, min_conf: float = None,
+                       max_conf: float = None):
+        """Retrieve detection history as a flat DataFrame, optionally filtered and paginated."""
+        conn = self.get_connection()
+        where_parts = ["i.project_id = ?"]
+        params = [self.active_project_id]
+        if station_id:
+            where_parts.append("i.station_id = ?")
+            params.append(station_id)
+        if species:
+            where_parts.append("d.detected_animal LIKE ?")
+            params.append(f"%{species}%")
+        if day_night:
+            where_parts.append("i.day_night = ?")
+            params.append(day_night)
+        if min_conf is not None:
+            where_parts.append("d.confidence >= ?")
+            params.append(min_conf)
+        if max_conf is not None:
+            where_parts.append("d.confidence <= ?")
+            params.append(max_conf)
+        where = "WHERE " + " AND ".join(where_parts)
+        query = f'''
             SELECT
                 i.id, i.filename, i.station_id, i.processed_at,
                 i.capture_date, i.capture_time, i.temperature,
@@ -395,16 +515,17 @@ class DatabaseManager:
                 d.id as detection_id,
                 d.detected_animal, d.confidence as detection_confidence,
                 d.method as detection_method, d.bbox, d.ide_id,
-                d.bioclip_confidence, d.speciesnet_confidence, d.agreement,
-                d.model_breakdown
+                d.speciesnet_confidence, d.model_breakdown,
+                d.scientific_name, d.md_confidence, d.top_candidates,
+                d.taxonomy_hierarchy, d.raw_model_output
             FROM images i
             JOIN detections d ON i.id = d.image_id
+            {where}
             ORDER BY i.processed_at DESC
         '''
-        params = []
         if limit is not None:
             query += ' LIMIT ? OFFSET ?'
-            params = [limit, offset]
+            params.extend([limit, offset])
         try:
             return pd.read_sql_query(query, conn, params=params if params else None)
         except Exception as e:
@@ -424,8 +545,9 @@ class DatabaseManager:
                 d.id as detection_id,
                 d.detected_animal, d.confidence as detection_confidence,
                 d.method as detection_method, d.bbox, d.ide_id,
-                d.bioclip_confidence, d.speciesnet_confidence, d.agreement,
-                d.model_breakdown
+                d.speciesnet_confidence, d.model_breakdown,
+                d.scientific_name, d.md_confidence, d.top_candidates,
+                d.taxonomy_hierarchy, d.raw_model_output
             FROM images i
             JOIN detections d ON i.id = d.image_id
             LEFT JOIN review_actions ra ON ra.image_id = CAST(i.id AS TEXT)
@@ -545,6 +667,17 @@ class DatabaseManager:
     # File Management
     # ------------------------------------------------------------------
 
+    def image_hash_exists(self, file_hash: str) -> bool:
+        """Return True if a record with this SHA-256 hash already exists."""
+        conn = self.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM images WHERE file_hash = ? LIMIT 1", (file_hash,)
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
     def update_image_file_info(self, image_id: int, file_hash: str, file_size_bytes: int, has_animal: bool, file_tier: str = 'valid'):
         """Update image with file metadata and tier classification."""
         conn = self.get_connection()
@@ -559,36 +692,52 @@ class DatabaseManager:
             conn.close()
 
     def get_images_by_tier(self, tier: str, limit: int = 1000, offset: int = 0):
-        """Get images by file tier (empty, low_conf, valid)."""
+        """Get images by file tier — one row per unique filename (latest id wins).
+
+        A single physical file can have multiple rows in `images` (one per
+        detection crop). This query collapses them to avoid returning the same
+        file multiple times in downloads and storage listings.
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
             cursor.execute('''
-                SELECT id, filename, file_size_bytes, file_status, uploaded_at
+                SELECT MAX(id) as id, filename,
+                       MAX(file_size_bytes) as file_size_bytes,
+                       file_status, MAX(uploaded_at) as uploaded_at
                 FROM images
-                WHERE file_tier = ? AND file_status = 'available'
-                ORDER BY uploaded_at DESC
+                WHERE file_tier = ? AND file_status = 'available' AND project_id = ?
+                GROUP BY filename
+                ORDER BY MAX(uploaded_at) DESC
                 LIMIT ? OFFSET ?
-            ''', (tier, limit, offset))
+            ''', (tier, active_project, limit, offset))
             return cursor.fetchall()
         finally:
             conn.close()
 
     def get_storage_stats(self):
-        """Get storage breakdown by tier."""
+        """Get storage breakdown by tier — counts and sizes per unique filename."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
             cursor.execute('''
                 SELECT
                     file_tier,
-                    COUNT(*) as count,
-                    SUM(COALESCE(file_size_bytes, 0)) as total_bytes,
-                    MIN(uploaded_at) as oldest_upload
-                FROM images
-                WHERE file_status = 'available'
+                    COUNT(DISTINCT filename) as count,
+                    SUM(size_bytes) as total_bytes,
+                    MIN(first_upload) as oldest_upload
+                FROM (
+                    SELECT file_tier, filename,
+                           MAX(COALESCE(file_size_bytes, 0)) as size_bytes,
+                           MIN(uploaded_at) as first_upload
+                    FROM images
+                    WHERE file_status = 'available' AND project_id = ?
+                    GROUP BY file_tier, filename
+                )
                 GROUP BY file_tier
-            ''')
+            ''', (active_project,))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -619,19 +768,84 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def mark_files_missing(self, image_ids: list) -> int:
+        """Mark images whose files are not on disk with file_status='missing'."""
+        if not image_ids:
+            return 0
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            placeholders = ",".join("?" * len(image_ids))
+            cursor.execute(
+                f"UPDATE images SET file_status = 'missing' WHERE id IN ({placeholders})",
+                image_ids,
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def get_available_image_filenames(self) -> list:
+        """Return [(id, filename)] for all images with file_status='available'."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("SELECT id, filename FROM images WHERE file_status = 'available'")
+            return cursor.fetchall()
+        finally:
+            conn.close()
+
+    def get_unregistered_station_ids(self) -> list:
+        """Return station_ids used in images that have no entry in the stations table."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        active_project = self.active_project_id
+        try:
+            cursor.execute('''
+                SELECT DISTINCT i.station_id, COUNT(*) as image_count
+                FROM images i
+                WHERE i.project_id = ?
+                  AND i.station_id IS NOT NULL
+                  AND i.station_id != ""
+                  AND i.station_id NOT IN (
+                      SELECT station_id FROM stations WHERE project_id = ?
+                  )
+                GROUP BY i.station_id
+            ''', (active_project, active_project))
+            return [{"station_id": r[0], "image_count": r[1]} for r in cursor.fetchall()]
+        finally:
+            conn.close()
+
+    def reassign_images_station(self, from_station_id: str, to_station_id: str) -> int:
+        """Reassign all images from one station_id to another. Returns updated row count."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        active_project = self.active_project_id
+        try:
+            cursor.execute(
+                "UPDATE images SET station_id = ? WHERE station_id = ? AND project_id = ?",
+                (to_station_id, from_station_id, active_project),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
     def get_deletable_images(self, tier: str, days_old: int = 7):
         """Get images eligible for deletion (old enough, marked for deletion)."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT id, filename, file_size_bytes
                 FROM images
                 WHERE file_tier = ?
                   AND file_status = 'available'
                   AND can_delete = 1
-                  AND datetime(marked_for_deletion_at) < datetime('now', '-{days_old} days')
-            ''', (tier,))
+                  AND project_id = ?
+                  AND datetime(marked_for_deletion_at) < datetime('now', ?)
+            ''', (tier, active_project, f"-{days_old} days"))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -640,15 +854,17 @@ class DatabaseManager:
         """Get images about to be deleted (for user warnings)."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
-            cursor.execute(f'''
+            cursor.execute('''
                 SELECT id, filename, marked_for_deletion_at
                 FROM images
                 WHERE file_status = 'available'
                   AND marked_for_deletion_at IS NOT NULL
-                  AND datetime(marked_for_deletion_at) > datetime('now', '-{days_until_deletion} days')
+                  AND project_id = ?
+                  AND datetime(marked_for_deletion_at) > datetime('now', ?)
                   AND file_tier IN ('empty', 'low_conf')
-            ''')
+            ''', (active_project, f"-{days_until_deletion} days"))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -720,22 +936,24 @@ class DatabaseManager:
         """Get hash statistics for storage optimization."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
             cursor.execute('''
                 SELECT
                     COUNT(*) as total_images,
-                    SUM(CASE WHEN file_hash IS NOT NULL THEN 1 ELSE 0 END) as with_hashes,
-                    SUM(CASE WHEN file_hash IS NULL THEN 1 ELSE 0 END) as without_hashes,
+                    COALESCE(SUM(CASE WHEN file_hash IS NOT NULL THEN 1 ELSE 0 END), 0) as with_hashes,
+                    COALESCE(SUM(CASE WHEN file_hash IS NULL THEN 1 ELSE 0 END), 0) as without_hashes,
                     COUNT(DISTINCT file_hash) as unique_hashes
                 FROM images
-            ''')
+                WHERE project_id = ?
+            ''', (active_project,))
             result = cursor.fetchone()
             if result:
                 return {
-                    "total_images": result[0],
-                    "with_hashes": result[1],
-                    "without_hashes": result[2],
-                    "unique_hashes": result[3],
+                    "total_images": result[0] or 0,
+                    "with_hashes": result[1] or 0,
+                    "without_hashes": result[2] or 0,
+                    "unique_hashes": result[3] or 0,
                 }
             return {"total_images": 0, "with_hashes": 0, "without_hashes": 0, "unique_hashes": 0}
         finally:
@@ -776,10 +994,10 @@ class DatabaseManager:
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
-            cursor.execute(f'''
+            cursor.execute('''
                 UPDATE images SET file_hash = NULL
-                WHERE datetime(uploaded_at) < datetime('now', '-{days_old} days')
-            ''')
+                WHERE datetime(uploaded_at) < datetime('now', ?)
+            ''', (f"-{days_old} days",))
             count = cursor.rowcount
             conn.commit()
             return count
@@ -830,15 +1048,16 @@ class DatabaseManager:
         """Find duplicate files by hash (shows which images could be deduplicated)."""
         conn = self.get_connection()
         cursor = conn.cursor()
+        active_project = self.active_project_id
         try:
             cursor.execute('''
                 SELECT file_hash, COUNT(*) as count, GROUP_CONCAT(id) as image_ids
                 FROM images
-                WHERE file_hash IS NOT NULL
+                WHERE file_hash IS NOT NULL AND project_id = ?
                 GROUP BY file_hash
                 HAVING count > 1
                 ORDER BY count DESC
-            ''')
+            ''', (active_project,))
             return cursor.fetchall()
         finally:
             conn.close()
@@ -854,5 +1073,29 @@ class DatabaseManager:
         cursor.execute("DELETE FROM detections")
         cursor.execute("DELETE FROM images")
         cursor.execute("DELETE FROM independence_events")
+        conn.commit()
+        conn.close()
+
+    def reset_database(self):
+        """Reset database completely by truncating all tables."""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        tables = [
+            "detections",
+            "images",
+            "independence_events",
+            "jobs",
+            "downloads_audit",
+            "download_images",
+            "exports",
+            "stations",
+            "deployments",
+            "community_observations"
+        ]
+        for table in tables:
+            try:
+                cursor.execute(f"DELETE FROM {table}")
+            except Exception:
+                pass
         conn.commit()
         conn.close()

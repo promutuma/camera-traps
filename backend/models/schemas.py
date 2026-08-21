@@ -28,8 +28,6 @@ class ConfigResponse(BaseModel):
     speciesnet_lat: float
     speciesnet_lng: float
     speciesnet_country: str
-    bioclip_weight: float
-    speciesnet_weight: float
     speciesnet_bypass_threshold: float
 
 
@@ -52,8 +50,6 @@ class ConfigUpdate(BaseModel):
     speciesnet_lat: Optional[float] = None
     speciesnet_lng: Optional[float] = None
     speciesnet_country: Optional[str] = None
-    bioclip_weight: Optional[float] = None
-    speciesnet_weight: Optional[float] = None
     speciesnet_bypass_threshold: Optional[float] = None
 
 
@@ -83,9 +79,7 @@ class DetectionResult(BaseModel):
     detected_animal: Optional[str] = None
     detection_confidence: Optional[float] = None
     detection_method: Optional[str] = None
-    bioclip_confidence: Optional[float] = None
     speciesnet_confidence: Optional[float] = None
-    agreement: Optional[str] = None
     model_breakdown: Optional[Any] = None
     day_night: Optional[str] = None
     capture_date: Optional[str] = None
@@ -113,6 +107,8 @@ class StationCreate(BaseModel):
     longitude: Optional[float] = None
     stratum: Optional[str] = None
     habitat: Optional[str] = None
+    camera_model: Optional[str] = None
+    team_member: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -121,14 +117,17 @@ class StationUpdate(BaseModel):
     longitude: Optional[float] = None
     stratum: Optional[str] = None
     habitat: Optional[str] = None
+    camera_model: Optional[str] = None
+    team_member: Optional[str] = None
     notes: Optional[str] = None
 
 
 class DeploymentCreate(BaseModel):
     station_id: str
     start_date: str
-    end_date: str
+    end_date: Optional[str] = None
     camera_id: Optional[str] = None
+    camera_down_days: Optional[int] = None
     notes: Optional[str] = None
 
 
@@ -184,3 +183,6 @@ class ProjectUpdate(BaseModel):
     survey_area: Optional[str] = None
     notes: Optional[str] = None
     thresholds: Optional[Dict[str, Any]] = None
+    speciesnet_lat: Optional[float] = None
+    speciesnet_lng: Optional[float] = None
+    speciesnet_country: Optional[str] = None
