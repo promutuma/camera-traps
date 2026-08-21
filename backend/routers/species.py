@@ -41,7 +41,15 @@ def add_species(
     common_name: str = Query(""),
     state: AppState = Depends(get_state),
 ):
+    """`name` is the scientific name; `common_name` falls back to it when blank."""
     if not state.species_library:
         raise HTTPException(status_code=503, detail="Service not ready")
-    state.species_library.add_species(name, common_name=common_name)
+    if not name.strip():
+        raise HTTPException(status_code=400, detail="name is required")
+    added = state.species_library.add_species(
+        common_name=common_name.strip() or name.strip(),
+        scientific_name=name.strip(),
+    )
+    if not added:
+        raise HTTPException(status_code=409, detail=f"Species '{common_name or name}' already exists")
     return {"ok": True}

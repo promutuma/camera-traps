@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getStorageStatus, getStorageWarnings, createBatchDownload, getHashStats, clearHashes, cleanupImages } from "../api/client";
+import { getStorageStatus, getStorageWarnings, createBatchDownload, getHashStats, clearHashes, cleanupImages, getDeletionPreview } from "../api/client";
 
 type StorageStats = {
   total_mb: number;
@@ -10,6 +10,15 @@ type StorageStats = {
 type DeletionWarning = {
   pending_deletion_count: number;
   images: Array<{ id: number; filename: string; marked_for_deletion_at: string }>;
+};
+
+type DeletionPreview = {
+  tier: string;
+  will_delete: number;
+  total_size_mb: number;
+  earliest_uploaded: string | null;
+  latest_uploaded: string | null;
+  warning: string;
 };
 
 type HashStats = {
@@ -85,6 +94,10 @@ export default function Storage() {
   const [cleanupPreview, setCleanupPreview] = useState<{ deleted_count: number; freed_mb: number } | null>(null);
   const [cleanupStep, setCleanupStep] = useState<"idle" | "previewing" | "confirming" | "running">("idle");
 
+  // Purge of images already marked-for-deletion past their grace period
+  const [purgePreview, setPurgePreview] = useState<DeletionPreview | null>(null);
+  const [purgeStep, setPurgeStep] = useState<"idle" | "previewing" | "confirming" | "running">("idle");
+
   const handleCleanupPreview = async () => {
     setCleanupStep("previewing");
     setCleanupPreview(null);
@@ -112,6 +125,40 @@ export default function Storage() {
     } catch {
       setNotice({ type: "error", text: "Cleanup failed." });
       setCleanupStep("idle");
+    }
+  };
+
+  // Grace-period purge: images an operator already flagged via "mark for
+  // deletion" (see the Results page), whose 7-day grace window has elapsed.
+  // The tier value only matters for the "empty" branch on the backend; any
+  // other value previews the same marked-for-deletion query cleanup runs.
+  const handlePurgePreview = async () => {
+    setPurgeStep("previewing");
+    setPurgePreview(null);
+    try {
+      const res = await getDeletionPreview("valid", 7);
+      setPurgePreview(res);
+      setPurgeStep("confirming");
+    } catch {
+      setNotice({ type: "error", text: "Failed to preview pending deletions." });
+      setPurgeStep("idle");
+    }
+  };
+
+  const handlePurgeRun = async () => {
+    setPurgeStep("running");
+    try {
+      const res = await cleanupImages("delete_marked", 7, false);
+      setNotice({
+        type: "success",
+        text: `Purged ${res.deleted_count ?? 0} image${(res.deleted_count ?? 0) !== 1 ? "s" : ""} past their deletion grace period, freed ${res.freed_mb?.toFixed(1) ?? "0"} MB.`,
+      });
+      setPurgePreview(null);
+      setPurgeStep("idle");
+      fetchData();
+    } catch {
+      setNotice({ type: "error", text: "Purge failed." });
+      setPurgeStep("idle");
     }
   };
 
@@ -533,6 +580,72 @@ export default function Storage() {
               </p>
             )}
           </div>
+
+          {purgeStep === "idle" && (
+            <button
+              onClick={handlePurgePreview}
+              className="flex items-center gap-2 px-4 py-2 bg-red-100/70 hover:bg-red-200/70 dark:bg-red-900/30 dark:hover:bg-red-900/50 text-red-700 dark:text-red-350 text-xs font-bold rounded-xl transition cursor-pointer"
+            >
+              <span className="material-symbols-outlined text-base select-none">preview</span>
+              Preview grace-period purge
+            </button>
+          )}
+
+          {purgeStep === "previewing" && (
+            <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400 font-semibold">
+              <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+              Scanning…
+            </div>
+          )}
+
+          {purgeStep === "confirming" && purgePreview && (
+            <div className="space-y-2">
+              {purgePreview.will_delete === 0 ? (
+                <div className="flex items-center gap-2 px-4 py-3 bg-white/60 dark:bg-slate-950/30 border border-red-200/30 dark:border-red-800/30 rounded-xl text-sm text-red-700 dark:text-red-350 font-medium">
+                  <span className="material-symbols-outlined text-base select-none">check_circle</span>
+                  Nothing has passed its 7-day grace period yet.
+                </div>
+              ) : (
+                <div className="p-4 bg-white/60 dark:bg-slate-950/40 border border-red-300/40 dark:border-red-800/40 rounded-xl space-y-3">
+                  <p className="text-sm font-bold text-red-800 dark:text-red-300">
+                    <span className="material-symbols-outlined text-base select-none align-middle mr-1">warning</span>
+                    This will permanently delete <strong>{purgePreview.will_delete}</strong> file
+                    {purgePreview.will_delete !== 1 ? "s" : ""} and free <strong>{purgePreview.total_size_mb.toFixed(1)} MB</strong>. This cannot be undone.
+                  </p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handlePurgeRun}
+                      className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-lg transition cursor-pointer shadow-sm"
+                    >
+                      <span className="material-symbols-outlined text-base select-none">delete_forever</span>
+                      Purge {purgePreview.will_delete} file{purgePreview.will_delete !== 1 ? "s" : ""}
+                    </button>
+                    <button
+                      onClick={() => { setPurgeStep("idle"); setPurgePreview(null); }}
+                      className="px-4 py-2 bg-white/60 dark:bg-slate-900 hover:bg-white dark:hover:bg-slate-800 text-red-700 dark:text-red-350 text-sm font-semibold rounded-lg transition cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+              {purgePreview.will_delete === 0 && (
+                <button
+                  onClick={() => { setPurgeStep("idle"); setPurgePreview(null); }}
+                  className="text-xs text-red-500 hover:text-red-700 dark:hover:text-red-300 cursor-pointer underline"
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
+          )}
+
+          {purgeStep === "running" && (
+            <div className="flex items-center gap-2 text-sm text-red-600 dark:text-red-400 font-medium">
+              <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+              Purging…
+            </div>
+          )}
         </div>
       )}
 

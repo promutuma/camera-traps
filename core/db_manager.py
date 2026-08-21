@@ -4,6 +4,7 @@ import pandas as pd
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 class DatabaseManager:
     def __init__(self, db_path="wildlife_data.db"):
@@ -127,6 +128,23 @@ class DatabaseManager:
             )
         ''')
 
+        # Retrain runs table — HITL correction-driven retraining history
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS retrain_runs (
+                job_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                method TEXT,
+                dataset_size INTEGER DEFAULT 0,
+                metrics TEXT,
+                model_version TEXT,
+                activated BOOLEAN DEFAULT 0,
+                triggered_by TEXT,
+                error TEXT,
+                created_at REAL,
+                finished_at REAL
+            )
+        ''')
+
         # Downloads audit table — track all downloads
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS downloads_audit (
@@ -171,6 +189,7 @@ class DatabaseManager:
         self._migrate_columns(cursor, "images", [
             ("project_id", "INTEGER DEFAULT 1"),
             ("station_id", "TEXT DEFAULT 'Station-1'"),
+            ("camera_id", "TEXT"),
             ("file_hash", "TEXT"),
             ("file_size_bytes", "INTEGER"),
             ("uploaded_at", "TIMESTAMP"),
@@ -236,12 +255,13 @@ class DatabaseManager:
             for _, row in df.iterrows():
                 cursor.execute('''
                     INSERT INTO images (
-                        filename, station_id, capture_date, capture_time,
+                        filename, station_id, camera_id, capture_date, capture_time,
                         temperature, day_night, brightness, user_notes, uploaded_at, project_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 ''', (
                     row['filename'],
                     row.get('station_id', 'Station-1'),
+                    row.get('camera_id') or None,
                     row.get('date'),
                     row.get('time'),
                     row.get('temperature'),
@@ -509,7 +529,7 @@ class DatabaseManager:
         where = "WHERE " + " AND ".join(where_parts)
         query = f'''
             SELECT
-                i.id, i.filename, i.station_id, i.processed_at,
+                i.id, i.filename, i.station_id, i.camera_id, i.processed_at,
                 i.capture_date, i.capture_time, i.temperature,
                 i.day_night, i.brightness, i.user_notes,
                 d.id as detection_id,
@@ -659,6 +679,166 @@ class DatabaseManager:
             return [dict(zip(cols, row)) for row in cursor.fetchall()]
         except Exception as exc:
             print(f"Warning: could not load jobs: {exc}")
+            return []
+        finally:
+            conn.close()
+
+    # ------------------------------------------------------------------
+    # Retrain run persistence
+    # ------------------------------------------------------------------
+
+    def save_retrain_run(self, run) -> None:
+        """Upsert a retrain run's metadata row (called on progress/completion/error)."""
+        conn = self.get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO retrain_runs (
+                    job_id, status, method, dataset_size, metrics, model_version,
+                    activated, triggered_by, error, created_at, finished_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    status        = excluded.status,
+                    method        = excluded.method,
+                    dataset_size  = excluded.dataset_size,
+                    metrics       = excluded.metrics,
+                    model_version = excluded.model_version,
+                    activated     = excluded.activated,
+                    error         = excluded.error,
+                    finished_at   = excluded.finished_at
+                """,
+                (
+                    run.job_id,
+                    run.status,
+                    run.method,
+                    run.dataset_size,
+                    json.dumps(run.metrics) if run.metrics else None,
+                    run.model_version,
+                    int(run.activated),
+                    run.triggered_by,
+                    run.error,
+                    run.created_at,
+                    run.finished_at,
+                ),
+            )
+            conn.commit()
+        except Exception as exc:
+            print(f"Warning: could not persist retrain run {run.job_id}: {exc}")
+        finally:
+            conn.close()
+
+    def load_recent_retrain_runs(self, limit: int = 50) -> list:
+        """Return metadata for the most recent retrain runs, newest first."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT job_id, status, method, dataset_size, metrics, model_version,
+                       activated, triggered_by, error, created_at, finished_at
+                FROM retrain_runs
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            for row in rows:
+                if row.get("metrics"):
+                    try:
+                        row["metrics"] = json.loads(row["metrics"])
+                    except Exception:
+                        pass
+                row["activated"] = bool(row.get("activated"))
+            return rows
+        except Exception as exc:
+            print(f"Warning: could not load retrain runs: {exc}")
+            return []
+        finally:
+            conn.close()
+
+    def get_active_retrain_run(self) -> Optional[dict]:
+        """Return the currently activated retrain run, if any."""
+        runs = self.load_recent_retrain_runs(limit=200)
+        for row in runs:
+            if row.get("activated"):
+                return row
+        return None
+
+    def activate_retrain_run(self, job_id: str) -> None:
+        """Mark one retrain run as active, deactivating all others."""
+        conn = self.get_connection()
+        try:
+            conn.execute("UPDATE retrain_runs SET activated = 0")
+            conn.execute(
+                "UPDATE retrain_runs SET activated = 1 WHERE job_id = ?", (job_id,)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_correction_training_data(self, since_ts: Optional[str] = None) -> list:
+        """
+        Build the HITL correction dataset: one row per human review decision
+        that changed a species label, joined against the SpeciesNet raw output
+        that was live at classification time (`detections.top_candidates`).
+
+        Includes both 'correct' (species relabelled) and 'reject' (false
+        positive -> corrected to 'Empty') actions, since both are genuine
+        human-confirmed signal about what SpeciesNet got wrong.
+
+        Parameters
+        ----------
+        since_ts : str | None
+            ISO timestamp; only review actions strictly after this are returned
+            (used to fetch only new corrections since the last retrain run).
+
+        Returns
+        -------
+        list[dict] : one row per correction, with keys:
+            review_id, image_id, filename, bbox, action,
+            original_species, corrected_species, top_candidates (parsed list),
+            reviewed_at
+        """
+        conn = self.get_connection()
+        try:
+            query = """
+                SELECT
+                    ra.id AS review_id,
+                    ra.image_id,
+                    i.filename,
+                    d.bbox,
+                    ra.action,
+                    ra.original_species,
+                    ra.corrected_species,
+                    d.top_candidates,
+                    ra.reviewed_at
+                FROM review_actions ra
+                JOIN detections d ON d.image_id = CAST(ra.image_id AS INTEGER)
+                JOIN images i ON i.id = d.image_id
+                WHERE ra.action IN ('correct', 'reject')
+                  AND d.top_candidates IS NOT NULL
+            """
+            params: list = []
+            if since_ts:
+                query += " AND ra.reviewed_at > ?"
+                params.append(since_ts)
+            query += " ORDER BY ra.reviewed_at ASC"
+
+            cursor = conn.execute(query, params)
+            cols = [d[0] for d in cursor.description]
+            rows = [dict(zip(cols, row)) for row in cursor.fetchall()]
+            for row in rows:
+                try:
+                    row["top_candidates"] = json.loads(row["top_candidates"]) if row["top_candidates"] else []
+                except Exception:
+                    row["top_candidates"] = []
+                if row["action"] == "reject":
+                    row["corrected_species"] = "Empty"
+            return rows
+        except Exception as exc:
+            print(f"Warning: could not load correction training data: {exc}")
             return []
         finally:
             conn.close()

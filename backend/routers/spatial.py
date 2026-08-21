@@ -17,6 +17,14 @@ def _get_df(state):
     df = state.db_manager.get_history_df()
     if df.empty:
         raise HTTPException(status_code=404, detail="No data")
+    # Camera actually in the field on each capture date. Prefers the camera
+    # explicitly selected at upload time (images.camera_id, already a column
+    # on df from get_history_df()); falls back to deployment-window
+    # inference for images uploaded without one selected.
+    if state.station_manager is not None:
+        df["camera_id"] = state.station_manager.resolve_camera_ids(
+            df, station_col="station_id", date_col="capture_date", existing_col="camera_id"
+        )
     return df
 
 

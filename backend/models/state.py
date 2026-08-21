@@ -60,6 +60,7 @@ class AppState:
     arcgis_sync: Optional[Any] = None
     independence_engine: Optional[Any] = None
     qc_engine: Optional[Any] = None
+    retrain_engine: Optional[Any] = None
 
     models_loaded: bool = False
     models_error: Optional[str] = None

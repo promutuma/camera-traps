@@ -16,6 +16,7 @@ def list_stations(state: AppState = Depends(get_state)):
     if not hasattr(df, "to_dict"):
         return []
     records = df.fillna("").to_dict(orient="records")
+    current_cameras = state.station_manager.get_current_camera_ids()
     mapped = []
     for r in records:
         mapped.append({
@@ -27,8 +28,23 @@ def list_stations(state: AppState = Depends(get_state)):
             "camera_model": r.get("camera_model", ""),
             "team_member":  r.get("team_member", ""),
             "notes":        r.get("notes"),
+            "current_camera_id": current_cameras.get(r.get("station_id")),
         })
     return mapped
+
+
+@router.post("/{station_id}/camera")
+def assign_camera(station_id: str, camera_id: str = Query(...), state: AppState = Depends(get_state)):
+    """
+    Map a camera to a station right now — updates the deployment covering
+    today if one exists, otherwise starts a new open-ended deployment.
+    """
+    if not state.station_manager:
+        raise HTTPException(status_code=503, detail="Service not ready")
+    if not camera_id.strip():
+        raise HTTPException(status_code=400, detail="camera_id is required")
+    state.station_manager.set_current_camera(station_id, camera_id.strip())
+    return {"ok": True}
 
 
 @router.post("")
@@ -172,13 +188,20 @@ def station_map(state: AppState = Depends(get_state)):
         raise HTTPException(status_code=503, detail="Service not ready")
     df = state.station_manager.get_stations()
     stations = df.fillna("").to_dict(orient="records") if hasattr(df, "to_dict") else []
+    current_cameras = state.station_manager.get_current_camera_ids()
     features = []
     for s in stations:
         lat = s.get("gps_lat") or s.get("latitude") or s.get("lat")
         lon = s.get("gps_lon") or s.get("longitude") or s.get("lon")
         if lat and lon:
             # Add mapped keys to properties for frontend compatibility
-            props = {**s, "latitude": lat, "longitude": lon, "stratum": s.get("habitat_stratum", "")}
+            props = {
+                **s,
+                "latitude": lat,
+                "longitude": lon,
+                "stratum": s.get("habitat_stratum", ""),
+                "current_camera_id": current_cameras.get(s.get("station_id")) or "",
+            }
             features.append({
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [float(lon), float(lat)]},

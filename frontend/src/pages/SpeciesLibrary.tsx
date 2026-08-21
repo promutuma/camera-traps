@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getSpecies, lookupSpecies, resolveSynonym } from "../api/client";
+import { getSpecies, lookupSpecies, resolveSynonym, addSpecies } from "../api/client";
 
 type Row = Record<string, unknown>;
 
@@ -59,9 +59,35 @@ export default function SpeciesLibrary() {
   const [filter, setFilter] = useState("");
   const [selectedSp, setSelectedSp] = useState<Row | null>(null);
 
+  const [newSciName, setNewSciName] = useState("");
+  const [newCommonName, setNewCommonName] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState("");
+  const [addSuccess, setAddSuccess] = useState("");
+
+  const refreshSpecies = () => getSpecies().then(setSpecies);
+
   useEffect(() => {
-    getSpecies().then(setSpecies).finally(() => setLoading(false));
+    refreshSpecies().finally(() => setLoading(false));
   }, []);
+
+  const handleAddSpecies = async () => {
+    if (!newSciName.trim()) return;
+    setAddBusy(true);
+    setAddError("");
+    setAddSuccess("");
+    try {
+      await addSpecies(newSciName.trim(), newCommonName.trim());
+      setAddSuccess(`Added "${newCommonName.trim() || newSciName.trim()}" to the library.`);
+      setNewSciName("");
+      setNewCommonName("");
+      await refreshSpecies();
+    } catch (err: any) {
+      setAddError(err?.response?.data?.detail || "Failed to add species.");
+    } finally {
+      setAddBusy(false);
+    }
+  };
 
   const handleLookup = async () => {
     if (!lookupQuery) return;
@@ -108,8 +134,8 @@ export default function SpeciesLibrary() {
         </p>
       </div>
 
-      {/* Lookup and Synonym Resolver Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {/* Lookup, Synonym Resolver, and Add Species Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
         {/* Quick Species Lookup */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm flex flex-col justify-between">
           <div className="space-y-1">
@@ -203,6 +229,52 @@ export default function SpeciesLibrary() {
                 {String(synonymResult.canonical ?? "No canonical entry found")}
               </span>
             </div>
+          )}
+        </div>
+
+        {/* Add Species */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm flex flex-col justify-between">
+          <div className="space-y-1">
+            <h2 className="font-bold text-slate-900 dark:text-white text-sm">
+              Add Species to Library
+            </h2>
+            <p className="text-xs text-slate-400 dark:text-slate-500">
+              Register a species not yet in the canonical reference library.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <input
+              placeholder="Scientific name (required), e.g. Panthera pardus"
+              value={newSciName}
+              onChange={(e) => setNewSciName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddSpecies()}
+              className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+            />
+            <input
+              placeholder="Common name (optional), e.g. Leopard"
+              value={newCommonName}
+              onChange={(e) => setNewCommonName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddSpecies()}
+              className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+            />
+            <button
+              onClick={handleAddSpecies}
+              disabled={addBusy || !newSciName.trim()}
+              className="w-full px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl shadow-sm transition cursor-pointer"
+            >
+              {addBusy ? "Adding…" : "Add Species"}
+            </button>
+          </div>
+
+          {addError && (
+            <p className="text-red-500 dark:text-red-400 text-xs font-semibold">
+              <span className="material-symbols-outlined text-sm align-middle mr-1 select-none">warning</span> {addError}
+            </p>
+          )}
+          {addSuccess && (
+            <p className="text-emerald-600 dark:text-emerald-400 text-xs font-semibold">
+              <span className="material-symbols-outlined text-sm align-middle mr-1 select-none">check_circle</span> {addSuccess}
+            </p>
           )}
         </div>
       </div>

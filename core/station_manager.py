@@ -139,8 +139,99 @@ class StationManager:
             )
         """)
 
+        # Camera registry — physical camera units, independent of which
+        # station they're currently deployed at (that link lives in
+        # deployments.sd_card_id / images.camera_id, set via set_current_camera
+        # or at upload time).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cameras (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id     INTEGER DEFAULT 1,
+                camera_id      TEXT NOT NULL,
+                model          TEXT,
+                serial_number  TEXT,
+                status         TEXT DEFAULT 'active',
+                notes          TEXT,
+                created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_id, camera_id)
+            )
+        """)
+
         conn.commit()
         conn.close()
+
+    # ------------------------------------------------------------------
+    # Camera CRUD
+    # ------------------------------------------------------------------
+
+    def add_camera(
+        self,
+        camera_id: str,
+        model: str = "",
+        serial_number: str = "",
+        status: str = "active",
+        notes: str = "",
+    ) -> bool:
+        """Register a camera unit. Returns False if camera_id already exists in project."""
+        conn = self._conn()
+        proj_id = self.active_project_id
+        try:
+            conn.execute("""
+                INSERT INTO cameras (project_id, camera_id, model, serial_number, status, notes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (proj_id, camera_id.strip(), model, serial_number, status or "active", notes))
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+
+    def update_camera(self, camera_id: str, **kwargs) -> bool:
+        allowed = {"model", "serial_number", "status", "notes"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return False
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        proj_id = self.active_project_id
+        vals = list(updates.values()) + [proj_id, camera_id]
+        conn = self._conn()
+        try:
+            conn.execute(f"UPDATE cameras SET {sets} WHERE project_id = ? AND camera_id = ?", vals)
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def delete_camera(self, camera_id: str) -> bool:
+        conn = self._conn()
+        proj_id = self.active_project_id
+        try:
+            conn.execute("DELETE FROM cameras WHERE project_id = ? AND camera_id = ?", (proj_id, camera_id))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+
+    def get_cameras(self) -> pd.DataFrame:
+        """Return all registered cameras, with the station each is currently
+        deployed at (if any) merged in — the counterpart view to
+        get_current_camera_ids(), which goes station -> camera."""
+        conn = self._conn()
+        proj_id = self.active_project_id
+        try:
+            df = pd.read_sql_query(
+                "SELECT * FROM cameras WHERE project_id = ? ORDER BY camera_id", conn, params=(proj_id,)
+            )
+        finally:
+            conn.close()
+        if df.empty:
+            df["current_station_id"] = []
+            return df
+        current = self.get_current_camera_ids()  # {station_id: camera_id}
+        camera_to_station = {cid: sid for sid, cid in current.items() if cid}
+        df["current_station_id"] = df["camera_id"].map(camera_to_station)
+        return df
 
     # ------------------------------------------------------------------
     # Station CRUD
@@ -278,6 +369,59 @@ class StationManager:
         finally:
             conn.close()
 
+    def set_current_camera(self, station_id: str, camera_id: str) -> None:
+        """
+        Assign a camera to a station right now — the direct "map this camera
+        to this station" action, as opposed to logging a full dated
+        deployment record by hand.
+
+        If a deployment already covers today at this station, updates its
+        sd_card_id in place. Otherwise starts a brand-new open-ended
+        deployment (deployment_date = today, no retrieval_date) carrying
+        the camera. Either way, get_current_camera_ids() will reflect it
+        immediately.
+        """
+        conn = self._conn()
+        proj_id = self.active_project_id
+        today = date.today().isoformat()
+        try:
+            cur = conn.execute("""
+                SELECT id FROM deployments
+                WHERE project_id = ? AND station_id = ?
+                  AND deployment_date <= ?
+                  AND (retrieval_date IS NULL OR retrieval_date >= ?)
+                ORDER BY deployment_date DESC LIMIT 1
+            """, (proj_id, station_id, today, today))
+            row = cur.fetchone()
+            if row:
+                conn.execute("UPDATE deployments SET sd_card_id = ? WHERE id = ?", (camera_id, row[0]))
+            else:
+                conn.execute("""
+                    INSERT INTO deployments
+                        (project_id, station_id, deployment_date, sd_card_id, camera_down_days, notes)
+                    VALUES (?, ?, ?, ?, 0, '')
+                """, (proj_id, station_id, today, camera_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_current_camera_ids(self) -> dict:
+        """{station_id: camera_id or None} for whichever camera is deployed at
+        each station as of today — the counterpart to set_current_camera()."""
+        stations_df = self.get_stations()
+        if stations_df.empty:
+            return {}
+        today = date.today().isoformat()
+        lookup_df = pd.DataFrame({
+            "station_id": stations_df["station_id"],
+            "capture_date": [today] * len(stations_df),
+        })
+        camera_ids = self.resolve_camera_ids(lookup_df, station_col="station_id", date_col="capture_date")
+        return {
+            sid: (cid if pd.notna(cid) else None)
+            for sid, cid in zip(stations_df["station_id"], camera_ids)
+        }
+
     def get_deployments(self, station_id: Optional[str] = None) -> pd.DataFrame:
         """Return deployments, optionally filtered to one station."""
         conn = self._conn()
@@ -296,6 +440,74 @@ class StationManager:
             return df
         finally:
             conn.close()
+
+    def resolve_camera_ids(
+        self,
+        df: pd.DataFrame,
+        station_col: str = "station_id",
+        date_col: str = "capture_date",
+        existing_col: Optional[str] = None,
+    ) -> pd.Series:
+        """
+        Map each row's (station_id, capture_date) to the actual camera/SD-card
+        ID (deployments.sd_card_id) that was in the field on that date —
+        not just the station's site code, which stays fixed across
+        equipment swaps.
+
+        A deployment "covers" a date when deployment_date <= date <=
+        retrieval_date (a missing retrieval_date means the deployment is
+        still active, so it covers everything from its start date onward).
+        If more than one deployment matches (overlapping records), the one
+        with the latest deployment_date wins.
+
+        If `existing_col` is given and present in df, rows that already carry
+        a value there (e.g. images.camera_id, tagged explicitly at upload
+        time) keep it as-is — deployment-window inference only fills the
+        gaps. Explicit tagging is more reliable than date-window inference,
+        which stays as the fallback for images uploaded without a camera
+        selected, and for historical data predating this feature.
+
+        Returns None for rows with no matching deployment/tag or no
+        sd_card_id on record.
+        """
+        if existing_col and existing_col in df.columns:
+            result = df[existing_col].apply(
+                lambda v: v if (pd.notna(v) and str(v).strip() != "") else None
+            )
+        else:
+            result = pd.Series([None] * len(df), index=df.index, dtype=object)
+
+        if station_col not in df.columns or date_col not in df.columns:
+            return result
+
+        deployments = self.get_deployments()
+        if deployments.empty or "sd_card_id" not in deployments.columns:
+            return result
+
+        dep = deployments.copy()
+        dep["deployment_date"] = pd.to_datetime(dep["deployment_date"], errors="coerce")
+        dep["retrieval_date"] = pd.to_datetime(dep["retrieval_date"], errors="coerce")
+        dates = pd.to_datetime(df[date_col], errors="coerce")
+
+        for station, group in dep.groupby("station_id"):
+            mask = (df[station_col] == station) & result.isna()
+            if not mask.any():
+                continue
+            for idx in df.index[mask]:
+                d = dates.loc[idx]
+                if pd.isna(d):
+                    continue
+                covering = group[
+                    (group["deployment_date"].isna() | (group["deployment_date"] <= d))
+                    & (group["retrieval_date"].isna() | (group["retrieval_date"] >= d))
+                ]
+                if covering.empty:
+                    continue
+                best = covering.sort_values("deployment_date", ascending=False).iloc[0]
+                camera_id = best.get("sd_card_id")
+                if camera_id:
+                    result.loc[idx] = camera_id
+        return result
 
     # ------------------------------------------------------------------
     # Derived metrics
@@ -393,10 +605,13 @@ class StationManager:
             if not deps.empty else {}
         )
 
+        current_cameras = self.get_current_camera_ids()
+
         stations["trap_nights"] = stations["station_id"].map(trap_nights).fillna(0).astype(int)
         stations["functionality_pct"] = stations["station_id"].map(func_rates).fillna(0)
         stations["deployment_count"] = stations["station_id"].map(dep_counts).fillna(0).astype(int)
         stations["status"] = stations.apply(self._station_status, axis=1)
+        stations["current_camera_id"] = stations["station_id"].map(current_cameras)
 
         return stations
 

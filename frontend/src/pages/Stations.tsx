@@ -1,5 +1,30 @@
 import React, { useEffect, useState } from "react";
-import { getStationSummary, addStation, updateStation, deleteStation, getDeployments, addDeployment, deleteDeployment, getOrphanStations, reassignStation } from "../api/client";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { getStationSummary, addStation, updateStation, deleteStation, getDeployments, addDeployment, deleteDeployment, getOrphanStations, reassignStation, getStationMap, assignCamera, getCameras, addCamera, updateCamera, deleteCamera } from "../api/client";
+
+type StationFeature = {
+  type: string;
+  geometry: { type: string; coordinates: [number, number] };
+  properties: Record<string, unknown>;
+};
+
+function FitStationBounds({ features }: { features: StationFeature[] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (features.length === 0) return;
+    if (features.length === 1) {
+      map.setView([features[0].geometry.coordinates[1], features[0].geometry.coordinates[0]], 10);
+      return;
+    }
+    const lats = features.map((f) => f.geometry.coordinates[1]);
+    const lons = features.map((f) => f.geometry.coordinates[0]);
+    map.fitBounds(
+      [[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]],
+      { padding: [40, 40], maxZoom: 13 }
+    );
+  }, [features, map]);
+  return null;
+}
 
 type Row = Record<string, unknown>;
 
@@ -37,19 +62,35 @@ const STRATA_OPTIONS = [
 ];
 
 export default function Stations() {
-  const [tab, setTab] = useState<"stations" | "deployments">("stations");
+  const [tab, setTab] = useState<"stations" | "deployments" | "cameras" | "map">("stations");
   const [stations, setStations] = useState<Row[]>([]);
   const [deployments, setDeployments] = useState<Row[]>([]);
+  const [cameras, setCameras] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
+  const [mapFeatures, setMapFeatures] = useState<StationFeature[] | null>(null);
+  const [mapLoading, setMapLoading] = useState(false);
 
   // Forms
   const [newStation, setNewStation] = useState({ station_id: "", latitude: "", longitude: "", stratum: "", habitat: "", camera_model: "", team_member: "", notes: "" });
   const [newDep, setNewDep] = useState({ station_id: "", start_date: "", end_date: "", camera_id: "", camera_down_days: "", notes: "" });
+  const [newCamera, setNewCamera] = useState({ camera_id: "", model: "", serial_number: "", notes: "" });
+
+  // Inline edit state for cameras
+  const [editingCameraId, setEditingCameraId] = useState<string | null>(null);
+  const [editCameraDraft, setEditCameraDraft] = useState<Record<string, string>>({});
+  const [cameraErrors, setCameraErrors] = useState<string[]>([]);
 
   // Inline edit state: station_id of the row being edited, and its draft values
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<Record<string, string>>({});
+
+  // Quick "assign camera to station" inline editor — separate from the main
+  // edit form since it's a distinct action (creates/updates a deployment,
+  // not a station field) and needs to be immediately discoverable.
+  const [cameraEditId, setCameraEditId] = useState<string | null>(null);
+  const [cameraDraft, setCameraDraft] = useState("");
+  const [assigningCamera, setAssigningCamera] = useState(false);
 
   // Orphan station IDs (used by images but not registered)
   const [orphans, setOrphans] = useState<{ station_id: string; image_count: number }[]>([]);
@@ -63,7 +104,7 @@ export default function Stations() {
   const load = async () => {
     setLoading(true);
     try {
-      const [s, d, o] = await Promise.all([getStationSummary(), getDeployments(), getOrphanStations()]);
+      const [s, d, o, c] = await Promise.all([getStationSummary(), getDeployments(), getOrphanStations(), getCameras()]);
       
       // Normalize stations schema differences (gps_lat/gps_lon and habitat_stratum from backend)
       const mappedStations = (Array.isArray(s) ? s : []).map((r) => ({
@@ -74,6 +115,7 @@ export default function Stations() {
         camera_model: r.camera_model ?? "",
         team_member: r.team_member ?? "",
         notes: r.notes ?? "",
+        current_camera_id: r.current_camera_id ?? "",
         trap_nights: r.trap_nights ?? 0,
         functionality_pct: r.functionality_pct ?? 0,
         deployment_count: r.deployment_count ?? 0,
@@ -83,6 +125,8 @@ export default function Stations() {
       setStations(mappedStations);
       setDeployments(Array.isArray(d) ? d : []);
       setOrphans(Array.isArray(o) ? o : []);
+      setCameras(Array.isArray(c) ? c : []);
+      setMapFeatures(null); // stale — refetched next time the Map tab is opened
     } catch (e) {
       console.error("Failed to load stations data", e);
     } finally {
@@ -93,6 +137,15 @@ export default function Stations() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (tab !== "map" || mapFeatures !== null) return;
+    setMapLoading(true);
+    getStationMap()
+      .then((gj) => setMapFeatures(gj?.features ?? []))
+      .catch(() => setMapFeatures([]))
+      .finally(() => setMapLoading(false));
+  }, [tab, mapFeatures]);
 
   // Inline Validation for Stations Form
   useEffect(() => {
@@ -134,6 +187,20 @@ export default function Stations() {
     }
     setDepErrors(errs);
   }, [newDep]);
+
+  // Inline Validation for Camera Form
+  useEffect(() => {
+    const errs: string[] = [];
+    if (newCamera.camera_id) {
+      const exists = cameras.some(
+        (c) => String(c.camera_id).trim().toLowerCase() === newCamera.camera_id.trim().toLowerCase()
+      );
+      if (exists) {
+        errs.push(`Camera ID "${newCamera.camera_id}" is already registered.`);
+      }
+    }
+    setCameraErrors(errs);
+  }, [newCamera, cameras]);
 
   const handleAddStation = async () => {
     if (!newStation.station_id || stationErrors.length > 0) return;
@@ -213,6 +280,21 @@ export default function Stations() {
     }
   };
 
+  const handleAssignCamera = async (stationId: string) => {
+    if (!cameraDraft.trim()) return;
+    setAssigningCamera(true);
+    try {
+      await assignCamera(stationId, cameraDraft.trim());
+      setCameraEditId(null);
+      setCameraDraft("");
+      await load();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAssigningCamera(false);
+    }
+  };
+
   const handleAddDeployment = async () => {
     if (!newDep.station_id || !newDep.start_date || depErrors.length > 0) return;
     setAdding(true);
@@ -228,6 +310,49 @@ export default function Stations() {
       console.error(e);
     } finally {
       setAdding(false);
+    }
+  };
+
+  const handleAddCamera = async () => {
+    if (!newCamera.camera_id || cameraErrors.length > 0) return;
+    setAdding(true);
+    try {
+      await addCamera(newCamera);
+      setNewCamera({ camera_id: "", model: "", serial_number: "", notes: "" });
+      await load();
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleDeleteCamera = async (cameraId: string) => {
+    try {
+      await deleteCamera(cameraId);
+      await load();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleCameraEditStart = (c: Row) => {
+    setEditingCameraId(String(c.camera_id));
+    setEditCameraDraft({
+      model: String(c.model ?? ""),
+      serial_number: String(c.serial_number ?? ""),
+      status: String(c.status ?? "active"),
+      notes: String(c.notes ?? ""),
+    });
+  };
+
+  const handleCameraEditSave = async (cameraId: string) => {
+    try {
+      await updateCamera(cameraId, editCameraDraft);
+      setEditingCameraId(null);
+      await load();
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -385,7 +510,7 @@ export default function Stations() {
 
       {/* Segmented Control Switcher */}
       <div className="flex bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200/50 dark:border-slate-900/60 max-w-sm">
-        {(["stations", "deployments"] as const).map((t) => (
+        {(["stations", "deployments", "cameras", "map"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -548,7 +673,7 @@ export default function Stations() {
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50/50 dark:bg-slate-955/20 border-b border-slate-100 dark:border-slate-800">
                       <tr>
-                        {["Station ID", "Coordinates", "Stratum", "Deployments", "Trap Nights", "Func Rate", "Status", ""].map((header) => (
+                        {["Station ID", "Coordinates", "Camera", "Stratum", "Deployments", "Trap Nights", "Func Rate", "Status", ""].map((header) => (
                           <th
                             key={header}
                             className="text-left px-4 py-3.5 font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider text-[10px]"
@@ -572,6 +697,47 @@ export default function Stations() {
                                 {s.latitude && s.longitude
                                   ? `${Number(s.latitude).toFixed(4)}, ${Number(s.longitude).toFixed(4)}`
                                   : "No Coordinates"}
+                              </td>
+                              <td className="px-4 py-3.5 text-xs">
+                                {cameraEditId === sid ? (
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      autoFocus
+                                      placeholder="e.g. CAM-42"
+                                      value={cameraDraft}
+                                      onChange={(e) => setCameraDraft(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") handleAssignCamera(sid);
+                                        if (e.key === "Escape") { setCameraEditId(null); setCameraDraft(""); }
+                                      }}
+                                      className="w-24 border border-slate-200 dark:border-slate-700 rounded-lg px-2 py-1 text-xs bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                    />
+                                    <button
+                                      onClick={() => handleAssignCamera(sid)}
+                                      disabled={assigningCamera || !cameraDraft.trim()}
+                                      className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 disabled:opacity-40 cursor-pointer"
+                                      title="Save"
+                                    >
+                                      <span className="material-symbols-outlined text-sm select-none">check</span>
+                                    </button>
+                                    <button
+                                      onClick={() => { setCameraEditId(null); setCameraDraft(""); }}
+                                      className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer"
+                                      title="Cancel"
+                                    >
+                                      <span className="material-symbols-outlined text-sm select-none">close</span>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => { setCameraEditId(sid); setCameraDraft(String(s.current_camera_id || "")); }}
+                                    className="flex items-center gap-1 font-mono text-slate-700 dark:text-slate-300 hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer group"
+                                    title="Assign a camera to this station"
+                                  >
+                                    {s.current_camera_id ? String(s.current_camera_id) : <span className="text-slate-400 italic font-sans">Unassigned</span>}
+                                    <span className="material-symbols-outlined text-xs opacity-0 group-hover:opacity-100 transition-opacity select-none">edit</span>
+                                  </button>
+                                )}
                               </td>
                               <td className="px-4 py-3.5 text-slate-600 dark:text-slate-350 text-xs">
                                 {String(s.stratum || "—")}
@@ -625,7 +791,7 @@ export default function Stations() {
                             </tr>
                             {isEditing && (
                               <tr className="bg-emerald-50/40 dark:bg-emerald-950/10 border-b border-emerald-100 dark:border-emerald-900/30">
-                                <td colSpan={8} className="px-4 py-4">
+                                <td colSpan={9} className="px-4 py-4">
                                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                                     <div>
                                       <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Latitude</label>
@@ -708,7 +874,7 @@ export default function Stations() {
             )}
           </div>
         </div>
-      ) : (
+      ) : tab === "deployments" ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           {/* Add Deployment Sidebar */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm lg:col-span-1">
@@ -885,6 +1051,270 @@ export default function Stations() {
               </div>
             )}
           </div>
+        </div>
+      ) : tab === "cameras" ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+          {/* Register Camera Sidebar */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 space-y-4 shadow-sm lg:col-span-1">
+            <div>
+              <h2 className="font-bold text-base text-slate-900 dark:text-white">
+                Register Camera
+              </h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Add a physical camera unit to the equipment registry.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Camera ID *
+                </label>
+                <input
+                  placeholder="e.g. CAM-42"
+                  value={newCamera.camera_id}
+                  onChange={(e) => setNewCamera((c) => ({ ...c, camera_id: e.target.value }))}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Model
+                </label>
+                <input
+                  placeholder="e.g. Bushnell Core"
+                  value={newCamera.model}
+                  onChange={(e) => setNewCamera((c) => ({ ...c, model: e.target.value }))}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Serial Number
+                </label>
+                <input
+                  placeholder="e.g. SN-882910"
+                  value={newCamera.serial_number}
+                  onChange={(e) => setNewCamera((c) => ({ ...c, serial_number: e.target.value }))}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1">
+                  Notes
+                </label>
+                <textarea
+                  placeholder="Condition, accessories..."
+                  rows={2}
+                  value={newCamera.notes}
+                  onChange={(e) => setNewCamera((c) => ({ ...c, notes: e.target.value }))}
+                  className="w-full border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 bg-slate-50/50 dark:bg-slate-950 text-slate-800 dark:text-slate-100 transition"
+                />
+              </div>
+            </div>
+
+            {cameraErrors.length > 0 && (
+              <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-800/40 rounded-xl p-3 space-y-1">
+                {cameraErrors.map((err, i) => (
+                  <p key={i} className="text-xs text-red-600 dark:text-red-400 flex items-center gap-1">
+                    <span className="material-symbols-outlined text-sm leading-none select-none">error</span> {err}
+                  </p>
+                ))}
+              </div>
+            )}
+
+            <button
+              onClick={handleAddCamera}
+              disabled={adding || !newCamera.camera_id || cameraErrors.length > 0}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-100 dark:disabled:bg-slate-800 text-white disabled:text-slate-400 dark:disabled:text-slate-600 text-sm font-semibold rounded-xl transition shadow-sm hover:shadow cursor-pointer"
+            >
+              {adding ? "Adding..." : "Register Camera"}
+            </button>
+          </div>
+
+          {/* Cameras Table Column */}
+          <div className="lg:col-span-2 space-y-4">
+            {cameras.length === 0 ? (
+              <div className="text-center py-20 text-slate-400 dark:text-slate-550 bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-2xl shadow-sm">
+                No cameras registered yet. Register a camera to make it selectable at upload time.
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 overflow-hidden shadow-sm">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50/50 dark:bg-slate-955/20 border-b border-slate-100 dark:border-slate-800">
+                      <tr>
+                        {["Camera ID", "Model", "Serial", "Status", "Current Station", "Notes", ""].map((header) => (
+                          <th
+                            key={header}
+                            className="text-left px-4 py-3.5 font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider text-[10px]"
+                          >
+                            {header}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/80">
+                      {cameras.map((c, i) => {
+                        const cid = String(c.camera_id);
+                        const isEditing = editingCameraId === cid;
+                        return (
+                          <React.Fragment key={i}>
+                            <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors">
+                              <td className="px-4 py-3.5 font-bold text-slate-800 dark:text-slate-200 font-mono">
+                                {cid}
+                              </td>
+                              <td className="px-4 py-3.5 text-xs text-slate-600 dark:text-slate-350">
+                                {String(c.model || "—")}
+                              </td>
+                              <td className="px-4 py-3.5 text-xs text-slate-500 dark:text-slate-400 font-mono">
+                                {String(c.serial_number || "—")}
+                              </td>
+                              <td className="px-4 py-3.5">
+                                <span className={`px-2.5 py-1 text-[11px] font-semibold rounded-full border ${
+                                  c.status === "active"
+                                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/50"
+                                    : c.status === "retired"
+                                    ? "bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-400 border-red-100 dark:border-red-900/50"
+                                    : "bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 border-slate-200 dark:border-slate-700/60"
+                                }`}>
+                                  {String(c.status || "active")}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3.5 text-xs text-slate-700 dark:text-slate-300 font-mono">
+                                {String(c.current_station_id || "Unassigned")}
+                              </td>
+                              <td className="px-4 py-3.5 text-slate-500 dark:text-slate-400 text-xs max-w-xs truncate">
+                                {String(c.notes || "—")}
+                              </td>
+                              <td className="px-4 py-3.5 text-right whitespace-nowrap">
+                                <button
+                                  onClick={() => isEditing ? setEditingCameraId(null) : handleCameraEditStart(c)}
+                                  className="text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 font-semibold text-xs cursor-pointer transition hover:underline mr-3"
+                                >
+                                  {isEditing ? "Cancel" : "Edit"}
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteCamera(cid)}
+                                  className="text-red-500 hover:text-red-600 dark:hover:text-red-400 font-semibold text-xs cursor-pointer transition hover:underline"
+                                >
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                            {isEditing && (
+                              <tr className="bg-emerald-50/40 dark:bg-emerald-950/10 border-b border-emerald-100 dark:border-emerald-900/30">
+                                <td colSpan={7} className="px-4 py-4">
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Model</label>
+                                      <input
+                                        value={editCameraDraft.model}
+                                        onChange={(e) => setEditCameraDraft((d) => ({ ...d, model: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Serial Number</label>
+                                      <input
+                                        value={editCameraDraft.serial_number}
+                                        onChange={(e) => setEditCameraDraft((d) => ({ ...d, serial_number: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Status</label>
+                                      <select
+                                        value={editCameraDraft.status}
+                                        onChange={(e) => setEditCameraDraft((d) => ({ ...d, status: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
+                                      >
+                                        <option value="active">active</option>
+                                        <option value="spare">spare</option>
+                                        <option value="retired">retired</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Notes</label>
+                                      <input
+                                        value={editCameraDraft.notes}
+                                        onChange={(e) => setEditCameraDraft((d) => ({ ...d, notes: e.target.value }))}
+                                        className="w-full border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="mt-3 flex gap-2">
+                                    <button
+                                      onClick={() => handleCameraEditSave(cid)}
+                                      className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+                                    >
+                                      Save Changes
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingCameraId(null)}
+                                      className="px-4 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 text-xs font-semibold rounded-lg transition cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-750"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/60 dark:border-slate-800/80 rounded-2xl overflow-hidden shadow-sm">
+          {mapLoading ? (
+            <div className="text-center py-24 text-slate-400 dark:text-slate-500 animate-pulse">
+              Loading station coordinates…
+            </div>
+          ) : !mapFeatures || mapFeatures.length === 0 ? (
+            <div className="text-center py-24 text-slate-400 dark:text-slate-550 space-y-2">
+              <span className="material-symbols-outlined text-2xl select-none">pin_drop</span>
+              <p className="font-semibold text-sm text-slate-700 dark:text-slate-300">No Georeferenced Stations</p>
+              <p className="text-xs max-w-sm mx-auto text-slate-400 dark:text-slate-500 leading-relaxed">
+                Add latitude/longitude to a station to see it here.
+              </p>
+            </div>
+          ) : (
+            <div className="h-[520px]">
+              <MapContainer center={[0, 20]} zoom={3} style={{ height: "100%", width: "100%" }}>
+                <TileLayer
+                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  attribution="© OpenStreetMap contributors"
+                />
+                <FitStationBounds features={mapFeatures} />
+                {mapFeatures.map((f, i) => {
+                  const [lon, lat] = f.geometry.coordinates;
+                  const p = f.properties;
+                  return (
+                    <Marker key={i} position={[lat, lon]}>
+                      <Popup>
+                        <div className="text-xs space-y-1 font-sans p-1">
+                          <p className="font-bold text-slate-900">{String(p.station_id ?? "—")}</p>
+                          <p className="text-slate-500">Stratum: {String(p.stratum || "—")}</p>
+                          <p className="text-slate-500">Camera: {String(p.current_camera_id || "Unassigned")} <span className="text-slate-400">({String(p.camera_model || "unknown model")})</span></p>
+                          <p className="text-slate-500">Trap nights: {String(p.trap_nights ?? 0)}</p>
+                          <p className="text-slate-500">Status: {String(p.status || "—")}</p>
+                        </div>
+                      </Popup>
+                    </Marker>
+                  );
+                })}
+              </MapContainer>
+            </div>
+          )}
         </div>
       )}
     </div>

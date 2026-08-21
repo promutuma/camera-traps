@@ -132,6 +132,25 @@ class DeploymentCreate(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Cameras
+# ---------------------------------------------------------------------------
+
+class CameraCreate(BaseModel):
+    camera_id: str
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    status: Optional[str] = "active"
+    notes: Optional[str] = None
+
+
+class CameraUpdate(BaseModel):
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Review queue
 # ---------------------------------------------------------------------------
 
@@ -146,6 +165,29 @@ class BulkFlagRequest(BaseModel):
     filenames: List[str]
     reviewer_id: str = "anonymous"
     notes: str = ""
+
+
+# ---------------------------------------------------------------------------
+# HITL retraining
+# ---------------------------------------------------------------------------
+
+class RetrainTriggerRequest(BaseModel):
+    reviewer_id: str = "anonymous"
+
+
+class RetrainJobStatus(BaseModel):
+    job_id: str
+    status: str          # queued | running | done | error
+    current_step: str
+    method: Optional[str] = None
+    dataset_size: int = 0
+    metrics: Optional[Any] = None
+    model_version: Optional[str] = None
+    activated: bool = False
+    triggered_by: str = "anonymous"
+    error: Optional[str] = None
+    created_at: float
+    finished_at: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------

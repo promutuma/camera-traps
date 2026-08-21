@@ -95,7 +95,7 @@ class SpatialExporter:
         otherwise one feature per detection row.
 
         Properties per feature:
-            station_id, species, detection_confidence, date, time,
+            station_id, camera_id, species, detection_confidence, date, time,
             day_night, ide_id (if available)
         """
         # Build station → (lat, lon) lookup
@@ -131,10 +131,11 @@ class SpatialExporter:
             else:
                 props = {
                     "station_id":  sid,
+                    "camera_id":   str(row.get("camera_id", "") or ""),
                     "species":     str(row.get("species_label", row.get("detected_animal", ""))),
                     "confidence":  float(row.get("detection_confidence", 0) or 0),
-                    "date":        str(row.get("date", "")),
-                    "time":        str(row.get("time", "")),
+                    "date":        str(row.get("capture_date", "") or ""),
+                    "time":        str(row.get("capture_time", "") or ""),
                     "day_night":   str(row.get("day_night", "")),
                     "primary_label": str(row.get("primary_label", "")),
                 }
@@ -436,7 +437,7 @@ class SpatialExporter:
         dbf = io.BytesIO()
         w = sf.Writer(shp=shp, shx=shx, dbf=dbf, shapeType=sf.POINT if has_coords else sf.NULL)
 
-        keep = ["station_id", "detected_animal", "detection_confidence",
+        keep = ["station_id", "camera_id", "detected_animal", "detection_confidence",
                 "capture_date", "capture_time", "day_night", "ide_id"]
         cols = [c for c in keep if c in df.columns]
         for col in cols:
@@ -488,6 +489,7 @@ class SpatialExporter:
             SubElement(pm, "name").text = str(row.get("detected_animal", row.get("species_label", "Unknown")))
             SubElement(pm, "description").text = "\n".join([
                 f"Station: {row.get('station_id', '')}",
+                f"Camera: {row.get('camera_id', '') or 'Unknown'}",
                 f"Confidence: {row.get('detection_confidence', '')}",
                 f"Date: {row.get('capture_date', '')}",
                 f"Time: {row.get('capture_time', '')}",

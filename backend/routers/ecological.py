@@ -8,6 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from backend.models.state import AppState
 from backend.routers.deps import get_state
+from core.standard_exports import (
+    darwin_core_csv,
+    darwin_core_row,
+    wildlife_insights_image_entry,
+    wildlife_insights_package,
+)
 
 router = APIRouter(prefix="/ecological", tags=["ecological"])
 
@@ -18,6 +24,17 @@ def _get_data(state: AppState):
     df = state.db_manager.get_history_df()
     if df.empty:
         raise HTTPException(status_code=404, detail="No data — process images first")
+    # IndependenceEngine.compute_ides() only parses timestamps when columns
+    # named 'date'/'time' are present — get_history_df() returns
+    # 'capture_date'/'capture_time'. Without this alias, datetime_parsed is
+    # silently NaT for every row, which makes the independence-window check
+    # (`pd.isna(dt) or ...`) always true: every detection becomes its own IDE
+    # instead of being grouped with nearby detections of the same species at
+    # the same station.
+    if "date" not in df.columns and "capture_date" in df.columns:
+        df["date"] = df["capture_date"]
+    if "time" not in df.columns and "capture_time" in df.columns:
+        df["time"] = df["capture_time"]
     return df
 
 
@@ -212,7 +229,7 @@ def export_ecological(
                 headers={"Content-Disposition": f"attachment; filename={filename_prefix}.kml"},
             )
         elif fmt in ("darwin-core", "darwin_core", "dwc"):
-            # Build Darwin Core DataFrame from representative IDE rows
+            # Build Darwin Core rows from representative IDE rows
             ide_rows = enriched.sort_values("datetime_parsed", na_position="last").groupby("ide_id", as_index=False).first()
             if stations_df is not None and not stations_df.empty:
                 coord_df = stations_df[["station_id", "gps_lat", "gps_lon"]].copy()
@@ -222,31 +239,31 @@ def export_ecological(
                 ide_rows["latitude"] = None
                 ide_rows["longitude"] = None
 
-            dwc_df = pd.DataFrame()
-            dwc_df["occurrenceID"] = ide_rows["ide_id"]
-            dwc_df["basisOfRecord"] = "MachineObservation"
-            dwc_df["eventDate"] = ide_rows["datetime_parsed"].dt.strftime("%Y-%m-%dT%H:%M:%S").fillna("")
-            dwc_df["vernacularName"] = ide_rows["detected_animal"]
-            dwc_df["scientificNameConfidence"] = ide_rows["detection_confidence"]
-            dwc_df["decimalLatitude"] = ide_rows.get("latitude")
-            dwc_df["decimalLongitude"] = ide_rows.get("longitude")
-            dwc_df["geodeticDatum"] = "WGS84"
-            dwc_df["associatedMedia"] = ide_rows["filename"]
-            dwc_df["locality"] = ide_rows["station_id"]
-            dwc_df["identificationVerificationStatus"] = ide_rows.get("agreement", None)
-            
-            dwc_df["scientificName"] = dwc_df["vernacularName"].apply(
-                lambda x: "Animalia" if x == "Animal" else (x or "Biota")
+            ide_rows["capture_date"] = ide_rows["datetime_parsed"].dt.strftime("%Y-%m-%d")
+            camera_ids = (
+                state.station_manager.resolve_camera_ids(ide_rows, station_col="station_id", date_col="capture_date", existing_col="camera_id")
+                if state.station_manager is not None
+                else pd.Series([None] * len(ide_rows), index=ide_rows.index)
             )
-            dwc_df["individualCount"] = 1
-            dwc_df["countryCode"] = "ET"
-            dwc_df["georeferenceProtocol"] = "Camera Trap GPS"
 
-            buf = io.StringIO()
-            dwc_df.to_csv(buf, index=False)
-            buf.seek(0)
+            rows = [
+                darwin_core_row(
+                    occurrence_id=r["ide_id"],
+                    event_date=r["datetime_parsed"].strftime("%Y-%m-%dT%H:%M:%S") if pd.notna(r["datetime_parsed"]) else "",
+                    detected_animal=r["detected_animal"],
+                    confidence=r["detection_confidence"],
+                    latitude=r.get("latitude"),
+                    longitude=r.get("longitude"),
+                    filename=r["filename"],
+                    station_id=r["station_id"],
+                    camera_id=camera_ids.loc[idx] if pd.notna(camera_ids.loc[idx]) else None,
+                    verification_status=r.get("agreement"),
+                )
+                for idx, r in ide_rows.iterrows()
+            ]
+            csv_text = darwin_core_csv(rows)
             return StreamingResponse(
-                io.BytesIO(buf.getvalue().encode()),
+                io.BytesIO(csv_text.encode()),
                 media_type="text/csv",
                 headers={"Content-Disposition": f"attachment; filename={filename_prefix}_darwin_core.csv"},
             )
@@ -272,19 +289,16 @@ def export_ecological(
             finally:
                 conn.close()
 
-            insights_package = {
-                "version": "1.0",
-                "provider": "ViumbeLens AI",
-                "project": project_details or {
-                    "project_name": "ViumbeLens Default Survey",
-                    "notes": "Generated from default local SQLite database"
-                },
-                "deployments": deployments_df.to_dict(orient="records") if not deployments_df.empty else [],
-                "images": []
-            }
-
             ide_rows = enriched.sort_values("datetime_parsed", na_position="last").groupby("ide_id", as_index=False).first()
-            for _, row in ide_rows.iterrows():
+            ide_rows["capture_date"] = ide_rows["datetime_parsed"].dt.strftime("%Y-%m-%d")
+            camera_ids = (
+                state.station_manager.resolve_camera_ids(ide_rows, station_col="station_id", date_col="capture_date", existing_col="camera_id")
+                if state.station_manager is not None
+                else pd.Series([None] * len(ide_rows), index=ide_rows.index)
+            )
+
+            images = []
+            for idx, row in ide_rows.iterrows():
                 bbox_data = None
                 if row.get("bbox"):
                     try:
@@ -292,20 +306,23 @@ def export_ecological(
                     except Exception:
                         pass
 
-                insights_package["images"].append({
-                    "image_id": int(row["id"]),
-                    "filename": row["filename"],
-                    "station_id": row["station_id"],
-                    "timestamp": row["datetime_parsed"].strftime("%Y-%m-%dT%H:%M:%S") if pd.notna(row["datetime_parsed"]) else None,
-                    "observations": [
-                        {
-                            "species_common_name": row["detected_animal"],
-                            "confidence": float(row["detection_confidence"]) if pd.notna(row["detection_confidence"]) else None,
-                            "bounding_box": bbox_data,
-                            "ide_id": row["ide_id"]
-                        }
-                    ] if row["detected_animal"] else []
-                })
+                images.append(wildlife_insights_image_entry(
+                    image_id=int(row["id"]),
+                    filename=row["filename"],
+                    station_id=row["station_id"],
+                    camera_id=camera_ids.loc[idx] if pd.notna(camera_ids.loc[idx]) else None,
+                    timestamp=row["datetime_parsed"].strftime("%Y-%m-%dT%H:%M:%S") if pd.notna(row["datetime_parsed"]) else None,
+                    species_common_name=row["detected_animal"],
+                    confidence=float(row["detection_confidence"]) if pd.notna(row["detection_confidence"]) else None,
+                    bounding_box=bbox_data,
+                    ide_id=row["ide_id"],
+                ))
+
+            insights_package = wildlife_insights_package(
+                project_details,
+                deployments_df.to_dict(orient="records") if not deployments_df.empty else [],
+                images,
+            )
 
             return JSONResponse(
                 content=insights_package,

@@ -12,10 +12,11 @@ dependencies:
     - torch>=2.0.0
     - torchvision>=0.15.0
     - megadetector
-    - open_clip_torch>=2.24.0
     - pillow>=10.2.0
     - pandas>=2.1.0
     - openpyxl>=3.1.0
     - numpy>=1.24.0
     - requests
     - pydeck
+    - scikit-learn>=1.3.0
+    - joblib>=1.3.0

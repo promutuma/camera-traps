@@ -19,6 +19,7 @@ const NAV_GROUPS = [
       { path: "/statistics", label: "Statistics", icon: "bar_chart" },
       { path: "/ecological", label: "Ecological", icon: "forest" },
       { path: "/corridor", label: "Corridor Analysis", icon: "insights" },
+      { path: "/qc", label: "Quality Control", icon: "fact_check" },
       { path: "/history", label: "History & Logs", icon: "history" },
     ],
   },

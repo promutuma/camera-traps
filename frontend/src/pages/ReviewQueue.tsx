@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedThumbUrl, storedImageUrl } from "../api/client";
+import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedThumbUrl, storedImageUrl, getRetrainPreview, runRetrain, getRetrainStatus, getRetrainHistory, activateRetrainRun, deactivateRetrain } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
 type Row = Record<string, unknown>;
-type Tab = "queue" | "log" | "privacy";
+type Tab = "queue" | "log" | "privacy" | "retrain";
 
 function parseBbox(raw: unknown): [number, number, number, number] | null {
   if (!raw) return null;
@@ -181,6 +181,251 @@ function EmptyState({ icon, title, sub }: { icon: string; title: string; sub: st
       </div>
       <p className="font-semibold text-slate-500">{title}</p>
       <p className="text-sm">{sub}</p>
+    </div>
+  );
+}
+
+// ── HITL Retraining panel ───────────────────────────────────────────────────
+
+function fmtPct(v: unknown): string {
+  return typeof v === "number" ? `${Math.round(v * 100)}%` : "—";
+}
+
+function fmtWhen(ts: unknown): string {
+  const n = typeof ts === "number" ? ts : parseFloat(String(ts ?? ""));
+  if (!n || isNaN(n)) return "—";
+  return new Date(n * 1000).toLocaleString();
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  correction_layer_scores: "Score-correction layer",
+  correction_layer_embeddings: "Embedding-correction layer",
+};
+
+function RetrainPanel({ reviewerId }: { reviewerId: string }) {
+  const [preview, setPreview] = useState<{ available_corrections: number; distinct_species: number } | null>(null);
+  const [status, setStatus] = useState<Row | null>(null);
+  const [history, setHistory] = useState<Row[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const refresh = useCallback(async () => {
+    const [p, h] = await Promise.all([
+      getRetrainPreview().catch(() => null),
+      getRetrainHistory().catch(() => []),
+    ]);
+    if (p) setPreview(p);
+    setHistory(Array.isArray(h) ? h : []);
+    try {
+      const s = await getRetrainStatus();
+      setStatus(s);
+    } catch {
+      setStatus(null);
+    }
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
+
+  const startRun = async () => {
+    setBusy(true);
+    try {
+      await runRetrain(reviewerId);
+    } catch (err: any) {
+      alert(err?.response?.data?.detail || "Could not start retraining.");
+      setBusy(false);
+      return;
+    }
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const s = await getRetrainStatus();
+        setStatus(s);
+        if (s.status === "done" || s.status === "error") {
+          stopPolling();
+          setBusy(false);
+          refresh();
+        }
+      } catch {
+        stopPolling();
+        setBusy(false);
+      }
+    }, 1500);
+  };
+
+  const activate = async (jobId: string) => {
+    await activateRetrainRun(jobId);
+    refresh();
+  };
+
+  const deactivate = async () => {
+    await deactivateRetrain();
+    refresh();
+  };
+
+  const running = status?.status === "queued" || status?.status === "running";
+  const activeRun = history.find((r) => r.activated);
+
+  if (!loaded) {
+    return <div className="flex-1 flex items-center justify-center text-slate-400 text-xs">Loading…</div>;
+  }
+
+  return (
+    <div className="flex-1 overflow-auto p-6 space-y-5 max-w-3xl">
+      <div className="border border-slate-150 dark:border-slate-800 rounded-xl p-4 bg-white dark:bg-slate-900 space-y-3">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Learn from corrections</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+              Trains a small correction model on top of SpeciesNet from every accept/correct/reject
+              decision made in the Review Queue, so repeated mistakes get fixed instead of only the
+              stored record. SpeciesNet's own weights are never modified.
+            </p>
+          </div>
+          <span className="material-symbols-outlined text-3xl text-emerald-500 shrink-0 select-none">model_training</span>
+        </div>
+
+        <div className="flex items-center gap-4 text-xs">
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{preview?.available_corrections ?? 0}</span>
+            <span className="text-slate-500 dark:text-slate-400">corrections available</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono font-bold text-slate-800 dark:text-slate-100">{preview?.distinct_species ?? 0}</span>
+            <span className="text-slate-500 dark:text-slate-400">distinct species</span>
+          </div>
+          {activeRun && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-900/30">
+              <span className="material-symbols-outlined text-xs">check_circle</span>
+              {METHOD_LABEL[String(activeRun.method)] ?? String(activeRun.method)} active
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center gap-2 pt-1">
+          <button
+            onClick={startRun}
+            disabled={busy || running || !preview || preview.available_corrections < 5}
+            className="flex items-center gap-1.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg px-3 py-2 transition shadow-sm cursor-pointer"
+            title={!preview || preview.available_corrections < 5 ? "Need at least 5 corrections across 2+ species" : ""}
+          >
+            {busy || running ? (
+              <svg className="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <span className="material-symbols-outlined text-sm">bolt</span>
+            )}
+            {busy || running ? "Retraining…" : "Retrain now"}
+          </button>
+          {activeRun && (
+            <button
+              onClick={deactivate}
+              className="text-xs font-semibold text-slate-600 dark:text-slate-350 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-lg px-3 py-2 hover:bg-slate-100 dark:hover:bg-slate-900 transition shadow-sm cursor-pointer"
+            >
+              Deactivate correction layer
+            </button>
+          )}
+        </div>
+
+        {(busy || running) && status && (
+          <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-sm animate-pulse">autorenew</span>
+            {status.current_step as string}
+          </div>
+        )}
+
+        {!running && status?.status === "error" && (
+          <div className="text-xs text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/30 border border-red-100 dark:border-red-900/30 rounded-lg p-2.5">
+            {String(status.error)}
+          </div>
+        )}
+
+        {!running && status?.status === "done" && (
+          <div className="text-xs text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/30 rounded-lg p-2.5">
+            Trained {METHOD_LABEL[String(status.method)] ?? String(status.method)} on {String(status.dataset_size)} corrections
+            {" — "}
+            {(status.metrics as any)?.active?.validated
+              ? `${fmtPct((status.metrics as any)?.active?.validation_accuracy)} held-out validation accuracy`
+              : `${fmtPct((status.metrics as any)?.active?.training_accuracy)} training accuracy (not enough data yet for a held-out split)`}
+            .
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <h4 className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Retrain history</h4>
+        {history.length === 0 ? (
+          <EmptyState icon="history" title="No retrain runs yet" sub="Run a retrain once you have a handful of corrections." />
+        ) : (
+          <div className="border border-slate-150 dark:border-slate-800 rounded-xl overflow-hidden">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-950/40 text-slate-500 dark:text-slate-400">
+                <tr>
+                  <th className="text-left font-semibold px-3 py-2">When</th>
+                  <th className="text-left font-semibold px-3 py-2">Method</th>
+                  <th className="text-left font-semibold px-3 py-2">Data</th>
+                  <th className="text-left font-semibold px-3 py-2">Accuracy</th>
+                  <th className="text-left font-semibold px-3 py-2">Status</th>
+                  <th className="text-right font-semibold px-3 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {history.map((r) => {
+                  const m = (r.metrics as any)?.active ?? r.metrics;
+                  return (
+                    <tr key={String(r.job_id)} className="text-slate-700 dark:text-slate-300">
+                      <td className="px-3 py-2 whitespace-nowrap">{fmtWhen(r.created_at)}</td>
+                      <td className="px-3 py-2">{r.method ? (METHOD_LABEL[String(r.method)] ?? String(r.method)) : "—"}</td>
+                      <td className="px-3 py-2 font-mono">{String(r.dataset_size ?? 0)}</td>
+                      <td className="px-3 py-2 font-mono">
+                        {m?.validated ? fmtPct(m.validation_accuracy) : m?.training_accuracy ? `${fmtPct(m.training_accuracy)}*` : "—"}
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className={
+                          r.status === "done" ? "text-emerald-600 dark:text-emerald-400" :
+                          r.status === "error" ? "text-red-600 dark:text-red-400" :
+                          "text-slate-500 dark:text-slate-400"
+                        }>
+                          {String(r.status)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {r.status === "done" && (
+                          r.activated ? (
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">Active</span>
+                          ) : (
+                            <button
+                              onClick={() => activate(String(r.job_id))}
+                              className="text-[10px] font-semibold text-slate-600 dark:text-slate-350 hover:text-emerald-600 dark:hover:text-emerald-400 cursor-pointer"
+                            >
+                              Activate
+                            </button>
+                          )
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 px-3 py-2 bg-slate-50/50 dark:bg-slate-950/20">
+              * training accuracy only — too little data yet for a held-out validation split.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -816,6 +1061,7 @@ export default function ReviewQueue() {
     { id: "queue",   label: "Review Queue",   count: queue.length },
     { id: "log",     label: "Correction Log", count: log.length },
     { id: "privacy", label: "Privacy Audit",  count: audit.length },
+    { id: "retrain", label: "Model Retraining" },
   ];
 
   return (
@@ -1079,6 +1325,8 @@ export default function ReviewQueue() {
                   : <DataTable rows={audit} cols={AUDIT_COLS} />}
               </div>
             )}
+
+            {tab === "retrain" && <RetrainPanel reviewerId={reviewerId} />}
           </>
         )}
       </div>

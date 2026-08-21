@@ -212,7 +212,7 @@ def serve_image(job_id: str, filename: str):
 # Processing worker (blocking — runs in thread)
 # ---------------------------------------------------------------------------
 
-def _run_processing(job_id: str, state: AppState, station_id: Optional[str] = None) -> None:
+def _run_processing(job_id: str, state: AppState, station_id: Optional[str] = None, camera_id: Optional[str] = None) -> None:
     job = job_manager.get(job_id)
     if not job:
         return
@@ -335,6 +335,8 @@ def _run_processing(job_id: str, state: AppState, station_id: Optional[str] = No
                     for r in result_list:
                         if not r.get("station_id"):
                             r["station_id"] = station_id or cfg.default_station_id
+                        if camera_id:
+                            r["camera_id"] = camera_id
 
                     # Serialise DB writes through the same lock used for job
                     # state — SQLite tolerates concurrent readers but serialises
@@ -386,6 +388,7 @@ def start_processing(
     background_tasks: BackgroundTasks,
     state: AppState = Depends(get_state),
     station_id: Optional[str] = None,
+    camera_id: Optional[str] = None,
 ):
     job = job_manager.get(job_id)
     if not job:
@@ -395,7 +398,16 @@ def start_processing(
     if not state.models_loaded:
         raise HTTPException(status_code=503, detail="AI models not loaded yet")
 
-    background_tasks.add_task(_run_processing, job_id, state, station_id or None)
+    # Keep the deployment-based "current camera" record in sync so
+    # date-window inference for older/undated images agrees with what was
+    # explicitly selected for this batch.
+    if station_id and camera_id and state.station_manager:
+        try:
+            state.station_manager.set_current_camera(station_id, camera_id)
+        except Exception:
+            logger.warning("Could not sync camera assignment for %s/%s", station_id, camera_id)
+
+    background_tasks.add_task(_run_processing, job_id, state, station_id or None, camera_id or None)
     return {"job_id": job_id, "status": "started"}
 
 

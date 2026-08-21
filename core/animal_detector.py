@@ -163,57 +163,6 @@ class MegaDetectorWrapper:
 class AnimalDetector:
     """Orchestrates the MDv5a + SpeciesNet wildlife ID pipeline."""
 
-    WILDLIFE_CLASSES = [
-        # ── Bovids & antelope ──
-        "plains zebra", "Grevy's zebra", "mountain zebra",
-        "African elephant", "African bush elephant", "African forest elephant",
-        "lion", "leopard", "cheetah", "serval", "caracal", "African wildcat",
-        "African wild dog", "spotted hyena", "striped hyena", "brown hyena", "aardwolf",
-        "giraffe", "reticulated giraffe", "Masai giraffe",
-        "African buffalo", "common eland", "greater kudu", "lesser kudu",
-        "bushbuck", "nyala", "sitatunga", "bongo",
-        "impala", "Thomson's gazelle", "Grant's gazelle", "springbok",
-        "gerenuk", "dibatag", "dik-dik", "steenbok", "oribi",
-        "common duiker", "blue duiker", "red duiker",
-        "blue wildebeest", "black wildebeest", "topi", "hartebeest",
-        "roan antelope", "sable antelope", "gemsbok", "East African oryx",
-        "white rhinoceros", "black rhinoceros",
-        "common warthog", "bushpig", "giant forest hog", "red river hog",
-        "common hippopotamus", "pygmy hippopotamus",
-        "Nile lechwe", "waterbuck", "reedbuck", "lechwe",
-        "White-eared kob", "Uganda kob",
-        # ── Primates ──
-        "olive baboon", "chacma baboon", "hamadryas baboon", "gelada",
-        "vervet monkey", "patas monkey", "colobus monkey",
-        "mandrill", "drill", "chimpanzee", "bonobo",
-        "western gorilla", "eastern gorilla", "mountain gorilla",
-        "ring-tailed lemur", "sifaka",
-        # ── Carnivores ──
-        "black-backed jackal", "side-striped jackal", "golden jackal",
-        "bat-eared fox", "Cape fox", "Ethiopian wolf",
-        "honey badger", "African civet", "common genet",
-        "spotted-necked otter", "Cape clawless otter",
-        "banded mongoose", "dwarf mongoose", "meerkat", "Egyptian mongoose",
-        "African golden cat",
-        # ── Other mammals ──
-        "aardvark",
-        "ground pangolin", "giant pangolin", "tree pangolin",
-        "Cape porcupine", "African crested porcupine",
-        "Cape hare", "springhare",
-        "African wild ass", "rock hyrax",
-        # ── Reptiles ──
-        "Nile crocodile", "dwarf crocodile", "Nile monitor", "rock python",
-        "leopard tortoise",
-        # ── Birds commonly camera-trapped ──
-        "ostrich", "kori bustard", "southern ground hornbill",
-        "helmeted guineafowl", "crested francolin", "secretary bird",
-        "marabou stork",
-        # ── Fallback generic terms ──
-        "antelope", "gazelle", "monkey", "baboon", "crocodile",
-        "rhinoceros", "hippopotamus", "wildebeest", "hyena",
-        "animal", "human", "person", "vehicle",
-    ]
-
     def __init__(
         self,
         megadetector: Optional[MegaDetectorWrapper],

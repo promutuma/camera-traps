@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadImages, startProcessing, pollJob, getJobResults, getModelStatus, flagByFilenames, getStations } from "../api/client";
+import { uploadImages, startProcessing, pollJob, getJobResults, getModelStatus, flagByFilenames, getStations, getCameras } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -431,6 +431,8 @@ export default function Upload() {
   const [rejectedFiles, setRejectedFiles] = useState<string[]>([]);
   const [stations, setStations]         = useState<{ station_id: string }[]>([]);
   const [selectedStation, setSelectedStation] = useState("");
+  const [cameras, setCameras]           = useState<{ camera_id: string; status?: string }[]>([]);
+  const [selectedCamera, setSelectedCamera] = useState("");
 
   // Multi-batch progress
   const [processing, setProcessing]               = useState(false);
@@ -480,6 +482,14 @@ export default function Upload() {
     getStations().then((data: any) => {
       const list = Array.isArray(data) ? data : (data?.items ?? []);
       setStations(list);
+    }).catch(() => {});
+  }, []);
+
+  // Load registered cameras list once on mount
+  useEffect(() => {
+    getCameras().then((data: any) => {
+      const list = Array.isArray(data) ? data : (data?.items ?? []);
+      setCameras(list);
     }).catch(() => {});
   }, []);
 
@@ -714,7 +724,7 @@ export default function Upload() {
 
       // 2 — Start processing
       try {
-        await startProcessing(jobId, selectedStation || undefined);
+        await startProcessing(jobId, selectedStation || undefined, selectedCamera || undefined);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         setJobError(`Batch ${ci + 1}/${chunks.length} failed to start: ${msg}`);
@@ -1007,10 +1017,45 @@ export default function Upload() {
             )}
           </div>
 
-          {/* Step 3 — Start */}
+          {/* Step 3 — Camera */}
           <div className="space-y-1.5">
             <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
               <span className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[9px] font-black flex items-center justify-center">3</span>
+              Assign to Camera <span className="font-normal normal-case opacity-60">(optional)</span>
+            </p>
+            <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900/60 shadow-sm">
+              <span className="material-symbols-outlined text-base text-slate-400 select-none shrink-0">photo_camera</span>
+              {cameras.length > 0 ? (
+                <select
+                  value={selectedCamera}
+                  onChange={(e) => setSelectedCamera(e.target.value)}
+                  disabled={processing}
+                  className="flex-1 min-w-0 text-sm font-semibold text-slate-700 dark:text-slate-200 bg-transparent border-none outline-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed py-0.5"
+                >
+                  <option value="">— No camera selected —</option>
+                  {cameras.map((c) => (
+                    <option key={c.camera_id} value={c.camera_id}>
+                      {c.camera_id}{c.status && c.status !== "active" ? ` (${c.status})` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="flex-1 text-sm font-semibold text-slate-700 dark:text-slate-200 truncate">
+                  No cameras registered
+                </span>
+              )}
+            </div>
+            {cameras.length === 0 && (
+              <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                No cameras found. <a href="/stations" className="text-emerald-600 dark:text-emerald-400 font-semibold hover:underline">Register a camera</a> to tag uploads with the specific unit used.
+              </p>
+            )}
+          </div>
+
+          {/* Step 4 — Start */}
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500 flex items-center gap-1.5">
+              <span className="w-4 h-4 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[9px] font-black flex items-center justify-center">4</span>
               Run AI Analysis
             </p>
             <button onClick={handleProcess} disabled={!canStart}

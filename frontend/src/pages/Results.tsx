@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { getResults, updateResult, exportExcel, exportCsv, storedThumbUrl, storedImageUrl, confirmDetection, flagDetection, getStations } from "../api/client";
+import { getResults, updateResult, exportExcel, exportCsv, storedThumbUrl, storedImageUrl, confirmDetection, flagDetection, deleteResults, markForDeletion, getStations } from "../api/client";
 
 type Row = Record<string, unknown>;
 type SortDir = "asc" | "desc" | null;
@@ -249,6 +249,7 @@ function Lightbox({
   onTaxonClick,
   onVerify,
   onFlag,
+  onMarkForDeletion,
 }: {
   group: ImageGroup;
   groups: ImageGroup[];
@@ -258,6 +259,7 @@ function Lightbox({
   onTaxonClick?: (taxon: string) => void;
   onVerify?: (detId: number) => Promise<void>;
   onFlag?: (detId: number) => Promise<void>;
+  onMarkForDeletion?: (imageId: number) => Promise<void>;
 }) {
   const { filename, rows } = group;
   const imgUrl = storedImageUrl(filename);
@@ -268,7 +270,7 @@ function Lightbox({
   const [editVal, setEditVal] = useState("");
   const [saving, setSaving] = useState(false);
   const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
-  const [actionBusy, setActionBusy] = useState<"verify" | "flag" | null>(null);
+  const [actionBusy, setActionBusy] = useState<"verify" | "flag" | "mark-deletion" | null>(null);
   const [hoveredDetIdx, setHoveredDetIdx] = useState<number | null>(null);
 
   const filmstripRef = useRef<HTMLDivElement>(null);
@@ -527,6 +529,25 @@ function Lightbox({
               <span className="material-symbols-outlined text-base select-none">close</span>
             </button>
           </div>
+
+          {onMarkForDeletion && (
+            <button
+              onClick={async () => {
+                const imageId = Number(primary.image_id ?? 0);
+                if (!imageId) return;
+                if (!window.confirm("Mark this image file for deletion? It will be permanently removed after a 7-day grace period (see Storage Management).")) return;
+                setActionBusy("mark-deletion");
+                try { await onMarkForDeletion(imageId); }
+                finally { setActionBusy(null); }
+              }}
+              disabled={actionBusy !== null}
+              className="flex items-center justify-center gap-1.5 py-1.5 border border-red-200 dark:border-red-900/40 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 text-[11px] font-semibold rounded-lg transition disabled:opacity-50 cursor-pointer"
+              title="Starts a 7-day grace period before the image file is permanently deleted"
+            >
+              <span className="material-symbols-outlined text-xs select-none">schedule</span>
+              {actionBusy === "mark-deletion" ? "Marking…" : "Mark image for deletion"}
+            </button>
+          )}
 
           {/* Box Opacity Slider */}
           <div className="flex items-center justify-between gap-2 px-1 py-1.5 bg-slate-50 dark:bg-slate-950/40 rounded-lg border border-slate-100 dark:border-slate-800">
@@ -987,7 +1008,7 @@ export default function Results() {
   const [sort, setSort] = useState<{ col: string; dir: SortDir }>({ col: "", dir: null });
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [bulkBusy, setBulkBusy] = useState<"verify" | "flag" | null>(null);
+  const [bulkBusy, setBulkBusy] = useState<"verify" | "flag" | "delete" | null>(null);
   const speciesInputRef = useRef<HTMLSelectElement>(null);
 
   const load = useCallback(async () => {
@@ -1159,6 +1180,17 @@ export default function Results() {
     } finally { setBulkBusy(null); }
   };
 
+  const bulkDelete = async () => {
+    const count = selectedIds.size;
+    if (!window.confirm(`Permanently delete ${count} detection${count === 1 ? "" : "s"}? This cannot be undone.`)) return;
+    setBulkBusy("delete");
+    try {
+      await deleteResults([...selectedIds]);
+      setSelectedIds(new Set());
+      load();
+    } finally { setBulkBusy(null); }
+  };
+
   const speciesList = useMemo(() => {
     const s = new Set<string>();
     for (const r of rows) {
@@ -1205,6 +1237,11 @@ export default function Results() {
           }}
           onFlag={async (detId) => {
             await flagDetection(detId, { reviewer_id: "viewer", notes: "" });
+            load();
+          }}
+          onMarkForDeletion={async (imageId) => {
+            await markForDeletion(imageId);
+            setLightbox(null);
             load();
           }}
         />
@@ -1370,6 +1407,14 @@ export default function Results() {
           >
             <span className="material-symbols-outlined text-xs">flag</span>
             {bulkBusy === "flag" ? "Flagging…" : "Flag All"}
+          </button>
+          <button
+            onClick={bulkDelete}
+            disabled={bulkBusy !== null}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-semibold disabled:opacity-50 cursor-pointer transition shadow-sm"
+          >
+            <span className="material-symbols-outlined text-xs">delete</span>
+            {bulkBusy === "delete" ? "Deleting…" : "Delete All"}
           </button>
           <button
             onClick={() => setSelectedIds(new Set())}

@@ -30,7 +30,7 @@ def test_imports():
     try:
         from core.animal_detector import AnimalDetector, MegaDetectorWrapper
         from core.image_processor import ImageProcessor
-        from core.bioclip_classifier import BioClipClassifier
+        from core.speciesnet_classifier import SpeciesNetWrapper
         from core.day_night_classifier import DayNightClassifier
         from core.ocr_processor import OCRProcessor
         logger.info("SUCCESS: All core modules imported.")
@@ -104,7 +104,7 @@ def test_models_and_pipeline():
     try:
         from core.animal_detector import AnimalDetector, MegaDetectorWrapper
         from core.image_processor import ImageProcessor
-        from core.bioclip_classifier import BioClipClassifier
+        from core.speciesnet_classifier import SpeciesNetWrapper
         from core.day_night_classifier import DayNightClassifier
         from core.ocr_processor import OCRProcessor
 
@@ -121,11 +121,11 @@ def test_models_and_pipeline():
             logger.error(f"FAILURE: MegaDetector not loaded. Error: {md.get_status()['error']}")
             return
 
-        logger.info("Loading BioClip...")
-        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
-        
+        logger.info("Loading SpeciesNet...")
+        sn = SpeciesNetWrapper(low_spec=True)
+
         logger.info("Initializing AnimalDetector...")
-        detector = AnimalDetector(md, bio)
+        detector = AnimalDetector(md, speciesnet=sn)
         
         logger.info("Initializing ImageProcessor...")
         processor = ImageProcessor(ocr, detector, dn)

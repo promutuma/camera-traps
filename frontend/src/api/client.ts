@@ -34,8 +34,12 @@ export const uploadImages = (files: File[]) => {
   files.forEach((f) => form.append("files", f));
   return api.post("/images/upload", form).then((r) => r.data);
 };
-export const startProcessing = (jobId: string, stationId?: string) =>
-  api.post(`/images/process/${jobId}`, null, stationId ? { params: { station_id: stationId } } : {}).then((r) => r.data);
+export const startProcessing = (jobId: string, stationId?: string, cameraId?: string) => {
+  const params: Record<string, string> = {};
+  if (stationId) params.station_id = stationId;
+  if (cameraId) params.camera_id = cameraId;
+  return api.post(`/images/process/${jobId}`, null, Object.keys(params).length ? { params } : {}).then((r) => r.data);
+};
 export const pollJob = (jobId: string) =>
   api.get(`/images/job/${jobId}`).then((r) => r.data);
 export const getJobResults = (jobId: string) =>
@@ -112,6 +116,17 @@ export const getStationSummary = () =>
   api.get("/stations/summary").then((r) => r.data);
 export const getStationMap = () =>
   api.get("/stations/map").then((r) => r.data);
+export const assignCamera = (stationId: string, cameraId: string) =>
+  api.post(`/stations/${encodeURIComponent(stationId)}/camera`, undefined, { params: { camera_id: cameraId } }).then((r) => r.data);
+
+// ── Camera Registry ──────────────────────────────────────────────────────────
+export const getCameras = () => api.get("/cameras").then((r) => r.data);
+export const addCamera = (body: { camera_id: string; model?: string; serial_number?: string; status?: string; notes?: string }) =>
+  api.post("/cameras", body).then((r) => r.data);
+export const updateCamera = (cameraId: string, body: Record<string, unknown>) =>
+  api.patch(`/cameras/${encodeURIComponent(cameraId)}`, body).then((r) => r.data);
+export const deleteCamera = (cameraId: string) =>
+  api.delete(`/cameras/${encodeURIComponent(cameraId)}`).then((r) => r.data);
 export const getOrphanStations = () =>
   api.get("/stations/orphans").then((r) => r.data);
 export const reassignStation = (fromStation: string, toStation: string) =>
@@ -139,6 +154,20 @@ export const getReviewLog = () =>
 export const getPrivacyAudit = () =>
   api.get("/review/privacy-audit").then((r) => r.data);
 
+// ── HITL Retraining ──────────────────────────────────────────────────────────
+export const getRetrainPreview = () =>
+  api.get("/retrain/preview").then((r) => r.data as { available_corrections: number; distinct_species: number });
+export const runRetrain = (reviewer_id: string) =>
+  api.post("/retrain/run", { reviewer_id }).then((r) => r.data);
+export const getRetrainStatus = () =>
+  api.get("/retrain/status").then((r) => r.data);
+export const getRetrainHistory = () =>
+  api.get("/retrain/history").then((r) => r.data);
+export const activateRetrainRun = (jobId: string) =>
+  api.post(`/retrain/activate/${jobId}`).then((r) => r.data);
+export const deactivateRetrain = () =>
+  api.post("/retrain/deactivate").then((r) => r.data);
+
 // ── Community ────────────────────────────────────────────────────────────────
 export const getObservations = () =>
   api.get("/community/observations").then((r) => r.data);
@@ -159,6 +188,8 @@ export const lookupSpecies = (name: string) =>
   api.get(`/species/lookup/${encodeURIComponent(name)}`).then((r) => r.data);
 export const resolveSynonym = (name: string) =>
   api.get(`/species/synonyms/${encodeURIComponent(name)}`).then((r) => r.data);
+export const addSpecies = (name: string, commonName = "") =>
+  api.post("/species/add", undefined, { params: { name, common_name: commonName } }).then((r) => r.data);
 
 // ── Corridor ─────────────────────────────────────────────────────────────────
 export const getCorridorPairs = (max_km = 50) =>

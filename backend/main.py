@@ -72,6 +72,8 @@ from backend.routers import (
     arcgis as arcgis_router,
     exports as exports_router,
     storage as storage_router,
+    retrain as retrain_router,
+    cameras as cameras_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
     from core.arcgis_sync import ArcGISSync
     from core.independence_engine import IndependenceEngine
     from core.qc_engine import QCEngine
+    from core.retrain_engine import RetrainEngine
     from backend.services.file_manager import FileManager
 
     cfg = state.config
@@ -162,6 +165,7 @@ def _load_all_models(state: AppState, project_root: Path) -> None:
     state.arcgis_sync = ArcGISSync(db_path=db_path)
     state.independence_engine = IndependenceEngine(window_minutes=cfg.independence_window)
     state.qc_engine = QCEngine()
+    state.retrain_engine = RetrainEngine(db_manager=state.db_manager, uploads_dir=uploads_dir)
 
     state.models_loaded = True
     logger.info("All models loaded successfully.")
@@ -241,6 +245,8 @@ def create_app() -> FastAPI:
     application.include_router(arcgis_router.router, prefix=prefix)
     application.include_router(exports_router.router, prefix=prefix)
     application.include_router(storage_router.router, prefix=prefix)
+    application.include_router(retrain_router.router, prefix=prefix)
+    application.include_router(cameras_router.router, prefix=prefix)
 
     # Serve built React app in production
     dist_path = Path(__file__).parent.parent / "frontend" / "dist"

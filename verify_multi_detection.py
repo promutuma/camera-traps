@@ -8,7 +8,7 @@ sys.path.append(os.getcwd())
 
 from core.animal_detector import AnimalDetector, MegaDetectorWrapper
 from core.image_processor import ImageProcessor
-from core.bioclip_classifier import BioClipClassifier
+from core.speciesnet_classifier import SpeciesNetWrapper
 from core.day_night_classifier import DayNightClassifier
 from core.ocr_processor import OCRProcessor
 
@@ -25,11 +25,11 @@ def test_pipeline():
     
     try:
         md = MegaDetectorWrapper(confidence_threshold=0.1)
-        bio = BioClipClassifier(species_list=AnimalDetector.WILDLIFE_CLASSES)
+        sn = SpeciesNetWrapper(low_spec=True)
         ocr = OCRProcessor()
         dn = DayNightClassifier()
-        
-        detector = AnimalDetector(md, bio)
+
+        detector = AnimalDetector(md, speciesnet=sn)
         processor = ImageProcessor(ocr, detector, dn)
         
         test_img = "test_md.jpg"
