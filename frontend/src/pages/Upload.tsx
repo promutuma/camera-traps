@@ -1,18 +1,33 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { uploadImages, startProcessing, pollJob, getJobResults, getModelStatus, flagByFilenames, getStations, getCameras } from "../api/client";
+import { startPipeline, uploadPipelineFile, finishPipeline, pollJob, getJobResults, getModelStatus, flagByImageIds, getStations, getCameras } from "../api/client";
 import { useConfigStore } from "../store/configStore";
+import { useSessionStore } from "../store/sessionStore";
+import { useDisplayStore } from "../store/displayStore";
+import { ShowNonWildlifeToggle } from "../components/HiddenNonWildlifeBanner";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CHUNK_SIZE   = 50;                        // files per upload+process batch
+const UPLOAD_CONCURRENCY = 4;                   // parallel HTTP uploads per job
 const MAX_LIST     = 60;                        // max rows in compact list view
 const MAX_CARDS    = 20;                        // max cards in card grid view
 const SESSION_KEY  = "cameraTrapsUploadSession"; // localStorage key for crash recovery
+const STATION_KEY  = "cameraTrapsUploadStation";
+const CAMERA_KEY   = "cameraTrapsUploadCamera";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type ModelStatus = { models_loaded: boolean; error: string | null } | null;
+type ModelStatus = {
+  models_loaded: boolean;
+  models_partial?: boolean;
+  error: string | null;
+  md?: { loaded: boolean; error?: string | null };
+  speciesnet?: { loaded: boolean; loading?: boolean; error?: string | null };
+  ocr?: { loaded: boolean };
+  dn?: { loaded: boolean };
+} | null;
+
+const fileKey = (f: File) => `${f.name}:${f.size}:${f.lastModified}`;
 
 type Detection = { label: string; conf: number; bbox?: number[] };
 
@@ -40,24 +55,38 @@ type ImageRow = {
 
 type ResultFilter = "all" | "wildlife" | "empty" | "low_conf";
 
+function isWildlifeUploadRow(row: ImageRow): boolean {
+  const res = row.events.find((e) => e.model === "Result");
+  return !!(res && (res.confidence ?? 0) > 0);
+}
+
 type SavedSession = {
   activeJobId: string;
-  currentChunk: number;
-  totalChunks: number;
   overallTotal: number;
-  completedOffset: number;
+  pipeline?: boolean;
+  /** @deprecated legacy batch recovery */
+  currentChunk?: number;
+  totalChunks?: number;
+  completedOffset?: number;
+  stationId?: string;
+  cameraId?: string;
 };
+
+function pickStationId(
+  stations: { station_id: string }[],
+  preferred?: string,
+  fallbackDefault?: string,
+): string {
+  const ids = stations.map((s) => s.station_id).filter(Boolean);
+  if (preferred && ids.includes(preferred)) return preferred;
+  if (fallbackDefault && ids.includes(fallbackDefault)) return fallbackDefault;
+  return ids[0] ?? fallbackDefault ?? "";
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmtTime(secs: number) {
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
-}
-
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
 }
 
 function parseSnetLabel(raw: string): { display: string; tooltip: string } {
@@ -76,7 +105,7 @@ function parseSnetLabel(raw: string): { display: string; tooltip: string } {
   return { display: raw.trim(), tooltip: "" };
 }
 
-type FileStatus = "pending" | "processing" | "done";
+type FileStatus = "pending" | "processing" | "done" | "error";
 
 // ── FileListRow — no image preview, used when many files selected ─────────────
 
@@ -176,6 +205,19 @@ function PipelineBadge({ status }: { status: ModelStatus }) {
     <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 dark:bg-amber-950/30 rounded-full border border-amber-200 dark:border-amber-900/50">
       <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
       <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">Loading Models…</span>
+    </div>
+  );
+  if (status.speciesnet?.loading) return (
+    <div className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 dark:bg-blue-950/30 rounded-full border border-blue-200 dark:border-blue-900/50">
+      <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+      <span className="text-xs font-semibold text-blue-700 dark:text-blue-400">Loading SpeciesNet…</span>
+    </div>
+  );
+  if (status.models_partial || (status.speciesnet && !status.speciesnet.loaded)) return (
+    <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-50 dark:bg-amber-950/30 rounded-full border border-amber-200 dark:border-amber-900/50"
+      title={status.speciesnet?.error ?? "SpeciesNet not loaded"}>
+      <span className="w-2 h-2 rounded-full bg-amber-400" />
+      <span className="text-xs font-semibold text-amber-700 dark:text-amber-400">Partial — no SpeciesNet</span>
     </div>
   );
   return (
@@ -422,8 +464,8 @@ function ImageResultCard({ row, file, flagged, onFlag }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Upload() {
-  const reviewerId     = useConfigStore((s) => s.config?.reviewer_id ?? "anonymous");
   const defaultStation = useConfigStore((s) => s.config?.default_station_id ?? "");
+  const username = useSessionStore((s) => s.username) ?? "anonymous";
 
   const [files, setFiles]               = useState<File[]>([]);
   const [dragging, setDragging]         = useState(false);
@@ -434,20 +476,22 @@ export default function Upload() {
   const [cameras, setCameras]           = useState<{ camera_id: string; status?: string }[]>([]);
   const [selectedCamera, setSelectedCamera] = useState("");
 
-  // Multi-batch progress
+  // Pipeline progress
   const [processing, setProcessing]               = useState(false);
   const [overallTotal, setOverallTotal]           = useState(0);
+  const [overallUploaded, setOverallUploaded]     = useState(0);
   const [overallCompleted, setOverallCompleted]   = useState(0);
-  const [totalChunks, setTotalChunks]             = useState(0);
-  const [currentChunk, setCurrentChunk]           = useState(0);
   const [jobError, setJobError]                   = useState<string | null>(null);
   const [allDone, setAllDone]                     = useState(false);
+  const [hasWarnings, setHasWarnings]             = useState(false);
+  const [scrubSummary, setScrubSummary]           = useState<{ scrubbed: number; skipped: number } | null>(null);
   const [latestModel, setLatestModel]             = useState<string | null>(null);
 
   const [modelStatus, setModelStatus]             = useState<ModelStatus>(null);
   const [imageRows, setImageRows]                 = useState<ImageRow[]>([]);
   const [flaggedImages, setFlaggedImages]         = useState<Set<string>>(new Set());
-  const [resultFilter, setResultFilter]           = useState<ResultFilter>("all");
+  const [resultFilter, setResultFilter]           = useState<ResultFilter>("wildlife");
+  const hideNonWildlife = useDisplayStore((s) => s.hideNonWildlife);
   const [viewMode, setViewMode]                   = useState<"list" | "cards">("list");
 
   // Crash / tab-close recovery
@@ -459,7 +503,12 @@ export default function Upload() {
   const inputRef         = useRef<HTMLInputElement>(null);
   const sseRef           = useRef<EventSource | null>(null);
   const flaggedImagesRef = useRef<Set<string>>(new Set());
+  const selectedStationRef = useRef("");
+  const selectedCameraRef = useRef("");
   const navigate         = useNavigate();
+
+  useEffect(() => { selectedStationRef.current = selectedStation; }, [selectedStation]);
+  useEffect(() => { selectedCameraRef.current = selectedCamera; }, [selectedCamera]);
 
   // Poll model status
   useEffect(() => {
@@ -469,7 +518,11 @@ export default function Upload() {
         const s = await getModelStatus();
         if (!cancelled) {
           setModelStatus(s);
-          if (!s.models_loaded && !s.error) setTimeout(check, 3000);
+          const stillLoading = !s.models_loaded && !s.error;
+          const snLoading = s.speciesnet?.loading;
+          if (stillLoading || snLoading || (s.models_loaded && s.models_partial)) {
+            setTimeout(check, 3000);
+          }
         }
       } catch { if (!cancelled) setTimeout(check, 5000); }
     };
@@ -477,26 +530,42 @@ export default function Upload() {
     return () => { cancelled = true; };
   }, []);
 
-  // Load stations list once on mount
+  // Load stations list once on mount; restore last upload station if valid
   useEffect(() => {
     getStations().then((data: any) => {
       const list = Array.isArray(data) ? data : (data?.items ?? []);
       setStations(list);
+      const saved = localStorage.getItem(STATION_KEY) ?? "";
+      setSelectedStation((prev) => pickStationId(list, prev || saved, defaultStation));
     }).catch(() => {});
-  }, []);
+  }, [defaultStation]);
+
+  // Keep selection aligned when sidebar default changes and current choice is empty/invalid
+  useEffect(() => {
+    if (stations.length === 0) return;
+    setSelectedStation((prev) => pickStationId(stations, prev, defaultStation));
+  }, [defaultStation, stations]);
 
   // Load registered cameras list once on mount
   useEffect(() => {
     getCameras().then((data: any) => {
       const list = Array.isArray(data) ? data : (data?.items ?? []);
       setCameras(list);
+      const saved = localStorage.getItem(CAMERA_KEY) ?? "";
+      if (saved && list.some((c: { camera_id: string }) => c.camera_id === saved)) {
+        setSelectedCamera(saved);
+      }
     }).catch(() => {});
   }, []);
 
-  // Sync selectedStation when defaultStation loads from config
+  // Persist upload station/camera choices for the next visit
   useEffect(() => {
-    if (defaultStation && !selectedStation) setSelectedStation(defaultStation);
-  }, [defaultStation]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (selectedStation) localStorage.setItem(STATION_KEY, selectedStation);
+  }, [selectedStation]);
+  useEffect(() => {
+    if (selectedCamera) localStorage.setItem(CAMERA_KEY, selectedCamera);
+    else localStorage.removeItem(CAMERA_KEY);
+  }, [selectedCamera]);
 
   // On mount: check whether a previous session was interrupted
   useEffect(() => {
@@ -509,9 +578,13 @@ export default function Upload() {
         if (status.status === "running" || status.status === "queued") {
           setRecoveredSession(session);
           setRecoveryJobDone(false);
-        } else if (status.status === "done") {
+          if (session.stationId) setSelectedStation(session.stationId);
+          if (session.cameraId) setSelectedCamera(session.cameraId);
+        } else if (status.status === "done" || status.status === "done_with_errors") {
           setRecoveredSession(session);
           setRecoveryJobDone(true);
+          if (session.stationId) setSelectedStation(session.stationId);
+          if (session.cameraId) setSelectedCamera(session.cameraId);
         } else {
           localStorage.removeItem(SESSION_KEY);
         }
@@ -536,8 +609,19 @@ export default function Upload() {
   useEffect(() => { return () => sseRef.current?.close(); }, []);
 
   const addFiles = useCallback((incoming: File[]) => {
-    const valid = incoming.filter((f) => /\.(jpe?g|png|tiff?|bmp|webp)$/i.test(f.name));
-    if (valid.length) setFiles((prev) => [...prev, ...valid]);
+    const valid = incoming.filter((f) => /\.(jpe?g|png|tiff?|bmp|webp|gif)$/i.test(f.name));
+    setFiles((prev) => {
+      const existing = new Set(prev.map(fileKey));
+      const next = [...prev];
+      for (const f of valid) {
+        const key = fileKey(f);
+        if (!existing.has(key)) {
+          existing.add(key);
+          next.push(f);
+        }
+      }
+      return next;
+    });
   }, []);
 
   const onDrop = useCallback((e: React.DragEvent) => {
@@ -556,9 +640,8 @@ export default function Upload() {
     setSkippedDupes([]);
     setRejectedFiles([]);
     setProcessing(false);
-    setOverallTotal(0); setOverallCompleted(0);
-    setTotalChunks(0); setCurrentChunk(0);
-    setJobError(null); setAllDone(false);
+    setOverallTotal(0); setOverallUploaded(0); setOverallCompleted(0);
+    setJobError(null); setAllDone(false); setHasWarnings(false);
     setLatestModel(null);
     setImageRows([]);
     setFlaggedImages(new Set());
@@ -575,27 +658,50 @@ export default function Upload() {
     });
   }, []);
 
-  // ── SSE for one job chunk ─────────────────────────────────────────────────
+  // ── SSE for live job progress ─────────────────────────────────────────────
 
   const runJobSSE = useCallback((
     jobId: string,
-    chunkOffset: number,
     reconnectsLeft: number,
     cursor: number,
-  ): Promise<void> => {
-    return new Promise<void>((resolve, reject) => {
+  ): Promise<{ hadErrors: boolean; errorMsg?: string }> => {
+    return new Promise((resolve, reject) => {
       const sse = new EventSource(`/api/images/job/${jobId}/stream?cursor=${cursor}`);
       sseRef.current = sse;
       let localCursor = cursor;
+      let resolved = false;
 
       sse.onmessage = (e) => {
-        const data = JSON.parse(e.data) as { type: string } & Record<string, unknown>;
+        let data: { type: string } & Record<string, unknown>;
+        try {
+          data = JSON.parse(e.data);
+        } catch {
+          return;
+        }
 
         if (data.type === "progress") {
-          const prog = data as unknown as { status: string; total: number; completed: number; error?: string };
-          setOverallCompleted(chunkOffset + prog.completed);
-          if (prog.status === "done") { sse.close(); resolve(); }
-          else if (prog.status === "error") { sse.close(); reject(new Error(prog.error ?? "Job failed")); }
+          const prog = data as unknown as {
+            status: string;
+            total: number;
+            completed: number;
+            uploaded?: number;
+            error?: string;
+          };
+          setOverallCompleted(prog.completed);
+          if (prog.uploaded != null) setOverallUploaded(prog.uploaded);
+          if (prog.total > 0) setOverallTotal((prev) => Math.max(prev, prog.total));
+          if (prog.status === "done" || prog.status === "done_with_errors") {
+            resolved = true;
+            sse.close();
+            resolve({
+              hadErrors: prog.status === "done_with_errors",
+              errorMsg: prog.error,
+            });
+          } else if (prog.status === "error") {
+            resolved = true;
+            sse.close();
+            reject(new Error(prog.error ?? "Job failed"));
+          }
 
         } else if (data.type === "model_event") {
           localCursor++;
@@ -612,19 +718,37 @@ export default function Upload() {
       };
 
       sse.onerror = async () => {
+        if (resolved) return;
         sse.close();
         try {
           const status = await pollJob(jobId);
-          if (status.status === "done") { resolve(); return; }
-          if (status.status === "error") { reject(new Error(status.error ?? "Job failed")); return; }
+          if (status.status === "done" || status.status === "done_with_errors") {
+            resolved = true;
+            setOverallCompleted(status.completed);
+            if (status.uploaded != null) setOverallUploaded(status.uploaded);
+            resolve({
+              hadErrors: status.status === "done_with_errors",
+              errorMsg: status.error,
+            });
+            return;
+          }
+          if (status.status === "error") {
+            resolved = true;
+            reject(new Error(status.error ?? "Job failed"));
+            return;
+          }
           if (reconnectsLeft > 0) {
             setTimeout(() => {
-              runJobSSE(jobId, chunkOffset, reconnectsLeft - 1, localCursor).then(resolve).catch(reject);
+              runJobSSE(jobId, reconnectsLeft - 1, localCursor)
+                .then(resolve)
+                .catch(reject);
             }, 2000);
           } else {
             reject(new Error("Stream disconnected — max reconnects reached."));
           }
-        } catch { reject(new Error("Stream connection lost.")); }
+        } catch {
+          reject(new Error("Stream connection lost."));
+        }
       };
     });
   }, []);
@@ -638,9 +762,8 @@ export default function Upload() {
     setAllDone(false);
     setJobError(null);
     setOverallTotal(session.overallTotal);
-    setTotalChunks(session.totalChunks);
-    setCurrentChunk(session.currentChunk);
-    setOverallCompleted(session.completedOffset);
+    setOverallUploaded(0);
+    setOverallCompleted(0);
     setImageRows([]);
     setFlaggedImages(new Set());
     flaggedImagesRef.current = new Set();
@@ -648,18 +771,15 @@ export default function Upload() {
     startTimeRef.current = Date.now();
 
     try {
-      // cursor=0 — replay all model events accumulated while the tab was closed
-      await runJobSSE(session.activeJobId, session.completedOffset, 3, 0);
-      const remainingBatches = session.totalChunks - session.currentChunk;
-      if (remainingBatches > 0) {
-        setJobError(
-          `Batch ${session.currentChunk} of ${session.totalChunks} complete. ` +
-          `${remainingBatches} batch${remainingBatches !== 1 ? "es" : ""} were not started — ` +
-          `re-upload the remaining files to continue.`
-        );
-      } else {
-        setAllDone(true);
+      const status = await pollJob(session.activeJobId);
+      setOverallCompleted(status.completed ?? 0);
+      if (status.uploaded != null) setOverallUploaded(status.uploaded);
+      const sseResult = await runJobSSE(session.activeJobId, 3, 0);
+      if (sseResult.hadErrors && sseResult.errorMsg) {
+        setHasWarnings(true);
+        setJobError(sseResult.errorMsg);
       }
+      setAllDone(true);
     } catch (err) {
       setJobError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -668,22 +788,36 @@ export default function Upload() {
     }
   };
 
-  // ── Chunked upload + process ──────────────────────────────────────────────
+  // ── Pipelined upload + concurrent analysis ───────────────────────────────
 
   const handleProcess = async () => {
     sseRef.current?.close();
 
-    const chunks = chunkArray(files, CHUNK_SIZE);
-    const total  = files.length;
+    const stationForJob = pickStationId(
+      stations,
+      selectedStationRef.current || selectedStation,
+      defaultStation,
+    );
+    if (!stationForJob) {
+      setJobError("Select a station before starting analysis.");
+      return;
+    }
+    const cameraForJob = selectedCameraRef.current || selectedCamera || "";
+    setSelectedStation(stationForJob);
+    selectedStationRef.current = stationForJob;
+
+    const total = files.length;
 
     setProcessing(true);
     setAllDone(false);
     setJobError(null);
+    setHasWarnings(false);
+    setScrubSummary(null);
     setOverallTotal(total);
+    setOverallUploaded(0);
     setOverallCompleted(0);
-    setTotalChunks(chunks.length);
-    setCurrentChunk(0);
     setSkippedDupes([]);
+    setRejectedFiles([]);
     setImageRows([]);
     setFlaggedImages(new Set());
     flaggedImagesRef.current = new Set();
@@ -691,106 +825,147 @@ export default function Upload() {
     setLatestModel(null);
     startTimeRef.current = Date.now();
 
-    let allSkipped: string[] = [];
-    let completedOffset = 0;
-
-    for (let ci = 0; ci < chunks.length; ci++) {
-      const ch = chunks[ci];
-      setCurrentChunk(ci + 1);
-
-      // 1 — Upload this chunk
-      let jobId: string;
-      try {
-        const res = await uploadImages(ch);
-        const newSkipped: string[] = res.duplicates_skipped ?? [];
-        allSkipped = [...allSkipped, ...newSkipped];
-        setSkippedDupes([...allSkipped]);
-        if ((res.rejected ?? []).length > 0) {
-          setRejectedFiles((prev) => [...prev, ...(res.rejected as string[])]);
-        }
-        if (!res.job_id || res.file_count === 0) {
-          // All files in this chunk were duplicates or unsupported — skip processing
-          completedOffset += ch.length;
-          setOverallCompleted(completedOffset);
-          continue;
-        }
-        jobId = res.job_id;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setJobError(`Batch ${ci + 1}/${chunks.length} upload failed: ${msg}`);
-        setProcessing(false);
-        return;
-      }
-
-      // 2 — Start processing
-      try {
-        await startProcessing(jobId, selectedStation || undefined, selectedCamera || undefined);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setJobError(`Batch ${ci + 1}/${chunks.length} failed to start: ${msg}`);
-        setProcessing(false);
-        return;
-      }
-
-      // Persist session so a tab-close can be recovered
-      localStorage.setItem(SESSION_KEY, JSON.stringify({
-        activeJobId: jobId,
-        currentChunk: ci + 1,
-        totalChunks: chunks.length,
-        overallTotal: total,
-        completedOffset,
-      } satisfies SavedSession));
-
-      // 3 — Stream results until done
-      try {
-        await runJobSSE(jobId, completedOffset, 3, 0);
-        completedOffset += ch.length;
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        setJobError(`Batch ${ci + 1}/${chunks.length} error: ${msg}`);
-        setProcessing(false);
-        return;
-      }
-
-      // Flag images from this batch before moving to next
-      const toFlag = Array.from(flaggedImagesRef.current);
-      if (toFlag.length > 0) flagByFilenames(toFlag, reviewerId).catch(() => {});
-
-      // Populate in-app results cache (fire-and-forget)
-      getJobResults(jobId).catch(() => {});
+    let jobId: string;
+    try {
+      const start = await startPipeline(total, stationForJob, cameraForJob || undefined);
+      jobId = start.job_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setJobError(`Failed to start pipeline: ${msg}`);
+      setProcessing(false);
+      return;
     }
 
-    setProcessing(false);
-    setAllDone(true);
-    localStorage.removeItem(SESSION_KEY);
+    localStorage.setItem(SESSION_KEY, JSON.stringify({
+      activeJobId: jobId,
+      overallTotal: total,
+      pipeline: true,
+      stationId: stationForJob,
+      cameraId: cameraForJob || undefined,
+    } satisfies SavedSession));
+
+    const ssePromise = runJobSSE(jobId, 3, 0);
+
+    let uploadIndex = 0;
+    const uploadErrors: string[] = [];
+
+    const uploadWorker = async () => {
+      while (true) {
+        const i = uploadIndex++;
+        if (i >= files.length) break;
+        const file = files[i];
+        try {
+          const res = await uploadPipelineFile(jobId, file);
+          if (res.skipped) {
+            if (res.reason === "duplicate") {
+              setSkippedDupes((prev) => [...prev, res.filename]);
+            } else {
+              setRejectedFiles((prev) => [...prev, res.filename]);
+            }
+          }
+        } catch (err) {
+          uploadErrors.push(`${file.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    };
+
+    const workerCount = Math.min(UPLOAD_CONCURRENCY, files.length);
+    try {
+      await Promise.all(Array.from({ length: workerCount }, () => uploadWorker()));
+      await finishPipeline(jobId);
+
+      const sseResult = await ssePromise;
+      if (sseResult.hadErrors && sseResult.errorMsg) {
+        setHasWarnings(true);
+        setJobError(sseResult.errorMsg);
+      }
+      if (uploadErrors.length > 0) {
+        setHasWarnings(true);
+        setJobError((prev) =>
+          prev
+            ? `${prev}; ${uploadErrors.length} upload(s) failed`
+            : `${uploadErrors.length} upload(s) failed: ${uploadErrors.slice(0, 3).join("; ")}`,
+        );
+      }
+
+      const flaggedNames = Array.from(flaggedImagesRef.current);
+      if (flaggedNames.length > 0) {
+        try {
+          const jobData = await getJobResults(jobId);
+          const results = (jobData.results ?? []) as Record<string, unknown>[];
+          const imageIds = new Set<number>();
+          for (const name of flaggedNames) {
+            for (const row of results) {
+              if (String(row.filename ?? "") === name) {
+                const iid = Number(row.image_id ?? 0);
+                if (iid) imageIds.add(iid);
+              }
+            }
+          }
+          if (imageIds.size > 0) {
+            await flagByImageIds([...imageIds], username);
+          } else {
+            setHasWarnings(true);
+            setJobError((prev) =>
+              prev
+                ? `${prev}; Could not flag ${flaggedNames.length} image(s) — IDs not found yet`
+                : `Could not flag ${flaggedNames.length} image(s) — IDs not found yet`,
+            );
+          }
+        } catch (flagErr) {
+          const msg = flagErr instanceof Error ? flagErr.message : String(flagErr);
+          setHasWarnings(true);
+          setJobError((prev) =>
+            prev ? `${prev}; Flagging failed: ${msg}` : `Flagging failed: ${msg}`,
+          );
+        }
+      }
+
+      getJobResults(jobId).then((data) => {
+        const audit = (data.scrub_audit ?? []) as Record<string, unknown>[];
+        if (audit.length > 0) {
+          const scrubbed = audit.filter((a) => a.skipped === false && Number(a.boxes_blurred ?? 0) > 0).length;
+          const skipped = audit.filter((a) => a.skipped !== false).length;
+          setScrubSummary({ scrubbed, skipped });
+        }
+      }).catch(() => {});
+
+      setAllDone(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setJobError(msg);
+    } finally {
+      setProcessing(false);
+      localStorage.removeItem(SESSION_KEY);
+    }
   };
 
   // ── Derived state ─────────────────────────────────────────────────────────
 
   const pct = overallTotal > 0 ? Math.round((overallCompleted / overallTotal) * 100) : 0;
+  const uploadPct = overallTotal > 0 ? Math.round((overallUploaded / overallTotal) * 100) : 0;
   const etaSecs = processing && pct > 5 && elapsed > 0
     ? Math.round((elapsed / pct) * (100 - pct)) : null;
 
   const fileStatuses = new Map<string, FileStatus>();
   for (const row of imageRows) {
     const hasDone = row.events.some((e) => e.model === "Result");
-    fileStatuses.set(row.name, hasDone ? "done" : "processing");
+    const hasError = row.events.some((e) => e.model === "Result" && (e as ModelEvent & { error?: boolean }).error);
+    fileStatuses.set(row.name, hasError ? "error" as FileStatus : hasDone ? "done" : "processing");
   }
 
   const atDetect   = latestModel === "MDv5a" || latestModel === "Detection";
   const atClassify = latestModel === "SpeciesNet";
   const atFusion   = latestModel === "Result";
 
-  const resultRows  = imageRows.filter((r) => {
-    const res = r.events.find((e) => e.model === "Result");
-    return res && (res.confidence ?? 0) > 0;
-  });
-  const emptyRows   = imageRows.filter((r) => !resultRows.find((rr) => rr.name === r.name));
+  const resultRows  = imageRows.filter(isWildlifeUploadRow);
+  const emptyRows   = imageRows.filter((r) => !isWildlifeUploadRow(r));
   const lowConfRows = resultRows.filter((r) => (r.events.find((e) => e.model === "Result")?.confidence ?? 1) < 0.4);
   const speciesSet  = new Set(resultRows.map((r) => r.events.find((e) => e.model === "Result")?.species));
   const needsReviewCount = new Set([...lowConfRows.map((r) => r.name), ...flaggedImages]).size;
 
   const allFilteredRows = imageRows.filter((row) => {
+    if (hideNonWildlife && resultFilter !== "empty" && !isWildlifeUploadRow(row)) return false;
     if (resultFilter === "all")      return true;
     if (resultFilter === "wildlife") return resultRows.some((r) => r.name === row.name);
     if (resultFilter === "empty")    return emptyRows.some((r) => r.name === row.name);
@@ -802,13 +977,12 @@ export default function Upload() {
   const hiddenCount  = allFilteredRows.length - filteredRows.length;
 
   const canStart   = files.length > 0 && !processing && !!modelStatus?.models_loaded;
-  const numBatches = Math.ceil(files.length / CHUNK_SIZE);
 
   const STEPS = [
-    { id: "ocr",      label: "OCR — Date & Time",    active: !latestModel,              done: atDetect || atClassify || atFusion },
-    { id: "detect",   label: "MegaDetector",          active: atDetect,                  done: atClassify || atFusion },
+    { id: "ocr",      label: "OCR — Date & Time",     active: !latestModel,              done: atDetect || atClassify || atFusion },
+    { id: "detect",   label: "MegaDetector v5a",      active: atDetect,                  done: atClassify || atFusion },
     { id: "classify", label: "SpeciesNet Classifier", active: atClassify,                done: atFusion },
-    { id: "fusion",   label: "Ensemble & Save",       active: atFusion,                  done: false },
+    { id: "save",     label: "Save & Privacy Scrub",  active: atFusion,                  done: false },
   ];
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -820,11 +994,7 @@ export default function Upload() {
           <h1 className="text-2xl font-extrabold tracking-tight text-slate-900 dark:text-white">Upload &amp; Process</h1>
           <p className="text-slate-500 dark:text-slate-400 mt-1 text-sm">
             Drop images, then click <span className="font-semibold text-slate-700 dark:text-slate-300">Start AI Analysis</span>.
-            {files.length > CHUNK_SIZE && (
-              <span className="ml-1 text-indigo-600 dark:text-indigo-400 font-semibold">
-                {files.length} files → {numBatches} batches of {CHUNK_SIZE}
-              </span>
-            )}
+            Upload and analysis run in parallel — results appear as each image completes.
           </p>
         </div>
         <PipelineBadge status={modelStatus} />
@@ -845,15 +1015,13 @@ export default function Upload() {
           <div className="flex-1 min-w-0">
             <p className={`font-bold text-sm ${recoveryJobDone ? "text-emerald-800 dark:text-emerald-300" : "text-amber-800 dark:text-amber-300"}`}>
               {recoveryJobDone
-                ? `Batch ${recoveredSession.currentChunk} of ${recoveredSession.totalChunks} finished while you were away`
-                : `Batch ${recoveredSession.currentChunk} of ${recoveredSession.totalChunks} is still running on the server`}
+                ? "Analysis finished while you were away"
+                : "Analysis is still running on the server"}
             </p>
             <p className={`text-xs mt-0.5 ${recoveryJobDone ? "text-emerald-700 dark:text-emerald-400" : "text-amber-700 dark:text-amber-400"}`}>
               {recoveryJobDone
-                ? recoveredSession.currentChunk < recoveredSession.totalChunks
-                  ? `${recoveredSession.totalChunks - recoveredSession.currentChunk} batch${recoveredSession.totalChunks - recoveredSession.currentChunk !== 1 ? "es" : ""} not started — re-upload the remaining files to continue.`
-                  : "All batches complete. Results are saved to the database."
-                : `${recoveredSession.overallTotal} total images · click Reconnect to resume the live view.`}
+                ? "Results are saved to the database."
+                : `${recoveredSession.overallTotal} images · click Reconnect to resume the live view.`}
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -913,15 +1081,7 @@ export default function Upload() {
                 multiple className="hidden" onChange={(e) => { if (e.target.files) addFiles(Array.from(e.target.files)); }} />
             </div>
 
-            {/* Batch plan notice */}
-            {files.length > CHUNK_SIZE && !processing && (
-              <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-900/50 text-xs">
-                <span className="material-symbols-outlined text-indigo-500 text-base select-none shrink-0">layers</span>
-                <span className="text-indigo-700 dark:text-indigo-300 font-medium">
-                  <span className="font-bold">{files.length} files</span> → <span className="font-bold">{numBatches} batches</span> of up to {CHUNK_SIZE}
-                </span>
-              </div>
-            )}
+            {/* Batch plan notice — removed; pipeline handles any count */}
 
             {/* Duplicates notice */}
             {skippedDupes.length > 0 && (
@@ -1062,7 +1222,7 @@ export default function Upload() {
               className="w-full py-3 px-6 bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-600 text-white font-bold rounded-2xl transition-all shadow-md hover:shadow-lg flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed text-sm">
               {processing ? (
                 <><span className="material-symbols-outlined text-lg select-none animate-spin">sync</span>
-                  {totalChunks > 1 ? `Batch ${currentChunk} of ${totalChunks}…` : "Analysing…"}</>
+                  Analysing…</>
               ) : !modelStatus?.models_loaded ? (
                 <><span className="material-symbols-outlined text-lg select-none">hourglass_empty</span>
                   {modelStatus?.error ? "Models failed to load" : "Waiting for models…"}</>
@@ -1070,7 +1230,7 @@ export default function Upload() {
                 <><span className="material-symbols-outlined text-lg select-none">upload_file</span>Select files first</>
               ) : (
                 <><span className="material-symbols-outlined text-lg select-none">play_circle</span>
-                  Start AI Analysis{numBatches > 1 ? ` (${numBatches} batches)` : ""}</>
+                  Start AI Analysis</>
               )}
             </button>
           </div>
@@ -1080,11 +1240,15 @@ export default function Upload() {
             <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 p-4 space-y-3 shadow-sm rounded-2xl">
               <div className="flex justify-between items-center text-xs">
                 <span className={`font-bold ${
-                  allDone ? "text-emerald-600 dark:text-emerald-400"
+                  allDone && hasWarnings ? "text-amber-600 dark:text-amber-400"
+                  : allDone ? "text-emerald-600 dark:text-emerald-400"
                   : jobError ? "text-red-600 dark:text-red-400"
                   : "text-slate-700 dark:text-slate-300"
                 }`}>
-                  {allDone ? "Complete ✓" : jobError ? "Failed" : totalChunks > 1 ? `Batch ${currentChunk} / ${totalChunks}` : "Running…"}
+                  {allDone && hasWarnings ? "Complete with warnings"
+                  : allDone ? "Complete ✓"
+                  : jobError ? "Failed"
+                  : "Running…"}
                 </span>
                 <div className="flex items-center gap-2 font-mono text-slate-500">
                   {processing && elapsed > 0 && (
@@ -1095,31 +1259,46 @@ export default function Upload() {
               </div>
 
               <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-2 overflow-hidden">
-                <div className={`h-2 rounded-full transition-all duration-300 ${jobError ? "bg-red-500" : "bg-emerald-500"}`}
+                <div className={`h-2 rounded-full transition-all duration-300 ${
+                  jobError && !hasWarnings ? "bg-red-500" : hasWarnings && allDone ? "bg-amber-500" : "bg-emerald-500"
+                }`}
                   style={{ width: `${allDone ? 100 : pct}%` }} />
               </div>
 
               <div className="text-[10px] text-slate-400 flex justify-between">
-                <span>{overallCompleted} of {overallTotal} images</span>
+                <span>{overallCompleted} analysed · {overallUploaded} uploaded</span>
                 <span>{overallTotal - overallCompleted} remaining</span>
               </div>
 
-              {/* Batch dots for multi-chunk jobs */}
-              {totalChunks > 1 && (
-                <div className="flex flex-wrap gap-1">
-                  {Array.from({ length: totalChunks }, (_, i) => (
-                    <div key={i} title={`Batch ${i + 1}`}
-                      className={`h-1.5 rounded-full flex-1 min-w-[6px] transition-all duration-300 ${
-                        i + 1 < currentChunk ? "bg-emerald-500"
-                        : i + 1 === currentChunk ? "bg-indigo-400 animate-pulse"
-                        : "bg-slate-200 dark:bg-slate-700"
-                      }`}
-                    />
-                  ))}
+              {processing && overallUploaded < overallTotal && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-slate-400">
+                    <span>Upload progress</span>
+                    <span>{uploadPct}%</span>
+                  </div>
+                  <div className="w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1 overflow-hidden">
+                    <div className="h-1 rounded-full bg-indigo-400 transition-all duration-300"
+                      style={{ width: `${uploadPct}%` }} />
+                  </div>
                 </div>
               )}
 
-              {/* Pipeline steps (current chunk) */}
+              {(processing || allDone) && selectedStation && (
+                <div className="text-[10px] text-slate-500 dark:text-slate-400 flex flex-wrap gap-x-3 gap-y-0.5 pt-1 border-t border-slate-100 dark:border-slate-800">
+                  <span>
+                    <span className="font-semibold text-slate-600 dark:text-slate-300">Station:</span>{" "}
+                    {selectedStation}
+                  </span>
+                  {selectedCamera && (
+                    <span>
+                      <span className="font-semibold text-slate-600 dark:text-slate-300">Camera:</span>{" "}
+                      {selectedCamera}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* Pipeline steps */}
               {processing && (
                 <div className="pt-2 border-t border-slate-100 dark:border-slate-800 space-y-1.5">
                   {STEPS.map((step, si) => (
@@ -1150,7 +1329,11 @@ export default function Upload() {
                 </div>
               )}
 
-              {jobError && <p className="text-[10px] text-red-600 break-all">{jobError}</p>}
+              {jobError && (
+                <p className={`text-[10px] break-all ${hasWarnings && allDone ? "text-amber-700 dark:text-amber-400" : "text-red-600"}`}>
+                  {jobError}
+                </p>
+              )}
             </div>
           )}
 
@@ -1160,7 +1343,7 @@ export default function Upload() {
               <div className="flex items-center gap-2">
                 <span className="material-symbols-outlined text-emerald-600 text-xl select-none">check_circle</span>
                 <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                  {totalChunks > 1 ? `All ${totalChunks} batches complete` : "Analysis complete"}
+                  Analysis complete
                 </span>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center">
@@ -1175,6 +1358,12 @@ export default function Upload() {
                   </div>
                 ))}
               </div>
+              {scrubSummary && (scrubSummary.scrubbed > 0 || scrubSummary.skipped > 0) && (
+                <p className="text-xs text-slate-600 dark:text-slate-400 text-center">
+                  Privacy scrub: {scrubSummary.scrubbed} image{scrubSummary.scrubbed !== 1 ? "s" : ""} blurred
+                  {scrubSummary.skipped > 0 ? ` · ${scrubSummary.skipped} skipped` : ""}
+                </p>
+              )}
               <button onClick={() => navigate("/results")}
                 className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
                 View Full Results
@@ -1209,10 +1398,10 @@ export default function Upload() {
                   {/* Filter tabs */}
                   <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5 text-[10px] font-semibold">
                     {([
-                      ["all",      `All (${imageRows.length})`],
                       ["wildlife", `Wildlife (${resultRows.length})`],
-                      ["empty",    `Blank (${emptyRows.length})`],
                       ["low_conf", `Low (${lowConfRows.length})`],
+                      ["empty",    `Non-wildlife (${emptyRows.length})`],
+                      ["all",      `All (${imageRows.length})`],
                     ] as [ResultFilter, string][]).map(([key, label]) => (
                       <button key={key} onClick={() => setResultFilter(key)}
                         className={`px-2 py-1 rounded-md transition-colors cursor-pointer ${
@@ -1222,6 +1411,7 @@ export default function Upload() {
                         }`}>{label}</button>
                     ))}
                   </div>
+                  <ShowNonWildlifeToggle compact />
                   {/* View mode toggle */}
                   <div className="flex items-center bg-slate-100 dark:bg-slate-800 rounded-lg p-0.5">
                     {(["list", "cards"] as const).map((mode) => (
@@ -1292,7 +1482,7 @@ export default function Upload() {
 
             {imageRows.length > 0 && (
               <div className="px-4 py-2.5 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 font-medium flex items-center justify-between gap-2 flex-wrap">
-                <span>{resultRows.length} wildlife · {emptyRows.length} blank</span>
+                <span>{resultRows.length} wildlife · {emptyRows.length} non-wildlife hidden by default</span>
                 <div className="flex items-center gap-3">
                   {lowConfRows.length > 0 && (
                     <button onClick={() => setResultFilter("low_conf")}

@@ -22,33 +22,61 @@ import re
 from typing import Dict, Optional, Tuple
 
 
+import tempfile
+
+
 class OCRProcessor:
     """Handles OCR extraction from camera trap metadata strips."""
     
-    def __init__(self, low_spec: bool = False):
+    def __init__(self, low_spec: bool = False, model_dir: Optional[str] = None):
         """Initialize EasyOCR reader with English language support."""
         self.low_spec = low_spec
-        self.reader = easyocr.Reader(['en'], gpu=False)
-        
-        # Apply dynamic quantization to reader models if in low-spec mode
-        if self.low_spec:
+        self.reader = None
+
+        storage_dir = model_dir
+        if not storage_dir:
+            home_ocr = os.path.expanduser('~/.EasyOCR')
             try:
-                import torch
-                if hasattr(self.reader, 'detector') and self.reader.detector:
-                    self.reader.detector = torch.quantization.quantize_dynamic(
-                        self.reader.detector,
-                        {torch.nn.Linear, torch.nn.LSTM},
-                        dtype=torch.qint8
-                    )
-                if hasattr(self.reader, 'recognizer') and self.reader.recognizer:
-                    self.reader.recognizer = torch.quantization.quantize_dynamic(
-                        self.reader.recognizer,
-                        {torch.nn.Linear, torch.nn.LSTM},
-                        dtype=torch.qint8
-                    )
-                print("EasyOCR reader models dynamically quantized (INT8) for low-spec mode.")
-            except Exception as q_err:
-                print(f"Failed to quantize EasyOCR: {q_err}")
+                os.makedirs(home_ocr, exist_ok=True)
+                test_file = os.path.join(home_ocr, '.write_test')
+                with open(test_file, 'w') as f:
+                    f.write('1')
+                os.remove(test_file)
+                storage_dir = os.path.join(home_ocr, 'model')
+            except Exception:
+                storage_dir = os.path.join(tempfile.gettempdir(), 'easyocr_models')
+                os.makedirs(storage_dir, exist_ok=True)
+
+        try:
+            self.reader = easyocr.Reader(
+                ['en'],
+                gpu=False,
+                model_storage_directory=storage_dir,
+                user_network_directory=storage_dir,
+            )
+            
+            # Apply dynamic quantization to reader models if in low-spec mode
+            if self.low_spec and self.reader:
+                try:
+                    import torch
+                    if hasattr(self.reader, 'detector') and self.reader.detector:
+                        self.reader.detector = torch.quantization.quantize_dynamic(
+                            self.reader.detector,
+                            {torch.nn.Linear, torch.nn.LSTM},
+                            dtype=torch.qint8
+                        )
+                    if hasattr(self.reader, 'recognizer') and self.reader.recognizer:
+                        self.reader.recognizer = torch.quantization.quantize_dynamic(
+                            self.reader.recognizer,
+                            {torch.nn.Linear, torch.nn.LSTM},
+                            dtype=torch.qint8
+                        )
+                    print("EasyOCR reader models dynamically quantized (INT8) for low-spec mode.")
+                except Exception as q_err:
+                    print(f"Failed to quantize EasyOCR: {q_err}")
+        except Exception as exc:
+            print(f"Warning: EasyOCR reader could not be initialized ({exc}). Metadata OCR will be skipped.")
+            self.reader = None
     
     def extract_metadata_strip(self, image: np.ndarray, strip_height_percent: float = 0.10) -> np.ndarray:
         """
@@ -129,6 +157,13 @@ class OCRProcessor:
         Returns:
             Dictionary containing extracted metadata
         """
+        if self.reader is None:
+            return {
+                'temperature': None,
+                'date': None,
+                'time': None,
+                'raw_text': None
+            }
         try:
             # Read image
             image = cv2.imread(image_path)

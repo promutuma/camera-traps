@@ -1,3 +1,3 @@
-# Memory Index
+# Project memory
 
-- [BioCLIP vs SpeciesNet context](project_bioclip_speciesnet_context.md) — model roles, ensemble weighting rationale, known gaps in taxonomy-aware fusion
+- [Pipeline model context](project_bioclip_speciesnet_context.md) — MDv5a + SpeciesNet only (2026)

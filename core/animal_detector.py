@@ -11,12 +11,16 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import cv2
 import numpy as np
 from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from .ensemble_engine import nms_merge_detections, fuse_species_speciesnet_first
+
+# MegaDetector and SpeciesNet share singleton model weights — serialize inference.
+_detector_lock = threading.Lock()
 
 
 def _parse_sn_label(label: str) -> Dict:
@@ -168,14 +172,10 @@ class AnimalDetector:
         megadetector: Optional[MegaDetectorWrapper],
         confidence_threshold: float = 0.2,
         speciesnet=None,  # SpeciesNetWrapper | None
-        speciesnet_bypass_threshold: float = 0.60,
-        use_speciesnet_first: bool = True,
-        **kwargs,  # absorb any legacy keyword args
+        **kwargs,  # absorb legacy keyword args (bioclip, fusion weights, etc.)
     ):
         self.megadetector = megadetector
         self.speciesnet = speciesnet
-        self._speciesnet_bypass_threshold = speciesnet_bypass_threshold
-        self._use_speciesnet_first = use_speciesnet_first
 
         if self.megadetector:
             self.megadetector.set_confidence_threshold(confidence_threshold)
@@ -233,12 +233,15 @@ class AnimalDetector:
         Parameters
         ----------
         image_path : path to the image file
-        is_night   : passed through to the ensemble engine (reserved for future
-                     night-time weight adjustments).
+        is_night   : reserved (SpeciesNet-only pipeline; no night weight adjustment).
 
         Returns a list of result dicts — one per detected subject.
         The first result also carries '_model_events' for SSE streaming.
         """
+        with _detector_lock:
+            return self._detect_impl(image_path, is_night)
+
+    def _detect_impl(self, image_path: str, is_night: bool = False) -> List[Dict]:
         _empty = {
             "detected_animal": "Empty",
             "primary_label": "Empty",
@@ -344,11 +347,15 @@ class AnimalDetector:
                 fusion = fuse_species_speciesnet_first(sn_results)
                 top_species = fusion["species"]
                 top_conf = fusion["confidence"]
+                agreement = (
+                    "High" if top_conf >= 0.7 else "Medium" if top_conf >= 0.4 else "Low"
+                )
 
                 ev_result = {
                     "model": "Result",
                     "species": top_species,
                     "confidence": top_conf,
+                    "agreement": agreement,
                     "all_candidates": fusion["all_candidates"],
                 }
 
@@ -357,9 +364,7 @@ class AnimalDetector:
                     model_events += [ev_sn, ev_result]
                     is_first = False
 
-                species_label = ", ".join(
-                    f"{s} {c:.2f}" for s, c in fusion["all_candidates"][:3]
-                )
+                species_label = top_species
 
                 species_data = [
                     {

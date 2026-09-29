@@ -6,6 +6,7 @@ export interface AppConfig {
   enable_detection: boolean;
   enable_day_night: boolean;
   enable_scrubbing: boolean;
+  delete_original_after_scrub: boolean;
   enable_low_spec: boolean;
   cpu_threads: number;
   detection_confidence: number;
@@ -20,7 +21,6 @@ export interface AppConfig {
   speciesnet_lat: number;
   speciesnet_lng: number;
   speciesnet_country: string;
-  speciesnet_bypass_threshold: number;
 }
 
 interface ConfigStore {

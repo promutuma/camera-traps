@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
 import { getObservations, addObservation, deleteObservation, getCrosscheck } from "../api/client";
+import { useSessionStore } from "../store/sessionStore";
 
 type Row = Record<string, unknown>;
 
 const OBS_TYPES = ["Animal", "Track", "Scat", "Camera Malfunction", "Human Activity", "Other"];
 
 export default function Community() {
+  const username = useSessionStore((s) => s.username);
   const [obs, setObs] = useState<Row[]>([]);
   const [crosscheck, setCrosscheck] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
@@ -23,6 +25,11 @@ export default function Community() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (username) {
+      setForm((f) => (f.observer_name ? f : { ...f, observer_name: username }));
+    }
+  }, [username]);
 
   const handleAdd = async () => {
     if (!form.observer_name) return;
@@ -32,7 +39,17 @@ export default function Community() {
       latitude: form.latitude ? Number(form.latitude) : null,
       longitude: form.longitude ? Number(form.longitude) : null,
     });
-    setForm({ observer_name: "", observation_type: "Animal", species: "", count: "", latitude: "", longitude: "", date: "", time: "", notes: "" });
+    setForm({
+      observer_name: username ?? "",
+      observation_type: "Animal",
+      species: "",
+      count: "",
+      latitude: "",
+      longitude: "",
+      date: "",
+      time: "",
+      notes: "",
+    });
     load();
   };
 

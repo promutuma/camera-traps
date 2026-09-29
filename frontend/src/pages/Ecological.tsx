@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { getIDE, getRAI, getTimeline, getRichness, getAccumulation, getGroupSize, getVisitation } from "../api/client";
+import { getIDE, getRAI, getTimeline, getRichness, getAccumulation, getGroupSize, getVisitation, getActivity } from "../api/client";
 import { useConfigStore } from "../store/configStore";
+import { isNonWildlifeLabel } from "../utils/wildlifeFilter";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, Legend,
@@ -43,13 +44,14 @@ export default function Ecological() {
   const [accumulation, setAccumulation] = useState<Row[]>([]);
   const [groupSize, setGroupSize] = useState<Row[]>([]);
   const [visitation, setVisitation] = useState<{ visitation: Row[]; heatmap: Row[] } | null>(null);
+  const [activity, setActivity] = useState<{ hourly: Row[]; by_species: Row[] } | null>(null);
   const [computed, setComputed] = useState(false);
 
   const compute = async () => {
     setLoading(true);
     setError("");
     try {
-      const [ide, raiData, tl, rich, accum, gs, vis] = await Promise.all([
+      const [ide, raiData, tl, rich, accum, gs, vis, act] = await Promise.all([
         getIDE(),
         getRAI(trapNights),
         getTimeline(),
@@ -57,6 +59,7 @@ export default function Ecological() {
         getAccumulation(),
         getGroupSize(),
         getVisitation(trapNights),
+        getActivity(),
       ]);
       setIdeSummary(ide.summary ?? []);
       setRai(raiData);
@@ -65,6 +68,7 @@ export default function Ecological() {
       setAccumulation(accum);
       setGroupSize(gs);
       setVisitation(vis);
+      setActivity(act);
       setComputed(true);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to compute");
@@ -73,13 +77,13 @@ export default function Ecological() {
     }
   };
 
-  const speciesCounts = ideSummary
-    .filter((r) => String(r.species ?? "").toLowerCase() !== "empty")
-    .reduce((acc: Record<string, number>, r) => {
-      const s = String(r.species ?? "");
-      acc[s] = (acc[s] ?? 0) + 1;
-      return acc;
-    }, {});
+  const wildlifeIdes = ideSummary.filter((r) => !isNonWildlifeLabel(String(r.species ?? "")));
+
+  const speciesCounts = wildlifeIdes.reduce((acc: Record<string, number>, r) => {
+    const s = String(r.species ?? "");
+    acc[s] = (acc[s] ?? 0) + 1;
+    return acc;
+  }, {});
   const speciesChartData = Object.entries(speciesCounts).map(([species, count]) => ({ species, count }));
 
   return (
@@ -114,8 +118,8 @@ export default function Ecological() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             {[
               ["Total IDEs", ideSummary.length],
-              ["Animal IDEs", ideSummary.filter((r) => String(r.species ?? "").toLowerCase() !== "empty").length],
-              ["Unique Species", new Set(ideSummary.map((r) => r.species)).size],
+              ["Animal IDEs", wildlifeIdes.length],
+              ["Unique Species", new Set(wildlifeIdes.map((r) => r.species)).size],
               ["Stations", new Set(ideSummary.map((r) => r.station_id)).size],
             ].map(([label, val]) => (
               <div key={String(label)} className="bg-white/75 dark:bg-slate-900/60 backdrop-blur-md rounded-xl border border-slate-200/50 dark:border-slate-800/50 p-4 shadow-sm">
@@ -157,6 +161,20 @@ export default function Ecological() {
                   <Legend />
                   <Line type="monotone" dataKey="count" stroke="#10b981" strokeWidth={1.5} dot={false} />
                 </LineChart>
+              </ResponsiveContainer>
+            </Card>
+          )}
+
+          {/* Hourly activity */}
+          {activity && activity.hourly.some((h) => Number(h.count) > 0) && (
+            <Card title="Hourly Activity">
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={activity.hourly}>
+                  <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
+                  <YAxis allowDecimals={false} />
+                  <Tooltip />
+                  <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </Card>
           )}

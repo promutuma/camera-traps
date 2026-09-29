@@ -93,13 +93,16 @@ GROUP BY file_tier;
 EOF
 ```
 
-**Cleanup Status**
+**Manual cleanup**
 ```bash
-# Check backend logs for cleanup runs
-tail -f /var/log/camera-traps/app.log | grep "cleanup"
+# Preview what would be deleted (dry run)
+curl -X POST "http://localhost:8000/api/storage/cleanup?action=delete_empty&dry_run=true&days_old=30"
 
-# Verify scheduled cleanup is configured
-# (runs every hour automatically)
+# Delete empty-tier files older than 30 days
+curl -X POST "http://localhost:8000/api/storage/cleanup?action=delete_empty&dry_run=false&days_old=30"
+
+# Delete files marked for deletion past grace period
+curl -X POST "http://localhost:8000/api/storage/cleanup?action=delete_marked&dry_run=false&days_old=7"
 ```
 
 **File Count by Tier**
@@ -120,7 +123,7 @@ EOF
 **Weekly**
 - [ ] Monitor `du -sh uploads/` - should not grow unbounded
 - [ ] Check backend logs for errors
-- [ ] Verify cleanup runs completed
+- [ ] Run manual cleanup from Storage page when disk usage grows
 
 **Monthly**
 - [ ] Backup database: `cp wildlife_data.db wildlife_data.db.backup`

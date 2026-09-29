@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
-import { getStorageStatus, getStorageWarnings, createBatchDownload, getHashStats, clearHashes, cleanupImages, getDeletionPreview } from "../api/client";
+import { getStorageStatus, getStorageWarnings, createBatchDownload, getHashStats, clearHashes, cleanupImages, getDeletionPreview, resetDatabase } from "../api/client";
+import { useSessionStore } from "../store/sessionStore";
 
 type StorageStats = {
   total_mb: number;
   breakdown: Record<string, { count: number; size_mb: number; oldest_upload: string }>;
+  disk?: {
+    originals: { count: number; size_mb: number };
+    scrubbed: { count: number; size_mb: number };
+    thumbnails: { count: number; size_mb: number };
+  };
   timestamp: string;
 };
 
@@ -77,6 +83,7 @@ const RefreshIcon = () => (
 );
 
 export default function Storage() {
+  const username = useSessionStore((s) => s.username) ?? "";
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [warnings, setWarnings] = useState<DeletionWarning | null>(null);
   const [hashStats, setHashStats] = useState<HashStats | null>(null);
@@ -97,6 +104,37 @@ export default function Storage() {
   // Purge of images already marked-for-deletion past their grace period
   const [purgePreview, setPurgePreview] = useState<DeletionPreview | null>(null);
   const [purgeStep, setPurgeStep] = useState<"idle" | "previewing" | "confirming" | "running">("idle");
+
+  const [uploadPurgeTier, setUploadPurgeTier] = useState("empty");
+  const [uploadPurgeDays, setUploadPurgeDays] = useState(30);
+  const [uploadPurgePreview, setUploadPurgePreview] = useState<{ deleted_count: number; freed_mb: number; tier?: string } | null>(null);
+  const [uploadPurgeStep, setUploadPurgeStep] = useState<"idle" | "previewing" | "confirming" | "running">("idle");
+  const [uploadPurgeConfirm, setUploadPurgeConfirm] = useState("");
+  const [thumbPurgeStep, setThumbPurgeStep] = useState<"idle" | "running">("idle");
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState("");
+  const [resetting, setResetting] = useState(false);
+
+  const handleResetDb = async () => {
+    if (username && resetConfirm.trim() !== username) {
+      setNotice({ type: "error", text: `Type your username (${username}) to confirm.` });
+      return;
+    }
+    setResetting(true);
+    try {
+      await resetDatabase(username || undefined);
+      setNotice({ type: "success", text: "Database reset complete." });
+      setResetOpen(false);
+      setResetConfirm("");
+      await fetchData();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Database reset failed.";
+      setNotice({ type: "error", text: msg });
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const handleCleanupPreview = async () => {
     setCleanupStep("previewing");
@@ -159,6 +197,65 @@ export default function Storage() {
     } catch {
       setNotice({ type: "error", text: "Purge failed." });
       setPurgeStep("idle");
+    }
+  };
+
+  const handleUploadPurgePreview = async () => {
+    setUploadPurgeStep("previewing");
+    setUploadPurgePreview(null);
+    setUploadPurgeConfirm("");
+    try {
+      const res = await cleanupImages("delete_by_tier", uploadPurgeDays, true, uploadPurgeTier);
+      setUploadPurgePreview(res);
+      setUploadPurgeStep("confirming");
+    } catch {
+      setNotice({ type: "error", text: "Failed to preview upload purge." });
+      setUploadPurgeStep("idle");
+    }
+  };
+
+  const handleUploadPurgeRun = async () => {
+    if (uploadPurgeTier === "all" && uploadPurgeConfirm.trim() !== "DELETE") {
+      setNotice({ type: "error", text: 'Type DELETE to confirm purging all tiers.' });
+      return;
+    }
+    setUploadPurgeStep("running");
+    try {
+      const res = await cleanupImages(
+        "delete_by_tier",
+        uploadPurgeDays,
+        false,
+        uploadPurgeTier,
+        uploadPurgeTier === "all",
+      );
+      setNotice({
+        type: "success",
+        text: `Purged ${res.deleted_count ?? 0} upload file${(res.deleted_count ?? 0) !== 1 ? "s" : ""}, freed ${res.freed_mb?.toFixed(1) ?? "0"} MB. Detection metadata kept in database.`,
+      });
+      setUploadPurgePreview(null);
+      setUploadPurgeConfirm("");
+      setUploadPurgeStep("idle");
+      fetchData();
+    } catch {
+      setNotice({ type: "error", text: "Upload purge failed." });
+      setUploadPurgeStep("idle");
+    }
+  };
+
+  const handleThumbPurge = async () => {
+    setThumbPurgeStep("running");
+    try {
+      const preview = await cleanupImages("purge_thumbnails", 0, true);
+      const res = await cleanupImages("purge_thumbnails", 0, false);
+      setNotice({
+        type: "success",
+        text: `Cleared ${res.deleted_count ?? preview.deleted_count ?? 0} cached thumbnail${(res.deleted_count ?? 0) !== 1 ? "s" : ""}, freed ${res.freed_mb?.toFixed(1) ?? preview.freed_mb?.toFixed(1) ?? "0"} MB.`,
+      });
+      fetchData();
+    } catch {
+      setNotice({ type: "error", text: "Failed to clear thumbnail cache." });
+    } finally {
+      setThumbPurgeStep("idle");
     }
   };
 
@@ -359,6 +456,161 @@ export default function Storage() {
             </p>
           </div>
         )}
+      </div>
+
+      {stats.disk && (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {([
+            ["originals", "Original Uploads", "photo"],
+            ["scrubbed", "Scrubbed Copies", "blur_on"],
+            ["thumbnails", "Thumbnail Cache", "grid_view"],
+          ] as const).map(([key, label, icon]) => {
+            const data = stats.disk?.[key];
+            if (!data) return null;
+            return (
+              <div
+                key={key}
+                className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-5 shadow-sm"
+              >
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="material-symbols-outlined text-slate-400 text-lg select-none">{icon}</span>
+                  <h3 className="font-bold text-slate-900 dark:text-white text-sm">{label}</h3>
+                </div>
+                <div className="space-y-1.5 text-xs font-semibold">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Files on disk</span>
+                    <span className="font-mono text-slate-800 dark:text-slate-200">{data.count.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Disk usage</span>
+                    <span className="font-mono text-slate-800 dark:text-slate-200">{formatSize(data.size_mb)}</span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Purge Upload Files */}
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/60 dark:border-slate-800/80 p-6 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-100 dark:border-slate-800 pb-4">
+          <span className="material-symbols-outlined text-red-400 select-none">folder_delete</span>
+          <div>
+            <h3 className="font-bold text-slate-900 dark:text-white text-base">Purge Upload Files</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+              Delete originals, scrubbed copies, and cached thumbnails. Detection metadata stays in the database.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Tier</label>
+          <select
+            value={uploadPurgeTier}
+            onChange={(e) => { setUploadPurgeTier(e.target.value); setUploadPurgeStep("idle"); setUploadPurgePreview(null); }}
+            disabled={uploadPurgeStep === "running"}
+            className="border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+          >
+            <option value="empty">Empty</option>
+            <option value="low_conf">Low confidence</option>
+            <option value="valid">Valid</option>
+            <option value="all">All tiers</option>
+          </select>
+          <label className="text-xs font-semibold text-slate-500 dark:text-slate-400">Older than</label>
+          <input
+            type="number"
+            min={0}
+            max={3650}
+            value={uploadPurgeDays}
+            onChange={(e) => { setUploadPurgeDays(Number(e.target.value)); setUploadPurgeStep("idle"); setUploadPurgePreview(null); }}
+            disabled={uploadPurgeStep === "running"}
+            className="w-20 border border-slate-300 dark:border-slate-700 rounded-lg px-2.5 py-1.5 text-sm text-center font-mono bg-white dark:bg-slate-950 text-slate-800 dark:text-slate-200"
+          />
+          <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">days (0 = no age limit)</span>
+        </div>
+
+        {uploadPurgeStep === "idle" && (
+          <button
+            onClick={handleUploadPurgePreview}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-semibold rounded-xl transition cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-base select-none">preview</span>
+            Preview what will be deleted
+          </button>
+        )}
+
+        {uploadPurgeStep === "previewing" && (
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+            Scanning…
+          </div>
+        )}
+
+        {uploadPurgeStep === "confirming" && uploadPurgePreview && (
+          <div className="space-y-3">
+            {uploadPurgePreview.deleted_count === 0 ? (
+              <div className="flex items-center gap-2 px-4 py-3 bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 rounded-xl text-sm text-emerald-700 dark:text-emerald-400 font-medium">
+                <span className="material-symbols-outlined text-base select-none">check_circle</span>
+                Nothing matched this purge filter.
+              </div>
+            ) : (
+              <div className="p-4 bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-xl space-y-3">
+                <p className="text-sm font-semibold text-red-700 dark:text-red-400">
+                  This will permanently delete{" "}
+                  <strong>{uploadPurgePreview.deleted_count}</strong> upload file
+                  {uploadPurgePreview.deleted_count !== 1 ? "s" : ""} and free{" "}
+                  <strong>{uploadPurgePreview.freed_mb?.toFixed(1) ?? "0"} MB</strong>.
+                </p>
+                {uploadPurgeTier === "all" && (
+                  <input
+                    type="text"
+                    value={uploadPurgeConfirm}
+                    onChange={(e) => setUploadPurgeConfirm(e.target.value)}
+                    placeholder='Type DELETE to confirm'
+                    className="w-full border border-red-300 dark:border-red-800 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-950"
+                  />
+                )}
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleUploadPurgeRun}
+                    className="flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-lg transition cursor-pointer shadow-sm"
+                  >
+                    <span className="material-symbols-outlined text-base select-none">delete_forever</span>
+                    Purge {uploadPurgePreview.deleted_count} files
+                  </button>
+                  <button
+                    onClick={() => { setUploadPurgeStep("idle"); setUploadPurgePreview(null); setUploadPurgeConfirm(""); }}
+                    className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-sm font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {uploadPurgeStep === "running" && (
+          <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+            <span className="material-symbols-outlined text-base animate-spin select-none">sync</span>
+            Purging upload files…
+          </div>
+        )}
+
+        <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+          <button
+            onClick={handleThumbPurge}
+            disabled={thumbPurgeStep === "running"}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 disabled:opacity-50 text-slate-700 dark:text-slate-300 text-sm font-semibold rounded-xl transition cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-base select-none">cached</span>
+            {thumbPurgeStep === "running" ? "Clearing thumbnail cache…" : "Clear thumbnail cache"}
+          </button>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2">
+            Thumbnails regenerate automatically the next time Results or Review loads an image.
+          </p>
+        </div>
       </div>
 
       {/* Storage Breakdown Tiers */}
@@ -792,6 +1044,58 @@ export default function Storage() {
           </div>
         </div>
       )}
+
+      {/* Danger zone — reset database */}
+      <div className="bg-red-50/40 dark:bg-red-950/20 border border-red-200/60 dark:border-red-900/40 rounded-2xl p-5 shadow-sm space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-red-800 dark:text-red-300 text-sm">Reset Database</h3>
+            <p className="text-xs text-red-700/80 dark:text-red-400/80 mt-1">
+              Permanently clears all images, detections, review history, and jobs. Upload files on disk are not deleted.
+            </p>
+          </div>
+          {!resetOpen && (
+            <button
+              onClick={() => setResetOpen(true)}
+              className="shrink-0 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg cursor-pointer"
+            >
+              Reset…
+            </button>
+          )}
+        </div>
+        {resetOpen && (
+          <div className="space-y-2 pt-2 border-t border-red-200/50 dark:border-red-900/30">
+            {username ? (
+              <p className="text-xs text-red-700 dark:text-red-400">
+                Type <strong>{username}</strong> to confirm:
+              </p>
+            ) : (
+              <p className="text-xs text-red-700 dark:text-red-400">Sign in with a username first, then confirm reset.</p>
+            )}
+            <input
+              value={resetConfirm}
+              onChange={(e) => setResetConfirm(e.target.value)}
+              placeholder={username || "username"}
+              className="w-full max-w-xs border border-red-300 dark:border-red-800 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-slate-950"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleResetDb}
+                disabled={resetting || (!!username && resetConfirm.trim() !== username)}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white text-xs font-bold rounded-lg cursor-pointer"
+              >
+                {resetting ? "Resetting…" : "Confirm reset"}
+              </button>
+              <button
+                onClick={() => { setResetOpen(false); setResetConfirm(""); }}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-400 cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Explanatory Info Box */}
       <div className="bg-blue-50/50 dark:bg-blue-950/10 border border-blue-200/40 dark:border-blue-900/30 rounded-2xl p-5 shadow-sm flex gap-3.5 items-start">

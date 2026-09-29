@@ -221,6 +221,14 @@ class DatabaseManager:
         # Create unique index for file_hash if it doesn't exist
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_images_file_hash ON images (file_hash)")
 
+        # Performance indexes for fast results, review queue, and stats queries
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_detections_image_id ON detections (image_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_project_id ON images (project_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_processed_at ON images (processed_at)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_station_id ON images (station_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_detections_confidence ON detections (confidence)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_images_proj_processed ON images (project_id, processed_at DESC)")
+
         conn.commit()
         conn.close()
 
@@ -240,109 +248,112 @@ class DatabaseManager:
         """
         Save processing results to database.
 
+        One images row per unique filename; multiple detections rows per image.
+
         Returns:
-            int: Number of image records saved
+            dict: {"detection_count": int, "image_id": int | None, "filename": str | None}
         """
         if df is None or len(df) == 0:
-            return 0
+            return {"detection_count": 0, "image_id": None, "filename": None}
 
         conn = self.get_connection()
         cursor = conn.cursor()
-        count = 0
+        detection_count = 0
+        image_id = None
+        filename = None
         active_project = self.active_project_id
 
+        def _parse_sn_label(label):
+            if isinstance(label, str) and label.startswith('{'):
+                try:
+                    return json.loads(label)
+                except Exception:
+                    pass
+            return {'display': str(label).strip(), 'common_name': str(label).strip()}
+
+        def _insert_detection(row, det_image_id: int) -> None:
+            nonlocal detection_count
+            bbox_json = json.dumps(row.get('bbox')) if row.get('bbox') else None
+            sn_raw = row.get('sn_raw_results') or []
+
+            scientific_name = None
+            taxonomy_hierarchy = None
+            if sn_raw:
+                top_meta = _parse_sn_label(sn_raw[0][0] if isinstance(sn_raw[0], (list, tuple)) else sn_raw[0])
+                scientific_name = top_meta.get('scientific_name') or None
+                hierarchy = top_meta.get('hierarchy')
+                if hierarchy:
+                    taxonomy_hierarchy = json.dumps(hierarchy)
+
+            top_candidates = None
+            if sn_raw:
+                cands = []
+                for entry in sn_raw:
+                    lbl, conf = (entry[0], entry[1]) if isinstance(entry, (list, tuple)) else (entry, 0.0)
+                    meta = _parse_sn_label(lbl)
+                    cands.append({
+                        'id': meta.get('id'),
+                        'common_name': meta.get('common_name') or meta.get('display') or str(lbl),
+                        'scientific_name': meta.get('scientific_name') or None,
+                        'hierarchy': meta.get('hierarchy') or [],
+                        'confidence': round(float(conf), 4),
+                    })
+                top_candidates = json.dumps(cands)
+
+            raw_output = row.get('raw_model_output')
+            raw_output_json = json.dumps(raw_output) if raw_output else None
+
+            cursor.execute('''
+                INSERT INTO detections (
+                    image_id, detected_animal, confidence, method, bbox, ide_id,
+                    speciesnet_confidence, model_breakdown,
+                    scientific_name, md_confidence, top_candidates, taxonomy_hierarchy,
+                    raw_model_output
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                det_image_id,
+                row['detected_animal'],
+                row.get('detection_confidence', 0.0),
+                row.get('detection_method', 'Unknown'),
+                bbox_json,
+                row.get('ide_id'),
+                row.get('speciesnet_confidence', 0.0),
+                json.dumps(row.get('model_breakdown', {})) if row.get('model_breakdown') else None,
+                scientific_name,
+                row.get('md_confidence'),
+                top_candidates,
+                taxonomy_hierarchy,
+                raw_output_json,
+            ))
+            detection_count += 1
+
         try:
-            for _, row in df.iterrows():
+            for file_name, group in df.groupby('filename', sort=False):
+                first = group.iloc[0]
                 cursor.execute('''
                     INSERT INTO images (
                         filename, station_id, camera_id, capture_date, capture_time,
                         temperature, day_night, brightness, user_notes, uploaded_at, project_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
                 ''', (
-                    row['filename'],
-                    row.get('station_id', 'Station-1'),
-                    row.get('camera_id') or None,
-                    row.get('date'),
-                    row.get('time'),
-                    row.get('temperature'),
-                    row.get('day_night'),
-                    row.get('brightness', 0.0),
-                    row.get('user_notes', ''),
+                    file_name,
+                    first.get('station_id', 'Station-1'),
+                    first.get('camera_id') or None,
+                    first.get('date'),
+                    first.get('time'),
+                    first.get('temperature'),
+                    first.get('day_night'),
+                    first.get('brightness', 0.0),
+                    first.get('user_notes', ''),
                     active_project
                 ))
-
                 image_id = cursor.lastrowid
-                bbox_json = json.dumps(row.get('bbox')) if row.get('bbox') else None
-
-                # Parse all SpeciesNet raw results (JSON-encoded taxonomy objects).
-                # sn_raw_results is the full ranked list: [(raw_json_label, conf), ...]
-                sn_raw = row.get('sn_raw_results') or []
-
-                def _parse_sn_label(label):
-                    """Parse a SpeciesNet JSON label string into a metadata dict."""
-                    if isinstance(label, str) and label.startswith('{'):
-                        try:
-                            return json.loads(label)
-                        except Exception:
-                            pass
-                    return {'display': str(label).strip(), 'common_name': str(label).strip()}
-
-                # Top-1 structured fields
-                scientific_name = None
-                taxonomy_hierarchy = None
-                if sn_raw:
-                    top_meta = _parse_sn_label(sn_raw[0][0] if isinstance(sn_raw[0], (list, tuple)) else sn_raw[0])
-                    scientific_name = top_meta.get('scientific_name') or None
-                    hierarchy = top_meta.get('hierarchy')
-                    if hierarchy:
-                        taxonomy_hierarchy = json.dumps(hierarchy)
-
-                # Full structured candidates list (all top_k results from SpeciesNet)
-                top_candidates = None
-                if sn_raw:
-                    cands = []
-                    for entry in sn_raw:
-                        lbl, conf = (entry[0], entry[1]) if isinstance(entry, (list, tuple)) else (entry, 0.0)
-                        meta = _parse_sn_label(lbl)
-                        cands.append({
-                            'id': meta.get('id'),
-                            'common_name': meta.get('common_name') or meta.get('display') or str(lbl),
-                            'scientific_name': meta.get('scientific_name') or None,
-                            'hierarchy': meta.get('hierarchy') or [],
-                            'confidence': round(float(conf), 4),
-                        })
-                    top_candidates = json.dumps(cands)
-
-                raw_output = row.get('raw_model_output')
-                raw_output_json = json.dumps(raw_output) if raw_output else None
-
-                cursor.execute('''
-                    INSERT INTO detections (
-                        image_id, detected_animal, confidence, method, bbox, ide_id,
-                        speciesnet_confidence, model_breakdown,
-                        scientific_name, md_confidence, top_candidates, taxonomy_hierarchy,
-                        raw_model_output
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    image_id,
-                    row['detected_animal'],
-                    row.get('detection_confidence', 0.0),
-                    row.get('detection_method', 'Unknown'),
-                    bbox_json,
-                    row.get('ide_id'),
-                    row.get('speciesnet_confidence', 0.0),
-                    json.dumps(row.get('model_breakdown', {})) if row.get('model_breakdown') else None,
-                    scientific_name,
-                    row.get('md_confidence'),
-                    top_candidates,
-                    taxonomy_hierarchy,
-                    raw_output_json,
-                ))
-
-                count += 1
+                filename = file_name
+                for _, row in group.iterrows():
+                    _insert_detection(row, image_id)
 
             conn.commit()
-            return count
+            return {"detection_count": detection_count, "image_id": image_id, "filename": filename}
 
         except Exception as e:
             conn.rollback()
@@ -471,15 +482,25 @@ class DatabaseManager:
 
     def update_detection(self, detection_id: int, fields: dict):
         """Update a single detection row and/or its parent image row."""
-        det_fields = {k: v for k, v in fields.items() if k == "detected_animal"}
+        det_fields = {k: v for k, v in fields.items() if k in ("detected_animal", "species_label")}
+        if "species_label" in det_fields and "detected_animal" not in det_fields:
+            # species_label edits map to detected_animal when no explicit species given
+            det_fields["detected_animal"] = det_fields.pop("species_label")
+        elif "species_label" in det_fields:
+            det_fields.pop("species_label", None)
         img_fields = {k: v for k, v in fields.items() if k in ("station_id", "user_notes")}
         conn = self.get_connection()
         cursor = conn.cursor()
         try:
             if det_fields:
-                sets = ", ".join(f"{k} = ?" for k in det_fields)
-                cursor.execute(f"UPDATE detections SET {sets} WHERE id = ?",
-                               list(det_fields.values()) + [detection_id])
+                set_parts = [f"{k} = ?" for k in det_fields]
+                values = list(det_fields.values())
+                if "detected_animal" in det_fields:
+                    set_parts.append("scientific_name = NULL")
+                cursor.execute(
+                    f"UPDATE detections SET {', '.join(set_parts)} WHERE id = ?",
+                    values + [detection_id],
+                )
             if img_fields:
                 row = cursor.execute(
                     "SELECT image_id FROM detections WHERE id = ?", [detection_id]
@@ -506,7 +527,7 @@ class DatabaseManager:
     def get_history_df(self, limit: int = None, offset: int = 0,
                        station_id: str = None, species: str = None,
                        day_night: str = None, min_conf: float = None,
-                       max_conf: float = None):
+                       max_conf: float = None, include_raw: bool = False):
         """Retrieve detection history as a flat DataFrame, optionally filtered and paginated."""
         conn = self.get_connection()
         where_parts = ["i.project_id = ?"]
@@ -527,9 +548,10 @@ class DatabaseManager:
             where_parts.append("d.confidence <= ?")
             params.append(max_conf)
         where = "WHERE " + " AND ".join(where_parts)
+        raw_col = ", d.raw_model_output" if include_raw else ""
         query = f'''
             SELECT
-                i.id, i.filename, i.station_id, i.camera_id, i.processed_at,
+                i.id AS image_id, i.id AS id, i.filename, i.file_hash, i.station_id, i.camera_id, i.processed_at,
                 i.capture_date, i.capture_time, i.temperature,
                 i.day_night, i.brightness, i.user_notes,
                 d.id as detection_id,
@@ -537,7 +559,7 @@ class DatabaseManager:
                 d.method as detection_method, d.bbox, d.ide_id,
                 d.speciesnet_confidence, d.model_breakdown,
                 d.scientific_name, d.md_confidence, d.top_candidates,
-                d.taxonomy_hierarchy, d.raw_model_output
+                d.taxonomy_hierarchy{raw_col}
             FROM images i
             JOIN detections d ON i.id = d.image_id
             {where}
@@ -554,12 +576,50 @@ class DatabaseManager:
         finally:
             conn.close()
 
+    def count_history_df(self, station_id: str = None, species: str = None,
+                         day_night: str = None, min_conf: float = None,
+                         max_conf: float = None) -> int:
+        """Fast count of history detections for active project matching filters."""
+        conn = self.get_connection()
+        where_parts = ["i.project_id = ?"]
+        params = [self.active_project_id]
+        if station_id:
+            where_parts.append("i.station_id = ?")
+            params.append(station_id)
+        if species:
+            where_parts.append("d.detected_animal LIKE ?")
+            params.append(f"%{species}%")
+        if day_night:
+            where_parts.append("i.day_night = ?")
+            params.append(day_night)
+        if min_conf is not None:
+            where_parts.append("d.confidence >= ?")
+            params.append(min_conf)
+        if max_conf is not None:
+            where_parts.append("d.confidence <= ?")
+            params.append(max_conf)
+        where = "WHERE " + " AND ".join(where_parts)
+        query = f'''
+            SELECT COUNT(*)
+            FROM images i
+            JOIN detections d ON i.id = d.image_id
+            {where}
+        '''
+        try:
+            row = conn.execute(query, params).fetchone()
+            return row[0] if row else 0
+        except Exception as e:
+            print(f"Error counting history: {e}")
+            return 0
+        finally:
+            conn.close()
+
     def get_pending_review(self, confidence_threshold: float = 0.9, limit: int = 500, offset: int = 0):
         """Return detections below threshold that have not yet been actioned in review_actions."""
         conn = self.get_connection()
         query = '''
             SELECT
-                i.id, i.filename, i.station_id,
+                i.id AS image_id, i.id AS id, i.filename, i.file_hash, i.station_id,
                 i.capture_date, i.capture_time, i.temperature,
                 i.day_night, i.brightness, i.user_notes,
                 d.id as detection_id,
@@ -567,21 +627,53 @@ class DatabaseManager:
                 d.method as detection_method, d.bbox, d.ide_id,
                 d.speciesnet_confidence, d.model_breakdown,
                 d.scientific_name, d.md_confidence, d.top_candidates,
-                d.taxonomy_hierarchy, d.raw_model_output
+                d.taxonomy_hierarchy
             FROM images i
             JOIN detections d ON i.id = d.image_id
-            LEFT JOIN review_actions ra ON ra.image_id = CAST(i.id AS TEXT)
-            WHERE d.confidence < ?
+            LEFT JOIN review_actions ra ON ra.detection_id = d.id
+            WHERE i.project_id = ?
+              AND d.confidence < ?
               AND d.detected_animal NOT IN ('Empty', 'Person', 'Vehicle', 'Error')
               AND ra.id IS NULL
             ORDER BY d.confidence ASC
             LIMIT ? OFFSET ?
         '''
         try:
-            return pd.read_sql_query(query, conn, params=[confidence_threshold, limit, offset])
+            return pd.read_sql_query(
+                query, conn, params=[self.active_project_id, confidence_threshold, limit, offset]
+            )
         except Exception as e:
             print(f"Error fetching pending review: {e}")
             return pd.DataFrame()
+        finally:
+            conn.close()
+
+    def count_pending_review(self, confidence_threshold: float = 0.9) -> int:
+        """Count pending review detections for the active project."""
+        conn = self.get_connection()
+        try:
+            row = conn.execute('''
+                SELECT COUNT(*)
+                FROM images i
+                JOIN detections d ON i.id = d.image_id
+                LEFT JOIN review_actions ra ON ra.detection_id = d.id
+                WHERE i.project_id = ?
+                  AND d.confidence < ?
+                  AND d.detected_animal NOT IN ('Empty', 'Person', 'Vehicle', 'Error')
+                  AND ra.id IS NULL
+            ''', [self.active_project_id, confidence_threshold]).fetchone()
+            return row[0] if row else 0
+        finally:
+            conn.close()
+
+    def get_reviewed_detection_ids(self) -> set:
+        """Return detection IDs that already have a review action."""
+        conn = self.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT detection_id FROM review_actions WHERE detection_id IS NOT NULL"
+            ).fetchall()
+            return {r[0] for r in rows}
         finally:
             conn.close()
 
@@ -603,13 +695,32 @@ class DatabaseManager:
         try:
             result = []
             for filename in filenames:
-                row = conn.execute(
-                    "SELECT id FROM images WHERE filename = ? ORDER BY id DESC LIMIT 1",
+                rows = conn.execute(
+                    "SELECT id FROM images WHERE filename = ? ORDER BY id DESC",
                     [filename],
-                ).fetchone()
-                if row:
+                ).fetchall()
+                for row in rows:
                     result.append((row[0], filename))
             return result
+        finally:
+            conn.close()
+
+    def get_filename_for_image(self, image_id: int) -> Optional[str]:
+        """Return the stored filename for an image PK."""
+        record = self.get_image_record(image_id)
+        return record["filename"] if record else None
+
+    def get_image_record(self, image_id: int) -> Optional[dict]:
+        """Return {id, filename, file_hash} for an image PK."""
+        conn = self.get_connection()
+        try:
+            row = conn.execute(
+                "SELECT id, filename, file_hash FROM images WHERE id = ?",
+                [image_id],
+            ).fetchone()
+            if not row:
+                return None
+            return {"id": row[0], "filename": row[1], "file_hash": row[2]}
         finally:
             conn.close()
 
@@ -659,6 +770,29 @@ class DatabaseManager:
             conn.commit()
         except Exception as exc:
             print(f"Warning: could not persist job {job.job_id}: {exc}")
+        finally:
+            conn.close()
+
+    def get_job(self, job_id: str) -> Optional[dict]:
+        """Return persisted metadata for one job, or None."""
+        conn = self.get_connection()
+        try:
+            cursor = conn.execute(
+                """
+                SELECT job_id, status, total, completed, error, created_at, finished_at
+                FROM jobs
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cursor.description]
+            return dict(zip(cols, row))
+        except Exception as exc:
+            print(f"Warning: could not load job {job_id}: {exc}")
+            return None
         finally:
             conn.close()
 
@@ -872,23 +1006,19 @@ class DatabaseManager:
             conn.close()
 
     def get_images_by_tier(self, tier: str, limit: int = 1000, offset: int = 0):
-        """Get images by file tier — one row per unique filename (latest id wins).
-
-        A single physical file can have multiple rows in `images` (one per
-        detection crop). This query collapses them to avoid returning the same
-        file multiple times in downloads and storage listings.
-        """
+        """Get images by file tier — one row per unique physical image (hash or id)."""
         conn = self.get_connection()
         cursor = conn.cursor()
         active_project = self.active_project_id
         try:
             cursor.execute('''
-                SELECT MAX(id) as id, filename,
+                SELECT MAX(id) as id, MAX(filename) as filename,
                        MAX(file_size_bytes) as file_size_bytes,
-                       file_status, MAX(uploaded_at) as uploaded_at
+                       MAX(file_status) as file_status,
+                       MAX(uploaded_at) as uploaded_at
                 FROM images
                 WHERE file_tier = ? AND file_status = 'available' AND project_id = ?
-                GROUP BY filename
+                GROUP BY COALESCE(file_hash, CAST(id AS TEXT))
                 ORDER BY MAX(uploaded_at) DESC
                 LIMIT ? OFFSET ?
             ''', (tier, active_project, limit, offset))
@@ -897,7 +1027,7 @@ class DatabaseManager:
             conn.close()
 
     def get_storage_stats(self):
-        """Get storage breakdown by tier — counts and sizes per unique filename."""
+        """Get storage breakdown by tier — counts unique physical images per tier."""
         conn = self.get_connection()
         cursor = conn.cursor()
         active_project = self.active_project_id
@@ -905,16 +1035,17 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT
                     file_tier,
-                    COUNT(DISTINCT filename) as count,
+                    COUNT(*) as count,
                     SUM(size_bytes) as total_bytes,
                     MIN(first_upload) as oldest_upload
                 FROM (
-                    SELECT file_tier, filename,
+                    SELECT file_tier,
+                           COALESCE(file_hash, CAST(id AS TEXT)) as img_key,
                            MAX(COALESCE(file_size_bytes, 0)) as size_bytes,
                            MIN(uploaded_at) as first_upload
                     FROM images
                     WHERE file_status = 'available' AND project_id = ?
-                    GROUP BY file_tier, filename
+                    GROUP BY file_tier, img_key
                 )
                 GROUP BY file_tier
             ''', (active_project,))

@@ -1,6 +1,10 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # BuildKit + cache mounts are enabled via ./compose.sh (or DOCKER_BUILDKIT=1).
+      # Prefer:  ./compose.sh up --build
     container_name: wildlife-camera-traps
     ports:
       - "8000:8000"
@@ -10,6 +14,7 @@ services:
       - /tmp/megadetector_models:/tmp/megadetector_models
       - easyocr_cache:/root/.EasyOCR
       - huggingface_cache:/root/.cache/huggingface
+      - kaggle_cache:/root/.cache/kagglehub
     env_file:
       - path: .env
         required: false
@@ -20,14 +25,15 @@ services:
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 8G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/config/status"]
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 300s
 
 volumes:
   easyocr_cache:
   huggingface_cache:
+  kaggle_cache:

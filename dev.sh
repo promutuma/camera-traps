@@ -7,16 +7,20 @@ set -e
 
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-# Activate virtualenv if present
-if [ -f "$PROJECT_ROOT/.venv/bin/activate" ]; then
-  source "$PROJECT_ROOT/.venv/bin/activate"
-elif [ -f "$PROJECT_ROOT/venv/bin/activate" ]; then
-  source "$PROJECT_ROOT/venv/bin/activate"
+# Find virtualenv python
+if [ -x "$PROJECT_ROOT/.venv/bin/python" ]; then
+  PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python"
+  source "$PROJECT_ROOT/.venv/bin/activate" 2>/dev/null || true
+elif [ -x "$PROJECT_ROOT/venv/bin/python" ]; then
+  PYTHON_BIN="$PROJECT_ROOT/venv/bin/python"
+  source "$PROJECT_ROOT/venv/bin/activate" 2>/dev/null || true
+else
+  PYTHON_BIN="$(command -v python3 || command -v python)"
 fi
 
-echo "▶ Starting FastAPI backend on http://localhost:8000 ..."
+echo "▶ Starting FastAPI backend on http://localhost:8000 using $PYTHON_BIN ..."
 cd "$PROJECT_ROOT"
-uvicorn backend.main:app \
+"$PYTHON_BIN" -m uvicorn backend.main:app \
   --reload \
   --reload-dir backend \
   --reload-dir core \

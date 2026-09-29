@@ -60,17 +60,18 @@ def _parse_snet_meta(label: str) -> Dict:
 
 def nms_merge_detections(
     cands_a: List[Dict],
-    cands_b: List[Dict],
+    cands_b: Optional[List[Dict]] = None,
     source_a: str = "MDv5a",
-    source_b: str = "MDv1000",
+    source_b: str = "MDv5a",
     iou_threshold: float = _NMS_IOU,
 ) -> List[Dict]:
     """
-    Merge two candidate lists from different detectors via greedy NMS.
+    Merge candidate lists from one or two detectors via greedy NMS.
 
-    Each candidate dict must have: label, conf, bbox ([x,y,w,h] normalised).
-    Returns merged list; each entry gains a 'sources' list field.
+    Production uses MDv5a only; cands_b is optional for internal reuse.
     """
+    if not cands_b:
+        cands_b = []
     tagged_a = [dict(c, sources=[source_a]) for c in cands_a]
     tagged_b = [dict(c, sources=[source_b]) for c in cands_b]
     all_cands = tagged_a + tagged_b

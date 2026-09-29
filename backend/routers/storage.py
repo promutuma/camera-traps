@@ -1,12 +1,12 @@
 """Storage management: downloads, cleanup, quotas."""
 
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import Optional, List
 
 from backend.models.state import AppState
-from backend.routers.deps import get_state
+from backend.routers.deps import get_state, get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,15 @@ def get_deletion_preview(
 @router.post("/cleanup")
 def cleanup_images(
     state: AppState = Depends(get_state),
-    action: str = Query(...),  # delete_empty, delete_marked, archive
+    action: str = Query(...),
     dry_run: bool = Query(True),
     days_old: int = Query(7),
+    tier: Optional[str] = Query(None),
+    confirm: bool = Query(False),
 ):
-    """Execute cleanup action."""
-    if action not in ("delete_empty", "delete_marked"):
+    """Execute cleanup action. Defaults to dry_run=true for safety."""
+    allowed = ("delete_empty", "delete_marked", "delete_by_tier", "purge_thumbnails", "purge_scrubbed_orphans")
+    if action not in allowed:
         raise HTTPException(status_code=400, detail="Invalid action")
 
     if not state.file_manager:
@@ -63,8 +66,25 @@ def cleanup_images(
 
     if action == "delete_empty":
         return state.file_manager.cleanup_empty_images(dry_run=dry_run, days_grace=days_old)
-    else:
+    if action == "delete_marked":
         return state.file_manager.cleanup_marked_for_deletion(days_grace=days_old, dry_run=dry_run)
+    if action == "delete_by_tier":
+        selected_tier = tier or "empty"
+        if selected_tier not in ("empty", "low_conf", "valid", "all"):
+            raise HTTPException(status_code=400, detail="Invalid tier")
+        if selected_tier == "all" and not dry_run and not confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Pass confirm=true to delete all tiers",
+            )
+        return state.file_manager.cleanup_by_tier(
+            tier=selected_tier,
+            dry_run=dry_run,
+            days_grace=days_old,
+        )
+    if action == "purge_thumbnails":
+        return state.file_manager.purge_thumbnails(dry_run=dry_run)
+    return state.file_manager.purge_scrubbed_orphans(dry_run=dry_run)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -229,12 +249,21 @@ def clear_hashes(
 
 @router.post("/reset-db")
 def reset_database(
+    request: Request,
     state: AppState = Depends(get_state),
     confirm: bool = Query(False),
+    confirm_username: Optional[str] = Query(None),
 ):
     """Reset database completely by truncating all tables. Requires confirm=true."""
     if not confirm:
         raise HTTPException(status_code=400, detail="Pass confirm=true to reset the database")
+    session_user = get_current_user(request)
+    if session_user != "anonymous":
+        if not confirm_username or confirm_username.strip() != session_user:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Type your username ({session_user}) to confirm database reset",
+            )
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="Database service not ready")
     try:

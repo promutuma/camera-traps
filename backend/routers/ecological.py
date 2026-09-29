@@ -2,8 +2,9 @@
 
 import io
 import json
+import logging
 import pandas as pd
-from typing import Optional
+from typing import Optional, Tuple
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse, JSONResponse
 from backend.models.state import AppState
@@ -15,6 +16,7 @@ from core.standard_exports import (
     wildlife_insights_package,
 )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ecological", tags=["ecological"])
 
 
@@ -39,16 +41,32 @@ def _get_data(state: AppState):
 
 
 def _get_engine(state: AppState):
+    if state.independence_engine is not None:
+        state.independence_engine.window_minutes = state.config.independence_window
+        return state.independence_engine
     from core.independence_engine import IndependenceEngine
-    return IndependenceEngine(window_minutes=state.config.independence_window)
+    state.independence_engine = IndependenceEngine(window_minutes=state.config.independence_window)
+    return state.independence_engine
 
 
-@router.get("/ide")
-def get_ide(state: AppState = Depends(get_state)):
+def _compute_ides(state: AppState) -> Tuple[pd.DataFrame, pd.DataFrame]:
     df = _get_data(state)
     engine = _get_engine(state)
     enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
     summary = engine.get_ide_summary(enriched)
+    if state.db_manager and not summary.empty:
+        try:
+            inserted = state.db_manager.save_independence_events(summary)
+            if inserted:
+                logger.info("Persisted %s independence event(s).", inserted)
+        except Exception as exc:
+            logger.warning("Could not persist independence events: %s", exc)
+    return enriched, summary
+
+
+@router.get("/ide")
+def get_ide(state: AppState = Depends(get_state)):
+    enriched, summary = _compute_ides(state)
     return {
         "summary": summary.fillna("").to_dict(orient="records"),
         "enriched": enriched.fillna("").to_dict(orient="records"),
@@ -57,10 +75,7 @@ def get_ide(state: AppState = Depends(get_state)):
 
 @router.get("/rai")
 def get_rai(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
-    df = _get_data(state)
-    engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
+    _, summary = _compute_ides(state)
     stations = summary["station_id"].unique().tolist() if not summary.empty else []
     
     real_trap_nights = {}
@@ -78,10 +93,7 @@ def get_rai(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
 
 @router.get("/timeline")
 def get_timeline(state: AppState = Depends(get_state)):
-    df = _get_data(state)
-    engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
+    _, summary = _compute_ides(state)
     if summary.empty or "first_detection" not in summary.columns:
         return []
     import pandas as pd
@@ -98,39 +110,32 @@ def get_timeline(state: AppState = Depends(get_state)):
 
 @router.get("/richness")
 def get_richness(state: AppState = Depends(get_state)):
-    df = _get_data(state)
+    _, summary = _compute_ides(state)
     engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
     richness = engine.compute_species_richness(summary)
     return richness.fillna("").to_dict(orient="records")
 
 
 @router.get("/accumulation")
 def get_accumulation(state: AppState = Depends(get_state)):
-    df = _get_data(state)
+    _, summary = _compute_ides(state)
     engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
     accum = engine.compute_species_accumulation(summary)
     return accum.fillna("").to_dict(orient="records")
 
 
 @router.get("/group-size")
 def get_group_size(state: AppState = Depends(get_state)):
-    df = _get_data(state)
+    enriched, _ = _compute_ides(state)
     engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
     group_df = engine.compute_mean_group_size(enriched)
     return group_df.fillna("").to_dict(orient="records")
 
 
 @router.get("/visitation")
 def get_visitation(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
-    df = _get_data(state)
+    _, summary = _compute_ides(state)
     engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
     stations = summary["station_id"].unique().tolist() if not summary.empty else []
     
     real_trap_nights = {}
@@ -149,6 +154,45 @@ def get_visitation(state: AppState = Depends(get_state), trap_nights: int = Quer
     }
 
 
+@router.get("/activity")
+def get_activity(state: AppState = Depends(get_state)):
+    """Hourly detection activity (unique images per hour)."""
+    df = _get_data(state)
+    hourly_counts = [0] * 24
+    id_col = "id" if "id" in df.columns else "image_id"
+    if "capture_time" in df.columns and id_col in df.columns:
+        seen: set = set()
+        for _, row in df[[id_col, "capture_time"]].dropna(subset=["capture_time"]).iterrows():
+            img_id = row[id_col]
+            if img_id in seen:
+                continue
+            seen.add(img_id)
+            try:
+                h = int(str(row["capture_time"]).split(":")[0])
+                if 0 <= h < 24:
+                    hourly_counts[h] += 1
+            except Exception:
+                pass
+    hourly = [{"hour": f"{h:02d}:00", "count": count} for h, count in enumerate(hourly_counts)]
+
+    by_species: list = []
+    if "capture_time" in df.columns and "species_label" in df.columns:
+        tmp = df.dropna(subset=["capture_time", "species_label"]).copy()
+        tmp["hour"] = tmp["capture_time"].astype(str).str.split(":").str[0]
+        tmp = tmp[tmp["hour"].str.match(r"^\d{1,2}$")]
+        tmp["hour"] = tmp["hour"].astype(int)
+        tmp = tmp[(tmp["hour"] >= 0) & (tmp["hour"] < 24)]
+        if not tmp.empty:
+            grp = (
+                tmp.groupby(["hour", "species_label"])
+                .size()
+                .reset_index(name="count")
+            )
+            by_species = grp.to_dict(orient="records")
+
+    return {"hourly": hourly, "by_species": by_species}
+
+
 @router.get("/export")
 def export_ecological(
     state: AppState = Depends(get_state),
@@ -162,10 +206,8 @@ def export_ecological(
     metric = metric.lower().strip()
 
     # 1. Fetch history data
-    df = _get_data(state)
+    enriched, summary = _compute_ides(state)
     engine = _get_engine(state)
-    enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
-    summary = engine.get_ide_summary(enriched)
 
     # Determine which DataFrame to export
     export_df = None

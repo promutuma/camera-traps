@@ -7,7 +7,7 @@ A comprehensive file management system has been implemented for the camera-traps
 - **Downloadable files before deletion** with 7-day grace periods
 - **Hash-based deduplication detection** with selective clearing
 - **Export tracking** to enable aggressive image cleanup post-export
-- **Background cleanup scheduler** running hourly
+- **Manual cleanup** via Storage dashboard or `POST /api/storage/cleanup`
 - **Storage dashboard** with real-time metrics and controls
 
 ---
@@ -207,8 +207,7 @@ backend/models/state.py
 
 backend/main.py
 ├── Added FileManager initialization
-├── Added cleanup scheduler
-└── Added _cleanup_expired_files() task
+└── Cleanup is manual via Storage UI or POST /api/storage/cleanup
 ```
 
 ---
@@ -412,7 +411,7 @@ python3 -m py_compile core/db_manager.py
 4. **Monitor logs** for any errors
 5. **Deploy to production** with rollback plan ready
 6. **Monitor disk usage** in first week
-7. **Verify cleanup runs** hourly
+7. **Run manual cleanup** when needed from Storage dashboard or API
 8. **Track performance** metrics
 
 ---

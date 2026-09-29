@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { getResults, updateResult, exportExcel, exportCsv, storedThumbUrl, storedImageUrl, confirmDetection, flagDetection, deleteResults, markForDeletion, getStations } from "../api/client";
+import { getResults, updateResult, exportExcel, exportCsv, exportJson, storedThumbUrl, storedThumbUrlById, storedImageUrl, storedImageUrlById, confirmDetection, flagDetection, deleteResults, markForDeletion, getStations, getReviewLog, getProject } from "../api/client";
+import { imageIdOf, detIdOf, imageKey, buildImageGroup, buildImageGroupsFromRows, primaryDetectionRow, detectionIdsOfGroup, speciesSummaryOfGroup, rowsMatchGroup, type Row, type ImageGroup } from "../utils/imageIdentity";
+import { isNonWildlifeRow, isWildlifeLabel, isWildlifeRow } from "../utils/wildlifeFilter";
+import { useDisplayStore } from "../store/displayStore";
+import { HiddenNonWildlifeBanner, ShowNonWildlifeToggle } from "../components/HiddenNonWildlifeBanner";
 
-type Row = Record<string, unknown>;
 type SortDir = "asc" | "desc" | null;
 type ViewMode = "table" | "gallery";
-type ImageGroup = { filename: string; rows: Row[] };
 
 const EDITABLE = new Set(["detected_animal", "user_notes", "station_id"]);
 const BOX_COLORS = ["#22c55e", "#3b82f6", "#f59e0b", "#ef4444", "#8b5cf6", "#06b6d4"];
@@ -87,10 +89,8 @@ function ConfBar({ value }: { value: unknown }) {
 
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
-    name === "MDv5a"
+    name === "MDv5a" || name === "MegaDetector"
       ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-900/50"
-      : name === "BioClip"
-      ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-900/50"
       : name === "SpeciesNet"
       ? "bg-teal-100 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-900/50"
       : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700";
@@ -125,9 +125,7 @@ function ModelBreakdown({
   const [expanded, setExpanded] = useState(false);
   const models = method ? method.split(" + ").filter(Boolean) : [];
   const detectors = models.filter((m) => m.startsWith("MDv") || m === "MegaDetector");
-  const isAnimal =
-    detected && detected !== "Empty" && detected !== "Unidentified" &&
-    detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
+  const isAnimal = isWildlifeLabel(String(detected ?? ""));
 
   if (!detectors.length && !isAnimal) return null;
 
@@ -255,14 +253,16 @@ function Lightbox({
   groups: ImageGroup[];
   onClose: () => void;
   onNavigate: (g: ImageGroup) => void;
-  onSave: (id: number, field: string, value: string) => Promise<void>;
+  onSave: (id: number, field: string, value: string) => Promise<boolean>;
   onTaxonClick?: (taxon: string) => void;
   onVerify?: (detId: number) => Promise<void>;
   onFlag?: (detId: number) => Promise<void>;
   onMarkForDeletion?: (imageId: number) => Promise<void>;
 }) {
-  const { filename, rows } = group;
-  const imgUrl = storedImageUrl(filename);
+  const { filename, rows, imageId, imageKey: groupKey, fileHash, focusDetectionId } = group;
+  const imgUrl = imageId
+    ? `${storedImageUrlById(imageId)}${fileHash ? `?v=${encodeURIComponent(fileHash.slice(0, 16))}` : ""}`
+    : storedImageUrl(filename);
   const primary = rows[0];
 
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
@@ -271,9 +271,21 @@ function Lightbox({
   const [saving, setSaving] = useState(false);
   const [detEdit, setDetEdit] = useState<{ idx: number; val: string } | null>(null);
   const [actionBusy, setActionBusy] = useState<"verify" | "flag" | "mark-deletion" | null>(null);
-  const [hoveredDetIdx, setHoveredDetIdx] = useState<number | null>(null);
+  const [hoveredDetIdx, setHoveredDetIdx] = useState<number | null>(() => {
+    if (!focusDetectionId) return null;
+    const fi = rows.findIndex((r) => detIdOf(r) === focusDetectionId);
+    return fi >= 0 ? fi : null;
+  });
 
   const filmstripRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const syncImgNatural = useCallback(() => {
+    const img = imgRef.current;
+    if (img?.complete && img.naturalWidth > 0) {
+      setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
+    }
+  }, []);
 
   // Zoom / Pan / Opacity states
   const [scale, setScale] = useState(1);
@@ -283,7 +295,7 @@ function Lightbox({
   const [boxOpacity, setBoxOpacity] = useState(0.85);
   const [showCheatsheet, setShowCheatsheet] = useState(true);
 
-  const idx = groups.findIndex((g) => g.filename === filename);
+  const idx = groups.findIndex((g) => g.imageKey === groupKey);
 
   // Scroll filmstrip to keep selected thumbnail in view
   useEffect(() => {
@@ -301,21 +313,26 @@ function Lightbox({
 
   const commitEdit = async () => {
     if (!editField) return;
+    const detId = detIdOf(primary);
+    if (!detId) return;
     setSaving(true);
-    const detId = Number(primary.detection_id ?? primary.id ?? 0);
-    await onSave(detId, editField, editVal);
+    const ok = await onSave(detId, editField, editVal);
     setSaving(false);
-    setEditField(null);
+    if (ok) setEditField(null);
   };
 
   const commitDetEdit = async () => {
-    if (!detEdit) return;
+    if (!detEdit?.val.trim()) return;
     setSaving(true);
     const row = rows[detEdit.idx];
-    const detId = Number(row.detection_id ?? row.id ?? 0);
-    await onSave(detId, "detected_animal", detEdit.val);
+    const detId = detIdOf(row);
+    if (!detId) {
+      setSaving(false);
+      return;
+    }
+    const ok = await onSave(detId, "detected_animal", detEdit.val.trim());
     setSaving(false);
-    setDetEdit(null);
+    if (ok) setDetEdit(null);
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -369,7 +386,19 @@ function Lightbox({
     setDetEdit(null);
     setScale(1);
     setTranslate({ x: 0, y: 0 });
-  }, [imgUrl]);
+  }, [groupKey, imgUrl]);
+
+  useEffect(() => {
+    if (focusDetectionId) {
+      const fi = rows.findIndex((r) => detIdOf(r) === focusDetectionId);
+      setHoveredDetIdx(fi >= 0 ? fi : null);
+    }
+  }, [focusDetectionId, rows, groupKey]);
+
+  // Cached images may not fire onLoad after a data refresh — read dimensions directly.
+  useEffect(() => {
+    syncImgNatural();
+  }, [groupKey, imgUrl, rows, syncImgNatural]);
 
   return (
     <div
@@ -458,6 +487,8 @@ function Lightbox({
             onMouseLeave={handleMouseUp}
           >
             <img
+              ref={imgRef}
+              key={`${groupKey}-${imageId}`}
               src={imgUrl}
               alt={filename}
               className="max-h-[85vh] w-full object-contain pointer-events-none"
@@ -533,7 +564,7 @@ function Lightbox({
           {onMarkForDeletion && (
             <button
               onClick={async () => {
-                const imageId = Number(primary.image_id ?? 0);
+                const imageId = imageIdOf(primary);
                 if (!imageId) return;
                 if (!window.confirm("Mark this image file for deletion? It will be permanently removed after a 7-day grace period (see Storage Management).")) return;
                 setActionBusy("mark-deletion");
@@ -583,7 +614,7 @@ function Lightbox({
 
               return (
                 <div
-                  key={i}
+                  key={detIdOf(row) || i}
                   onMouseEnter={() => setHoveredDetIdx(i)}
                   onMouseLeave={() => setHoveredDetIdx(null)}
                   className={`rounded-xl border transition-all duration-200 p-3 space-y-2 ${
@@ -688,7 +719,7 @@ function Lightbox({
                             <button
                               onClick={async () => {
                                 setActionBusy("verify");
-                                try { await onVerify(Number(row.detection_id ?? row.id ?? 0)); }
+                                try { await onVerify(detIdOf(row)); }
                                 finally { setActionBusy(null); }
                               }}
                               disabled={actionBusy !== null}
@@ -702,7 +733,7 @@ function Lightbox({
                             <button
                               onClick={async () => {
                                 setActionBusy("flag");
-                                try { await onFlag(Number(row.detection_id ?? row.id ?? 0)); }
+                                try { await onFlag(detIdOf(row)); }
                                 finally { setActionBusy(null); }
                               }}
                               disabled={actionBusy !== null}
@@ -798,12 +829,13 @@ function Lightbox({
           style={{ scrollbarWidth: "thin" }}
         >
           {groups.map((g, gIdx) => {
-            const isActive = g.filename === filename;
+            const isActive = g.imageKey === groupKey;
             const gPrimary = g.rows[0];
             const gConf = typeof gPrimary.detection_confidence === "number" ? gPrimary.detection_confidence as number : 0;
+            const gImageId = g.imageId;
             return (
               <button
-                key={g.filename}
+                key={g.imageKey}
                 data-active={isActive ? "true" : undefined}
                 onClick={() => onNavigate(g)}
                 title={g.filename}
@@ -813,7 +845,7 @@ function Lightbox({
                 style={{ width: 64, height: 48 }}
               >
                 <img
-                  src={storedThumbUrl(g.filename, 160)}
+                  src={gImageId ? storedThumbUrlById(gImageId, 160) : storedThumbUrl(g.filename, 160)}
                   alt=""
                   className="w-full h-full object-cover"
                   onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
@@ -836,9 +868,9 @@ function Lightbox({
 
 // ── Gallery card ──────────────────────────────────────────────────────────────
 
-function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
+function GalleryCard({ group, onClick }: { group: ImageGroup; onClick: () => void }) {
+  const { rows, imageId, filename } = group;
   const primary = rows[0];
-  const filename = String(primary.filename ?? "");
   const [imgNatural, setImgNatural] = useState<{ w: number; h: number } | null>(null);
 
   const bestConf = rows.reduce((max, r) => {
@@ -863,9 +895,9 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
     >
       <div className="relative bg-slate-900 aspect-video overflow-hidden">
         <img
-          src={storedThumbUrl(filename, 640)}
+          src={imageId ? storedThumbUrlById(imageId, 640) : storedThumbUrl(filename, 640)}
           alt={filename}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+          className="w-full h-full object-contain group-hover:scale-105 transition-transform duration-300"
           onLoad={(e) => {
             const img = e.currentTarget as HTMLImageElement;
             setImgNatural({ w: img.naturalWidth, h: img.naturalHeight });
@@ -877,7 +909,7 @@ function GalleryCard({ rows, onClick }: { rows: Row[]; onClick: () => void }) {
           <svg
             className="absolute inset-0 w-full h-full pointer-events-none"
             viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
-            preserveAspectRatio="xMidYMid slice"
+            preserveAspectRatio="xMidYMid meet"
           >
             {rows.map((row, i) => {
               const bbox = parseBbox(row.bbox);
@@ -994,12 +1026,13 @@ function Pagination({ page, totalPages, total, onPage }: {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function Results() {
-  const PAGE_SIZE = 50;
-
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeProjectName, setActiveProjectName] = useState<string>("");
   const [viewMode, setViewMode] = useState<ViewMode>("table");
-  const [filter, setFilter] = useState({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: true, lowConfOnly: false });
+  const [filter, setFilter] = useState({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", lowConfOnly: false });
+  const hideNonWildlife = useDisplayStore((s) => s.hideNonWildlife);
   const [selectedTaxon, setSelectedTaxon] = useState<string | null>(null);
   const [stations, setStations] = useState<string[]>([]);
   const [editing, setEditing] = useState<{ id: number; field: string } | null>(null);
@@ -1009,44 +1042,75 @@ export default function Results() {
   const [page, setPage] = useState(1);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState<"verify" | "flag" | "delete" | null>(null);
+  const [reviewedIds, setReviewedIds] = useState<Set<number>>(new Set());
+  const [bulkToast, setBulkToast] = useState<string | null>(null);
   const speciesInputRef = useRef<HTMLSelectElement>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setPage(1);
-    setSelectedIds(new Set());
+  const buildFilterParams = useCallback(() => {
+    const params: Record<string, string | number> = { limit: 5000 };
+    if (filter.species) params.species = filter.species;
+    if (filter.station) params.station = filter.station;
+    if (filter.day_night) params.day_night = filter.day_night;
+    if (filter.min_conf) params.min_conf = filter.min_conf;
+    if (filter.max_conf) params.max_conf = filter.max_conf;
+    return params;
+  }, [filter.species, filter.station, filter.day_night, filter.min_conf, filter.max_conf]);
+
+  const load = useCallback(async (resetPage = true) => {
+    if (resetPage) {
+      setPage(1);
+      setSelectedIds(new Set());
+      setLoading(true);
+    }
+    setError(null);
     try {
-      const data = await getResults({ limit: 50000 });
+      const [data, log] = await Promise.all([
+        getResults(buildFilterParams()),
+        getReviewLog(),
+      ]);
       const items = Array.isArray(data) ? data : (data?.items ?? []);
       setRows(items as Row[]);
+      const reviewed = new Set<number>();
+      for (const entry of (Array.isArray(log) ? log : [])) {
+        const id = Number(entry.detection_id ?? 0);
+        if (id) reviewed.add(id);
+      }
+      setReviewedIds(reviewed);
+    } catch (err: any) {
+      console.error("Failed to load review results:", err);
+      setError(err?.message || "Failed to load results from server. Please ensure the backend is running.");
     } finally {
-      setLoading(false);
+      if (resetPage) setLoading(false);
     }
-  }, []);
+  }, [buildFilterParams]);
+
+  const refresh = useCallback(() => load(false), [load]);
 
   useEffect(() => {
-    load();
+    load(true);
+    getProject().then((p: any) => {
+      if (p?.name) setActiveProjectName(p.name);
+    }).catch(() => {});
     getStations().then((data: any) => {
       const list: any[] = Array.isArray(data) ? data : (data?.items ?? []);
       setStations(list.map((s) => s.station_id).filter(Boolean));
     }).catch(() => {});
-  }, []);
+  }, [load]);
 
-  // Reset to page 1 whenever any filter changes — without this, changing a filter
-  // while on page 2+ leaves the user past the last page and the table appears empty.
+  // Reset to page 1 when switching view mode
   useEffect(() => {
     setPage(1);
-  }, [filter.species, filter.station, filter.day_night, filter.hideEmpty, filter.min_conf, filter.max_conf, filter.lowConfOnly, selectedTaxon]);
+  }, [viewMode]);
 
   const filteredRows = useMemo(() => {
     const minConf = filter.min_conf !== "" ? parseFloat(filter.min_conf) : null;
     const maxConf = filter.max_conf !== "" ? parseFloat(filter.max_conf) : null;
 
     return rows.filter((r) => {
+      if (hideNonWildlife && isNonWildlifeRow(r)) return false;
       if (filter.species && String(r.detected_animal ?? "") !== filter.species) return false;
       if (filter.station && r.station_id !== filter.station) return false;
       if (filter.day_night && r.day_night !== filter.day_night) return false;
-      if (filter.hideEmpty && String(r.detected_animal ?? "").toLowerCase() === "empty") return false;
 
       const conf = typeof r.detection_confidence === "number"
         ? r.detection_confidence as number
@@ -1076,7 +1140,7 @@ export default function Results() {
       }
       return true;
     });
-  }, [rows, filter.species, filter.station, filter.day_night, filter.hideEmpty, filter.min_conf, filter.max_conf, filter.lowConfOnly, selectedTaxon]);
+  }, [rows, hideNonWildlife, filter.species, filter.station, filter.day_night, filter.min_conf, filter.max_conf, filter.lowConfOnly, selectedTaxon]);
 
   const sorted = [...filteredRows].sort((a, b) => {
     if (!sort.col || !sort.dir) return 0;
@@ -1086,29 +1150,71 @@ export default function Results() {
     return sort.dir === "asc" ? cmp : -cmp;
   });
 
-  // Gallery groups by image — must paginate on unique images, not detection rows,
-  // otherwise a single image with 3 detections splits across 3 page slots and
-  // the same image card appears on multiple pages with only partial detections.
-  const galleryGroups = useMemo<ImageGroup[]>(() => {
-    const map = new Map<string, Row[]>();
-    for (const row of sorted) {
-      const fn = String(row.filename ?? "");
-      if (!map.has(fn)) map.set(fn, []);
-      map.get(fn)!.push(row);
-    }
-    return Array.from(map.entries()).map(([filename, rows]) => ({ filename, rows }));
-  }, [sorted]);
+  // Group detections by physical image — one card/row per image, all bboxes together.
+  const imageGroups = useMemo<ImageGroup[]>(
+    () => buildImageGroupsFromRows(sorted),
+    [sorted],
+  );
 
+  const PAGE_SIZE = 50;
   const GALLERY_PAGE_SIZE = 48;
-  const totalPages = viewMode === "gallery"
-    ? Math.max(1, Math.ceil(galleryGroups.length / GALLERY_PAGE_SIZE))
-    : Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
-  const paginated = sorted.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-  const pagedGalleryGroups = galleryGroups.slice((page - 1) * GALLERY_PAGE_SIZE, page * GALLERY_PAGE_SIZE);
+  const pageSize = viewMode === "gallery" ? GALLERY_PAGE_SIZE : PAGE_SIZE;
+  const totalPages = Math.max(1, Math.ceil(imageGroups.length / pageSize));
+  const pagedImageGroups = imageGroups.slice((page - 1) * pageSize, page * pageSize);
 
-  // Count empty rows hidden by the hideEmpty toggle
-  const hiddenEmptyCount = filter.hideEmpty
-    ? rows.filter((r) => String(r.detected_animal ?? "").toLowerCase() === "empty").length
+  // Keep lightbox in sync when rows refresh — use full row set, not filtered gallery groups.
+  useEffect(() => {
+    if (!lightbox) return;
+    const next = buildImageGroup(rows, lightbox.imageKey, lightbox.focusDetectionId);
+    if (!next) return;
+    setLightbox((lb) => {
+      if (!lb || lb.imageKey !== next.imageKey) return lb;
+      if (rowsMatchGroup(lb.rows, next.rows) && lb.focusDetectionId === next.focusDetectionId) return lb;
+      return next;
+    });
+  }, [rows, lightbox?.imageKey, lightbox?.focusDetectionId]);
+
+  const patchRowInState = useCallback((detectionId: number, patch: Record<string, unknown>) => {
+    setRows((prev) =>
+      prev.map((r) => (detIdOf(r) === detectionId ? { ...r, ...patch } : r)),
+    );
+  }, []);
+
+  const saveEdit = async (
+    id: number,
+    field?: string,
+    value?: string,
+    options?: { focusDetectionId?: number },
+  ): Promise<boolean> => {
+    const f = field ?? editing?.field;
+    const v = value ?? editVal;
+    if (!f || !id) return false;
+    try {
+      await updateResult(id, { [f]: v });
+      const patch: Record<string, unknown> = { [f]: v };
+      if (f === "detected_animal") patch.scientific_name = "";
+      patchRowInState(id, patch);
+      setLightbox((lb) => {
+        if (!lb) return lb;
+        const nextFocus = options?.focusDetectionId ?? lb.focusDetectionId;
+        const nextRows = lb.rows.map((r) => (detIdOf(r) === id ? { ...r, ...patch } : r));
+        return { ...lb, focusDetectionId: nextFocus, rows: nextRows };
+      });
+      setEditing(null);
+      await refresh();
+      return true;
+    } catch (e: unknown) {
+      setBulkToast(`Could not save changes: ${e instanceof Error ? e.message : "Unknown error"}`);
+      await refresh();
+      return false;
+    }
+  };
+
+  const saveLightboxEdit = async (id: number, field: string, value: string) =>
+    saveEdit(id, field, value, { focusDetectionId: id });
+
+  const hiddenNonWildlifeCount = hideNonWildlife
+    ? rows.filter(isNonWildlifeRow).length
     : 0;
 
   const toggleSort = (col: string) => {
@@ -1124,59 +1230,65 @@ export default function Results() {
     return <span className="text-green-600 ml-1">{sort.dir === "asc" ? "↑" : "↓"}</span>;
   };
 
-  const saveEdit = async (id: number, field?: string, value?: string) => {
-    const f = field ?? editing?.field;
-    const v = value ?? editVal;
-    if (!f) return;
-    await updateResult(id, { [f]: v });
-    setEditing(null);
-    load();
-  };
-
-  const toggleSelect = (id: number) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-  };
-
-  const allPageSelected = paginated.length > 0 && paginated.every((r) => {
-    const id = Number(r.detection_id ?? r.id ?? 0);
-    return selectedIds.has(id);
+  const allPageSelected = pagedImageGroups.length > 0 && pagedImageGroups.every((g) => {
+    const ids = detectionIdsOfGroup(g.rows);
+    return ids.length > 0 && ids.every((id) => selectedIds.has(id));
   });
 
   const toggleSelectAll = () => {
+    const pageIds = pagedImageGroups.flatMap((g) => detectionIdsOfGroup(g.rows));
     if (allPageSelected) {
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        paginated.forEach((r) => next.delete(Number(r.detection_id ?? r.id ?? 0)));
+        pageIds.forEach((id) => next.delete(id));
         return next;
       });
     } else {
       setSelectedIds((prev) => {
         const next = new Set(prev);
-        paginated.forEach((r) => next.add(Number(r.detection_id ?? r.id ?? 0)));
+        pageIds.forEach((id) => next.add(id));
         return next;
       });
     }
   };
 
+  const toggleSelectGroup = (groupRows: Row[]) => {
+    const ids = detectionIdsOfGroup(groupRows);
+    if (!ids.length) return;
+    const allSelected = ids.every((id) => selectedIds.has(id));
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) ids.forEach((id) => next.delete(id));
+      else ids.forEach((id) => next.add(id));
+      return next;
+    });
+  };
+
   const bulkVerify = async () => {
     setBulkBusy("verify");
     try {
-      await Promise.all([...selectedIds].map((id) => confirmDetection(id, { reviewer_id: "viewer", action: "accept" })));
+      const results = await Promise.allSettled(
+        [...selectedIds].map((id) => confirmDetection(id, { action: "accept" }))
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const fail = results.length - ok;
+      setBulkToast(fail ? `${ok} verified, ${fail} failed` : `${ok} verified`);
       setSelectedIds(new Set());
-      load();
+      await refresh();
     } finally { setBulkBusy(null); }
   };
 
   const bulkFlag = async () => {
     setBulkBusy("flag");
     try {
-      await Promise.all([...selectedIds].map((id) => flagDetection(id, { reviewer_id: "viewer", notes: "" })));
+      const results = await Promise.allSettled(
+        [...selectedIds].map((id) => flagDetection(id, { notes: "" }))
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const fail = results.length - ok;
+      setBulkToast(fail ? `${ok} flagged, ${fail} failed` : `${ok} flagged`);
       setSelectedIds(new Set());
-      load();
+      await refresh();
     } finally { setBulkBusy(null); }
   };
 
@@ -1187,27 +1299,30 @@ export default function Results() {
     try {
       await deleteResults([...selectedIds]);
       setSelectedIds(new Set());
-      load();
+      await refresh();
     } finally { setBulkBusy(null); }
   };
 
   const speciesList = useMemo(() => {
     const s = new Set<string>();
     for (const r of rows) {
+      if (!isWildlifeRow(r)) continue;
       const v = String(r.detected_animal ?? "").trim();
-      if (v && v.toLowerCase() !== "empty") s.add(v);
+      if (v) s.add(v);
     }
     return Array.from(s).sort((a, b) => a.localeCompare(b));
   }, [rows]);
 
-  const uniqueImages = new Set(rows.map((r) => String(r.filename))).size;
-  const totalAnimals = rows.filter((r) => String(r.primary_label ?? r.detected_animal ?? "").toLowerCase() !== "empty").length;
-  const dayImages = new Set(rows.filter((r) => r.day_night === "Day").map((r) => String(r.filename))).size;
-  const nightImages = new Set(rows.filter((r) => r.day_night === "Night").map((r) => String(r.filename))).size;
-  const uniqueSpecies = new Set(rows.filter((r) => String(r.detected_animal ?? "").toLowerCase() !== "empty").map((r) => r.detected_animal)).size;
-  const lowConfCount = rows.filter((r) => {
+  const uniqueImages = new Set(filteredRows.map(imageKey)).size;
+  const totalDetections = filteredRows.filter(isWildlifeRow).length;
+  const dayImages = new Set(filteredRows.filter((r) => r.day_night === "Day").map(imageKey)).size;
+  const nightImages = new Set(filteredRows.filter((r) => r.day_night === "Night").map(imageKey)).size;
+  const uniqueSpecies = new Set(
+    filteredRows.filter(isWildlifeRow).map((r) => r.detected_animal)
+  ).size;
+  const lowConfCount = filteredRows.filter((r) => {
     const v = typeof r.detection_confidence === "number" ? r.detection_confidence as number : parseFloat(String(r.detection_confidence ?? "1"));
-    return !isNaN(v) && v < 0.4;
+    return !isNaN(v) && v < 0.4 && !reviewedIds.has(detIdOf(r));
   }).length;
 
   const COLS: { key: string; label: string; sortable: boolean }[] = [
@@ -1226,23 +1341,27 @@ export default function Results() {
       {lightbox && (
         <Lightbox
           group={lightbox}
-          groups={galleryGroups}
+          groups={imageGroups}
           onClose={() => setLightbox(null)}
-          onNavigate={setLightbox}
-          onSave={async (id, field, value) => { await saveEdit(id, field, value); }}
+          onNavigate={(g) => setLightbox({ ...g, focusDetectionId: undefined })}
+          onSave={saveLightboxEdit}
           onTaxonClick={setSelectedTaxon}
           onVerify={async (detId) => {
-            await confirmDetection(detId, { reviewer_id: "viewer", action: "accept" });
-            load();
+            if (!detId) return;
+            await confirmDetection(detId, { action: "accept" });
+            setLightbox((lb) => (lb ? { ...lb, focusDetectionId: detId } : lb));
+            await refresh();
           }}
           onFlag={async (detId) => {
-            await flagDetection(detId, { reviewer_id: "viewer", notes: "" });
-            load();
+            if (!detId) return;
+            await flagDetection(detId, { notes: "" });
+            setLightbox((lb) => (lb ? { ...lb, focusDetectionId: detId } : lb));
+            await refresh();
           }}
           onMarkForDeletion={async (imageId) => {
             await markForDeletion(imageId);
             setLightbox(null);
-            load();
+            await refresh();
           }}
         />
       )}
@@ -1253,21 +1372,26 @@ export default function Results() {
         <div className="flex gap-2 flex-wrap">
           <div className="flex rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
             <button
-              onClick={() => setViewMode("table")}
+              onClick={() => { setViewMode("table"); setPage(1); }}
               className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer flex items-center gap-1 ${viewMode === "table" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
             >
               <span className="material-symbols-outlined text-sm select-none">view_list</span> Table
             </button>
             <button
-              onClick={() => setViewMode("gallery")}
+              onClick={() => { setViewMode("gallery"); setPage(1); }}
               className={`px-3 py-1.5 text-sm font-medium transition cursor-pointer flex items-center gap-1 ${viewMode === "gallery" ? "bg-green-600 text-white" : "text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800"}`}
             >
               <span className="material-symbols-outlined text-sm select-none">grid_view</span> Gallery
             </button>
           </div>
-          <a href={exportExcel()} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition">Export Excel</a>
-          <a href={exportCsv()} className="px-4 py-2 bg-slate-600 dark:bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 dark:hover:bg-slate-700 shadow-sm transition">Export CSV</a>
+          <a href={exportExcel(buildFilterParams())} className="px-4 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 shadow-sm transition">Export Excel</a>
+          <a href={exportCsv(buildFilterParams())} className="px-4 py-2 bg-slate-600 dark:bg-slate-800 text-white text-sm rounded-lg hover:bg-slate-700 dark:hover:bg-slate-700 shadow-sm transition">Export CSV</a>
+          <a href={exportJson(buildFilterParams())} className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-lg hover:bg-indigo-700 shadow-sm transition">Export JSON</a>
+          <ShowNonWildlifeToggle />
         </div>
+        <p className="text-[11px] text-slate-400 dark:text-slate-500 w-full sm:text-right">
+          Exports include blank, person, and vehicle records regardless of the display toggle.
+        </p>
       </div>
 
       {/* Summary stats */}
@@ -1275,7 +1399,7 @@ export default function Results() {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           {[
             ["Total Images", uniqueImages, "text-slate-700 dark:text-slate-200"],
-            ["Animals", totalAnimals, "text-green-700 dark:text-emerald-400"],
+            ["Detections", totalDetections, "text-green-700 dark:text-emerald-400"],
             ["Unique Species", uniqueSpecies, "text-indigo-700 dark:text-indigo-400"],
             ["Day / Night", `${dayImages} / ${nightImages}`, "text-amber-700 dark:text-amber-400"],
             ["Needs Review", lowConfCount, lowConfCount > 0 ? "text-red-600 dark:text-red-400" : "text-slate-400 dark:text-slate-500"],
@@ -1351,12 +1475,7 @@ export default function Results() {
           <div className="flex flex-col gap-1">
             <label className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Show</label>
             <div className="flex flex-col gap-1 pt-0.5">
-              <label className="flex items-center gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={filter.hideEmpty}
-                  onChange={(e) => setFilter((f) => ({ ...f, hideEmpty: e.target.checked }))}
-                  className="rounded border-slate-300 dark:border-slate-700 text-green-600 focus:ring-green-400 bg-white dark:bg-slate-950 cursor-pointer" />
-                <span className="text-xs text-slate-600 dark:text-slate-400">Hide empty</span>
-              </label>
+              <ShowNonWildlifeToggle compact />
               <label className="flex items-center gap-2 cursor-pointer select-none">
                 <input type="checkbox" checked={filter.lowConfOnly}
                   onChange={(e) => setFilter((f) => ({ ...f, lowConfOnly: e.target.checked, min_conf: "", max_conf: "" }))}
@@ -1379,7 +1498,7 @@ export default function Results() {
             {filter.lowConfOnly && <Chip label="Low conf < 40%" onRemove={() => setFilter((f) => ({ ...f, lowConfOnly: false }))} color="amber" />}
             {selectedTaxon && <Chip label={`Taxon: ${selectedTaxon}`} onRemove={() => setSelectedTaxon(null)} color="emerald" />}
             <button onClick={() => {
-              setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: true, lowConfOnly: false });
+              setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", lowConfOnly: false });
               setSelectedTaxon(null);
             }} className="ml-auto text-xs text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer px-2 py-0.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition">
               Clear all
@@ -1387,6 +1506,13 @@ export default function Results() {
           </div>
         )}
       </div>
+
+      {bulkToast && (
+        <div className="px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-lg text-sm text-slate-700 dark:text-slate-300 flex justify-between items-center">
+          <span>{bulkToast}</span>
+          <button onClick={() => setBulkToast(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">×</button>
+        </div>
+      )}
 
       {/* Bulk action bar */}
       {selectedIds.size > 0 && (
@@ -1423,19 +1549,7 @@ export default function Results() {
         </div>
       )}
 
-      {/* Hidden-empty notice */}
-      {!loading && hiddenEmptyCount > 0 && sorted.length > 0 && (
-        <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-sm text-slate-500 dark:text-slate-400">
-          <span className="material-symbols-outlined text-base select-none text-slate-400 shrink-0">hide_image</span>
-          <span className="flex-1">
-            <span className="font-semibold text-slate-600 dark:text-slate-300">{hiddenEmptyCount}</span> image{hiddenEmptyCount !== 1 ? "s" : ""} with no animal detected {hiddenEmptyCount !== 1 ? "are" : "is"} hidden.
-          </span>
-          <button
-            onClick={() => setFilter((f) => ({ ...f, hideEmpty: false }))}
-            className="text-xs font-semibold text-green-600 dark:text-green-400 hover:underline cursor-pointer shrink-0"
-          >Show them</button>
-        </div>
-      )}
+      {!loading && <HiddenNonWildlifeBanner rows={rows} />}
 
       {/* Content */}
       {loading ? (
@@ -1446,23 +1560,41 @@ export default function Results() {
           </svg>
           Loading…
         </div>
-      ) : sorted.length === 0 ? (
+      ) : error ? (
+        <div className="text-center py-16 text-slate-400 dark:text-slate-500 space-y-3">
+          <span className="material-symbols-outlined text-5xl select-none text-red-500">error</span>
+          <p className="font-semibold text-red-600 dark:text-red-400">Failed to load results</p>
+          <p className="text-sm max-w-md mx-auto text-slate-500 dark:text-slate-400">{error}</p>
+          <button
+            onClick={() => load(true)}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg cursor-pointer transition inline-flex items-center gap-2"
+          >
+            <span className="material-symbols-outlined text-sm">refresh</span>
+            Retry
+          </button>
+        </div>
+      ) : imageGroups.length === 0 ? (
         <div className="text-center py-16 text-slate-400 dark:text-slate-500 space-y-3">
           <span className="material-symbols-outlined text-5xl select-none opacity-40">photo_camera</span>
           {rows.length === 0 ? (
             <>
-              <p className="font-semibold">No results yet</p>
-              <p className="text-sm">Process images in the Upload tab first.</p>
+              <p className="font-semibold text-slate-700 dark:text-slate-300">
+                No detections found in {activeProjectName ? `"${activeProjectName}"` : "the active project"}
+              </p>
+              <p className="text-sm text-slate-500 max-w-md mx-auto">
+                Process images in the Upload tab, or switch to a project with existing data using the Current Project dropdown in the sidebar.
+              </p>
             </>
           ) : (
             <>
               <p className="font-semibold text-slate-600 dark:text-slate-400">No images match the current filters</p>
               <p className="text-sm">{rows.length} detection{rows.length !== 1 ? "s" : ""} in database
-                {hiddenEmptyCount > 0 && ` · ${hiddenEmptyCount} hidden (no detection)`}</p>
+                {hiddenNonWildlifeCount > 0 && ` · ${hiddenNonWildlifeCount} non-wildlife hidden`}</p>
               <button
                 onClick={() => {
-                  setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", hideEmpty: false, lowConfOnly: false });
+                  setFilter({ species: "", day_night: "", min_conf: "", max_conf: "", station: "", lowConfOnly: false });
                   setSelectedTaxon(null);
+                  useDisplayStore.getState().showNonWildlife();
                 }}
                 className="px-4 py-2 bg-green-600 text-white text-sm font-semibold rounded-lg hover:bg-green-700 cursor-pointer transition"
               >Clear all filters</button>
@@ -1472,11 +1604,11 @@ export default function Results() {
       ) : viewMode === "gallery" ? (
         <>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {pagedGalleryGroups.map((group) => (
-              <GalleryCard key={group.filename} rows={group.rows} onClick={() => setLightbox(group)} />
+            {pagedImageGroups.map((group) => (
+              <GalleryCard key={group.imageKey} group={group} onClick={() => setLightbox(group)} />
             ))}
           </div>
-          <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
+          <Pagination page={page} totalPages={totalPages} total={imageGroups.length} onPage={setPage} />
         </>
       ) : (
         <>
@@ -1506,18 +1638,27 @@ export default function Results() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {paginated.map((row, i) => {
-                  const id = Number(row.detection_id ?? row.id ?? i);
-                  const filename = String(row.filename ?? "");
+                {pagedImageGroups.map((group) => {
+                  const row = primaryDetectionRow(group.rows);
+                  const id = detIdOf(row);
+                  const filename = String(group.filename ?? "");
+                  const groupIds = detectionIdsOfGroup(group.rows);
+                  const multi = group.rows.length > 1;
                   const rowConf = typeof row.detection_confidence === "number"
                     ? row.detection_confidence as number
                     : parseFloat(String(row.detection_confidence ?? "1"));
-                  const isLowConf = !isNaN(rowConf) && rowConf < 0.4;
-                  const isSelected = selectedIds.has(id);
+                  const isLowConf = group.rows.some((r) => {
+                    const conf = typeof r.detection_confidence === "number"
+                      ? r.detection_confidence as number
+                      : parseFloat(String(r.detection_confidence ?? "1"));
+                    return !isNaN(conf) && conf < 0.4 && !reviewedIds.has(detIdOf(r));
+                  });
+                  const isSelected = groupIds.length > 0 && groupIds.every((gid) => selectedIds.has(gid));
+                  const speciesSummary = speciesSummaryOfGroup(group.rows);
 
                   return (
                     <tr
-                      key={id}
+                      key={group.imageKey}
                       className={`group transition ${
                         isSelected
                           ? "bg-emerald-50/60 dark:bg-emerald-950/15"
@@ -1526,28 +1667,23 @@ export default function Results() {
                           : "hover:bg-slate-50/50 dark:hover:bg-slate-900/20"
                       }`}
                     >
-                      {/* Checkbox */}
                       <td className="px-3 py-2">
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          onChange={() => toggleSelect(id)}
+                          onChange={() => toggleSelectGroup(group.rows)}
                           className="accent-emerald-600 cursor-pointer w-4 h-4 rounded"
                         />
                       </td>
 
-                      {/* Thumbnail */}
                       <td className="px-3 py-2">
                         <button
-                          onClick={() => {
-                            const g = galleryGroups.find((g) => g.filename === filename);
-                            setLightbox(g ?? { filename, rows: [row] });
-                          }}
+                          onClick={() => setLightbox({ ...group, focusDetectionId: multi ? undefined : id })}
                           className="relative block w-16 h-12 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800 hover:ring-2 hover:ring-green-500 transition shrink-0 cursor-pointer"
                           title="View image"
                         >
                           <img
-                            src={storedThumbUrl(filename, 240)}
+                            src={group.imageId ? storedThumbUrlById(group.imageId, 240) : storedThumbUrl(filename, 240)}
                             alt={filename}
                             className="w-full h-full object-cover"
                             onError={(e) => {
@@ -1556,6 +1692,11 @@ export default function Results() {
                               el.parentElement!.innerHTML = '<span class="text-[10px] text-slate-400 dark:text-slate-500 flex items-center justify-center h-full w-full">No img</span>';
                             }}
                           />
+                          {multi && (
+                            <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] font-bold px-1 rounded">
+                              {group.rows.length}
+                            </span>
+                          )}
                           {isLowConf && (
                             <div className="absolute inset-0 flex items-center justify-center bg-amber-500/20">
                               <span className="material-symbols-outlined text-amber-500 text-sm drop-shadow">warning</span>
@@ -1565,14 +1706,13 @@ export default function Results() {
                       </td>
 
                       {COLS.map(({ key }) => {
-                        const editable = EDITABLE.has(key);
-                        const isEditing = editing?.id === id && editing?.field === key;
-                        const val = row[key];
+                        const editable = EDITABLE.has(key) && !multi;
+                        const isEditing = !multi && editing?.id === id && editing?.field === key;
+                        const val = key === "detected_animal" && multi ? speciesSummary : row[key];
 
                         return (
                           <td key={key} className="px-3 py-2 max-w-[220px] text-slate-700 dark:text-slate-300">
                             {isEditing && key === "detected_animal" ? (
-                              /* ── Inline species correction with candidate dropdown ── */
                               <div className="min-w-[200px] space-y-1.5">
                                 {getCandidates(row).length > 0 && (
                                   <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden">
@@ -1629,12 +1769,18 @@ export default function Results() {
                                 </button>
                               </div>
                             ) : key === "detection_confidence" ? (
-                              <ConfBar value={val} />
+                              multi ? (
+                                <span className="text-xs font-mono text-slate-500 dark:text-slate-400" title={group.rows.map((r) => `${r.detected_animal}: ${r.detection_confidence}`).join(", ")}>
+                                  {Math.round(rowConf * 100)}% best{multi ? ` · ${group.rows.length} det.` : ""}
+                                </span>
+                              ) : (
+                                <ConfBar value={val} />
+                              )
                             ) : key === "day_night" ? (
                               <DayNightBadge value={val} />
                             ) : key === "detection_method" ? (
                               <ModelBreakdown
-                                method={String(val ?? "")}
+                                method={String(row.detection_method ?? "")}
                                 speciesnetConf={typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined}
                                 detected={String(row.detected_animal ?? "")}
                                 modelBreakdown={row.model_breakdown}
@@ -1648,15 +1794,23 @@ export default function Results() {
                                 )}
                                 <div className="min-w-0">
                                   <span
-                                    className="block truncate font-semibold cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2"
-                                    title={`${String(val ?? "")} — click to correct`}
-                                    onClick={() => { setEditing({ id, field: key }); setEditVal(String(val ?? "")); }}
+                                    className={`block font-semibold ${multi ? "leading-snug whitespace-pre-line" : "truncate"} cursor-pointer group-hover:text-green-700 dark:group-hover:text-emerald-400 hover:underline underline-offset-2`}
+                                    title={multi ? `${speciesSummary} — open image to edit each` : `${String(val ?? "")} — click to correct`}
+                                    onClick={() => {
+                                      if (multi) setLightbox({ ...group });
+                                      else { setEditing({ id, field: key }); setEditVal(String(val ?? "")); }
+                                    }}
                                   >
-                                    {String(val ?? "")}
+                                    {multi ? speciesSummary : String(val ?? "")}
                                   </span>
-                                  {!!row.scientific_name && (
+                                  {!multi && !!row.scientific_name && (
                                     <span className="block truncate text-[10px] italic text-slate-400 dark:text-slate-500 leading-tight">
                                       {String(row.scientific_name)}
+                                    </span>
+                                  )}
+                                  {multi && (
+                                    <span className="block text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                      {group.rows.length} animals — click to review each
                                     </span>
                                   )}
                                 </div>
@@ -1679,11 +1833,11 @@ export default function Results() {
               </tbody>
             </table>
             <div className="px-4 py-2 text-xs text-slate-400 dark:text-slate-500 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between select-none">
-              <span>{filteredRows.length} record(s){filteredRows.length !== rows.length ? ` (filtered from ${rows.length})` : ""} · Checkbox to select · Click species to correct · Click thumbnail to open</span>
+              <span>{uniqueImages} image(s) · {totalDetections} detection(s){filteredRows.length !== rows.length ? ` (filtered from ${rows.length})` : ""} · Click thumbnail to open · Multi-animal rows open lightbox to edit each</span>
               <span className="text-slate-400 dark:text-slate-700">Column headers to sort</span>
             </div>
           </div>
-          <Pagination page={page} totalPages={totalPages} total={sorted.length} onPage={setPage} />
+          <Pagination page={page} totalPages={totalPages} total={imageGroups.length} onPage={setPage} />
         </>
       )}
     </div>

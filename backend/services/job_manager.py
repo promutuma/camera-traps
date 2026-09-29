@@ -8,12 +8,13 @@ Their temp directories are deleted at eviction time.
 
 from __future__ import annotations
 import os
+import queue
 import shutil
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional, List, Any, Dict
+from typing import Optional, List, Any, Dict, Set
 
 _TTL_SECONDS = int(os.environ.get("JOB_TTL_HOURS", "2")) * 3600
 
@@ -21,7 +22,7 @@ _TTL_SECONDS = int(os.environ.get("JOB_TTL_HOURS", "2")) * 3600
 @dataclass
 class Job:
     job_id: str
-    status: str = "queued"   # queued | running | done | error
+    status: str = "queued"   # queued | running | done | done_with_errors | error
     total: int = 0
     completed: int = 0
     results: List[Any] = field(default_factory=list)
@@ -39,6 +40,15 @@ class Job:
     # SHA-256 hashes computed from raw bytes at upload time (filename → hex).
     # Carried into _run_processing so the post-processing step skips a disk re-read.
     file_hashes: Dict[str, str] = field(default_factory=dict)
+    # Pipeline mode: uploads stream in while analysis consumes from _work_queue.
+    pipeline: bool = False
+    uploads_finished: bool = False
+    uploaded: int = 0
+    expected_total: int = 0
+    _work_queue: Optional[queue.Queue] = field(default=None, repr=False)
+    _pipeline_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _job_names: Set[str] = field(default_factory=set, repr=False)
+    _job_hashes: Set[str] = field(default_factory=set, repr=False)
 
 
 class JobManager:
@@ -59,7 +69,7 @@ class JobManager:
         with self._lock:
             expired = [
                 jid for jid, job in self._jobs.items()
-                if job.status in ("done", "error")
+                if job.status in ("done", "done_with_errors", "error")
                 and job.finished_at is not None
                 and (now - job.finished_at) > self._ttl
             ]

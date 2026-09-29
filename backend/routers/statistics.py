@@ -10,6 +10,13 @@ from backend.routers.deps import get_state
 router = APIRouter(prefix="/stats", tags=["statistics"])
 
 
+def _unique_images_df(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per physical image — dedupe by id (image PK), not filename."""
+    if df.empty or "id" not in df.columns:
+        return df
+    return df.drop_duplicates("id")
+
+
 @router.get("/summary")
 def get_summary(state: AppState = Depends(get_state)):
     if not state.db_manager:
@@ -27,6 +34,8 @@ def get_summary(state: AppState = Depends(get_state)):
             "hourly_distribution": [],
         }
 
+    unique_df = _unique_images_df(df)
+
     # Exclude Empty detections for animal-level stats
     non_empty = df[
         df["detected_animal"].str.lower().ne("empty") if "detected_animal" in df.columns else df.index.notna()
@@ -39,17 +48,11 @@ def get_summary(state: AppState = Depends(get_state)):
         .to_dict(orient="records")
     ) if "detected_animal" in animals.columns else []
 
-    # Day/Night distribution by unique image
-    if "day_night" in df.columns and "filename" in df.columns:
-        img_day_night = df.drop_duplicates("filename")[["filename", "day_night"]]
+    # Day/Night distribution by unique image id
+    if "day_night" in unique_df.columns:
+        img_day_night = unique_df[["id", "day_night"]].drop_duplicates("id")
         day_night_dist = (
             img_day_night["day_night"].value_counts().reset_index()
-            .rename(columns={"day_night": "label", "count": "count"})
-            .to_dict(orient="records")
-        )
-    elif "day_night" in df.columns:
-        day_night_dist = (
-            df["day_night"].value_counts().reset_index()
             .rename(columns={"day_night": "label", "count": "count"})
             .to_dict(orient="records")
         )
@@ -60,15 +63,10 @@ def get_summary(state: AppState = Depends(get_state)):
         non_empty["detection_confidence"].fillna(0).tolist()
     ) if "detection_confidence" in non_empty.columns else []
 
-    # Hourly activity distribution — one entry per unique image to avoid double-counting
+    # Hourly activity — one entry per unique image id
     hourly_counts = [0] * 24
-    if "capture_time" in df.columns and "filename" in df.columns:
-        seen_images = set()
-        for _, row in df[["filename", "capture_time"]].dropna(subset=["capture_time"]).iterrows():
-            fname = row["filename"]
-            if fname in seen_images:
-                continue
-            seen_images.add(fname)
+    if "capture_time" in unique_df.columns and "id" in unique_df.columns:
+        for _, row in unique_df[["id", "capture_time"]].dropna(subset=["capture_time"]).iterrows():
             try:
                 h = int(str(row["capture_time"]).split(":")[0])
                 if 0 <= h < 24:
@@ -85,16 +83,18 @@ def get_summary(state: AppState = Depends(get_state)):
                 pass
     hourly_dist = [{"hour": f"{h:02d}:00", "count": count} for h, count in enumerate(hourly_counts)]
 
-    # Count unique images for top-level stats
-    total_images = int(df["filename"].nunique()) if "filename" in df.columns else len(df)
-    animal_images = int(animals["filename"].nunique()) if "filename" in animals.columns else len(animals)
-    if "day_night" in df.columns and "filename" in df.columns:
-        img_dn = df.drop_duplicates("filename")
-        day_count = int((img_dn["day_night"] == "Day").sum())
-        night_count = int((img_dn["day_night"] == "Night").sum())
+    total_images = int(unique_df["id"].nunique()) if "id" in unique_df.columns else len(unique_df)
+    if "id" in animals.columns:
+        animal_images = int(animals["id"].nunique())
     else:
-        day_count = int((df["day_night"] == "Day").sum()) if "day_night" in df.columns else 0
-        night_count = int((df["day_night"] == "Night").sum()) if "day_night" in df.columns else 0
+        animal_images = len(animals)
+
+    if "day_night" in unique_df.columns:
+        day_count = int((unique_df["day_night"] == "Day").sum())
+        night_count = int((unique_df["day_night"] == "Night").sum())
+    else:
+        day_count = 0
+        night_count = 0
 
     return {
         "total_images": total_images,
@@ -116,8 +116,10 @@ def export_statistics(
 ):
     if not state.db_manager:
         raise HTTPException(status_code=503, detail="DB not ready")
-    
+
     df = state.db_manager.get_history_df()
+    unique_df = _unique_images_df(df)
+
     if df.empty:
         if metric == "summary":
             export_df = pd.DataFrame(columns=["metric", "value"])
@@ -132,22 +134,19 @@ def export_statistics(
         else:
             raise HTTPException(status_code=400, detail=f"Unknown metric: {metric}")
     else:
-        # Exclude Empty detections for animal-level stats
         non_empty = df[
             df["detected_animal"].str.lower().ne("empty") if "detected_animal" in df.columns else df.index.notna()
         ]
         animals = non_empty[non_empty["primary_label"] == "Animal"] if "primary_label" in non_empty.columns else non_empty
 
         if metric == "summary":
-            total_images = int(df["filename"].nunique()) if "filename" in df.columns else len(df)
-            animal_images = int(animals["filename"].nunique()) if "filename" in animals.columns else len(animals)
-            if "day_night" in df.columns and "filename" in df.columns:
-                img_dn = df.drop_duplicates("filename")
-                day_count = int((img_dn["day_night"] == "Day").sum())
-                night_count = int((img_dn["day_night"] == "Night").sum())
+            total_images = int(unique_df["id"].nunique()) if "id" in unique_df.columns else len(unique_df)
+            animal_images = int(animals["id"].nunique()) if "id" in animals.columns else len(animals)
+            if "day_night" in unique_df.columns:
+                day_count = int((unique_df["day_night"] == "Day").sum())
+                night_count = int((unique_df["day_night"] == "Night").sum())
             else:
-                day_count = int((df["day_night"] == "Day").sum()) if "day_night" in df.columns else 0
-                night_count = int((df["day_night"] == "Night").sum()) if "day_night" in df.columns else 0
+                day_count = night_count = 0
             export_df = pd.DataFrame([
                 {"metric": "Total Images", "value": total_images},
                 {"metric": "Animals Identified", "value": animal_images},
@@ -163,8 +162,8 @@ def export_statistics(
             else:
                 export_df = pd.DataFrame(columns=["species", "count"])
         elif metric == "daynight":
-            if "day_night" in df.columns and "filename" in df.columns:
-                img_day_night = df.drop_duplicates("filename")[["filename", "day_night"]]
+            if "day_night" in unique_df.columns:
+                img_day_night = unique_df[["id", "day_night"]].drop_duplicates("id")
                 export_df = (
                     img_day_night["day_night"].value_counts().reset_index()
                     .rename(columns={"day_night": "label", "count": "count"})
@@ -178,14 +177,8 @@ def export_statistics(
                 export_df = pd.DataFrame(columns=["label", "count"])
         elif metric == "hourly":
             hourly_counts = [0] * 24
-            if "capture_time" in df.columns and "filename" in df.columns:
-                seen_images = set()
-                for _, row in df[["filename", "capture_time"]].dropna(subset=["capture_time"]).iterrows():
-                    fname = row["filename"]
-                    if fname in seen_images:
-                        continue
-                      # Note: indent correction
-                    seen_images.add(fname)
+            if "capture_time" in unique_df.columns and "id" in unique_df.columns:
+                for _, row in unique_df[["id", "capture_time"]].dropna(subset=["capture_time"]).iterrows():
                     try:
                         h = int(str(row["capture_time"]).split(":")[0])
                         if 0 <= h < 24:
@@ -218,7 +211,7 @@ def export_statistics(
 
     is_excel = format.lower() in ("excel", "xlsx")
     filename = f"statistics_{metric}.xlsx" if is_excel else f"statistics_{metric}.csv"
-    
+
     if is_excel:
         out = io.BytesIO()
         with pd.ExcelWriter(out, engine="openpyxl") as writer:
@@ -235,4 +228,3 @@ def export_statistics(
         media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
-

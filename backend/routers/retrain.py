@@ -13,12 +13,12 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from backend.models.state import AppState
 from backend.models.schemas import RetrainJobStatus, RetrainTriggerRequest
-from backend.routers.deps import get_state
+from backend.routers.deps import get_state, get_current_user
 from backend.services.retrain_job_manager import retrain_job_manager, RetrainJob
 
 router = APIRouter(prefix="/retrain", tags=["retrain"])
@@ -72,6 +72,7 @@ def preview(state: AppState = Depends(get_state)):
 @router.post("/run")
 def run(
     req: RetrainTriggerRequest,
+    request: Request,
     background_tasks: BackgroundTasks,
     state: AppState = Depends(get_state),
 ):
@@ -80,7 +81,8 @@ def run(
     if retrain_job_manager.is_active():
         raise HTTPException(status_code=409, detail="A retrain run is already in progress")
 
-    job = retrain_job_manager.create(triggered_by=req.reviewer_id)
+    triggered_by = (req.reviewer_id or "").strip() or get_current_user(request)
+    job = retrain_job_manager.create(triggered_by=triggered_by)
     background_tasks.add_task(_run_retrain, job.job_id, state)
     return {"job_id": job.job_id, "status": "started"}
 

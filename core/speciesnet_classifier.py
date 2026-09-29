@@ -25,6 +25,9 @@ from typing import Dict, List, Optional, Tuple
 
 from PIL import Image
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Default SpeciesNet model (PyTorch variant, v4.0.2a)
 _DEFAULT_MODEL = "kaggle:google/speciesnet/pyTorch/v4.0.2a/1"
@@ -169,7 +172,7 @@ class SpeciesNetWrapper:
                 model_name=self.model_name,
                 device=device,
             )
-            print("SpeciesNet classifier loaded successfully.")
+            logger.info("SpeciesNet classifier loaded successfully.")
             self._load_geofence()
 
         except ImportError:
@@ -177,14 +180,14 @@ class SpeciesNetWrapper:
                 "speciesnet package not installed. "
                 "Run: pip install speciesnet"
             )
-            print(f"Warning: {self.load_error}")
+            logger.warning("%s", self.load_error)
 
         except Exception as exc:
-            # Common causes: missing Kaggle credentials, network failure
             self.load_error = str(exc)
-            print(
-                f"Warning: SpeciesNet failed to load ({exc}). "
-                "Ensure KAGGLE_USERNAME and KAGGLE_KEY environment variables are set."
+            logger.warning(
+                "SpeciesNet failed to load (%s). "
+                "Ensure KAGGLE_USERNAME and KAGGLE_KEY environment variables are set.",
+                exc,
             )
 
     def _load_geofence(self) -> None:
@@ -205,13 +208,14 @@ class SpeciesNetWrapper:
             model_info = ModelInfo(self.model_name)
             with open(model_info.geofence, encoding="utf-8") as fp:
                 self._geofence_map = _json.load(fp)
-            print("SpeciesNet geofence map loaded — East Africa region filtering active.")
+            logger.info("SpeciesNet geofence map loaded — East Africa region filtering active.")
 
         except Exception as exc:
             self.geofence_error = str(exc)
-            print(
-                f"Warning: SpeciesNet geofence map unavailable ({exc}). "
-                "Region filtering is disabled; raw (global) SpeciesNet candidates will be used."
+            logger.warning(
+                "SpeciesNet geofence map unavailable (%s). "
+                "Region filtering is disabled; raw SpeciesNet candidates will be used.",
+                exc,
             )
 
     # ------------------------------------------------------------------

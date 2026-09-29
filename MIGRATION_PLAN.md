@@ -1,5 +1,7 @@
 # Migration Plan: Streamlit → FastAPI + React
 
+> **2026 update:** Production pipeline is **MegaDetector v5a + SpeciesNet only** (no BioCLIP, MDv1000, or fusion). SpeciesNet loads in the background at startup; Docker persists Kaggle weights via the `kaggle_cache` volume.
+
 ## Overview
 
 Migrate the Wildlife Camera Trap Auto-Analyzer from a 3,176-line Streamlit monolith (`app.py`) to a

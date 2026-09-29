@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { useConfigStore } from "../../store/configStore";
+import { useSessionStore } from "../../store/sessionStore";
+import { ShowNonWildlifeToggle } from "../HiddenNonWildlifeBanner";
 import { listProjects, setActiveProject, getStations } from "../../api/client";
 
 const NAV_GROUPS = [
@@ -44,6 +46,7 @@ const NAV_GROUPS = [
 
 export default function Sidebar() {
   const { config, fetch, patch } = useConfigStore();
+  const { username, logout, login } = useSessionStore();
   const [activeTab, setActiveTab] = useState<"nav" | "config">("nav");
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     return localStorage.getItem("sidebar-collapsed") === "true";
@@ -193,6 +196,31 @@ export default function Sidebar() {
         </div>
       )}
 
+      {/* Signed-in user */}
+      {!collapsed && (
+        <div className="px-4 py-2.5 border-b border-slate-800 bg-slate-950/20">
+          <label className="block text-[9px] font-bold uppercase tracking-wider text-slate-500 mb-1">
+            Signed in as
+          </label>
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-emerald-400 truncate">
+              {username ?? "…"}
+            </span>
+            <button
+              type="button"
+              onClick={async () => {
+                await logout();
+                const name = window.prompt("Enter your name to continue:");
+                if (name?.trim()) await login(name.trim());
+              }}
+              className="text-[10px] text-slate-500 hover:text-white shrink-0"
+            >
+              Switch user
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Segmented Control */}
       {!collapsed && (
         <div className="p-3 border-b border-slate-800">
@@ -260,6 +288,17 @@ export default function Sidebar() {
                 </div>
               </div>
             ))}
+            {!collapsed && (
+              <div className="px-3 pt-3 mt-1 border-t border-slate-800 space-y-1.5">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Display</p>
+                <div className="rounded-lg border border-slate-800/80 bg-slate-950/40 px-3 py-2.5">
+                  <ShowNonWildlifeToggle compact />
+                  <p className="text-[10px] text-slate-500 mt-1.5 leading-snug">
+                    Blank, person, and vehicle frames are hidden by default. Exports always include them.
+                  </p>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-5">
@@ -272,22 +311,34 @@ export default function Sidebar() {
                 {(
                   [
                     ["enable_ocr", "OCR Metadata Extraction"],
-                    ["enable_detection", "Animal Detection"],
+                    ["enable_detection", "Animal Detection (MDv5a)"],
                     ["enable_day_night", "Day/Night Classification"],
                     ["enable_scrubbing", "Auto-Scrub Person/Vehicle"],
+                    ["delete_original_after_scrub", "Delete Original After Scrubbing"],
                     ["enable_low_spec", "Low-Spec (Low-Memory)"],
                   ] as [keyof typeof config, string][]
                 ).map(([key, label]) => (
-                  <label key={key} className="flex items-center gap-2.5 cursor-pointer select-none">
+                  <label key={key} className={`flex items-center gap-2.5 select-none ${key === "delete_original_after_scrub" && !config.enable_scrubbing ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}>
                     <input
                       type="checkbox"
                       checked={config[key] as boolean}
                       onChange={(e) => toggle(key, e.target.checked)}
+                      disabled={key === "delete_original_after_scrub" && !config.enable_scrubbing}
                       className="rounded border-slate-700 bg-slate-800 text-emerald-600 focus:ring-emerald-500 focus:ring-offset-slate-900"
                     />
                     <span className="text-xs text-slate-300 font-medium">{label}</span>
                   </label>
                 ))}
+                {config.enable_scrubbing && config.delete_original_after_scrub && (
+                  <p className="text-[10px] text-amber-500/90 leading-snug pl-6">
+                    After scrubbing, originals are deleted for new uploads only. Scrubbed copies remain in uploads/scrubbed/.
+                  </p>
+                )}
+                {config.enable_low_spec && (
+                  <p className="text-[10px] text-amber-500/90 leading-snug pl-6">
+                    Low-Spec disables SpeciesNet to save RAM. Toggling reloads the classifier in the background.
+                  </p>
+                )}
               </div>
             </section>
 
@@ -349,17 +400,6 @@ export default function Sidebar() {
                   format={(v) => v.toFixed(2)}
                   onChange={(v) => num("review_confidence_threshold", v)}
                 />
-                <div>
-                  <label className="block text-xs font-semibold text-slate-400 mb-1">
-                    Reviewer ID
-                  </label>
-                  <input
-                    type="text"
-                    value={config.reviewer_id}
-                    onChange={(e) => str("reviewer_id", e.target.value)}
-                    className="block w-full rounded border border-slate-700 bg-slate-800/50 text-white px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500"
-                  />
-                </div>
               </div>
             </section>
 

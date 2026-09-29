@@ -16,6 +16,7 @@ class AppConfig:
     enable_detection: bool = True
     enable_day_night: bool = True
     enable_scrubbing: bool = True
+    delete_original_after_scrub: bool = False
     enable_low_spec: bool = False
     cpu_threads: int = field(default_factory=lambda: max(1, (os.cpu_count() or 4) // 4))
     detection_confidence: float = 0.35
@@ -31,9 +32,6 @@ class AppConfig:
     speciesnet_lat: float = -1.0
     speciesnet_lng: float = 37.0
     speciesnet_country: str = "KEN"
-    # Bypass SpeciesNet fusion when top confidence >= this (0 = disabled; currently a no-op in speciesnet_only path)
-    speciesnet_bypass_threshold: float = 0.60
-    use_speciesnet_first: bool = True
 
 
 @dataclass
@@ -64,3 +62,5 @@ class AppState:
 
     models_loaded: bool = False
     models_error: Optional[str] = None
+    speciesnet_error: Optional[str] = None
+    speciesnet_loading: bool = False

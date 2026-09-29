@@ -1,0 +1,61 @@
+# Virtual environments (can be 3GB+)
+venv/
+env/
+ENV/
+.venv/
+
+# Local data — mounted as volumes at runtime, never bake into image
+uploads/
+wildlife_data.db
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Frontend — rebuilt inside multi-stage; exclude host artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Git / IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+.cursor/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# OS / temp
+.DS_Store
+Thumbs.db
+temp/
+scratch/
+*.log
+
+# Large local test assets
+test_*.jpg
+test_*.png
+temp_packages_download/
+temp_ssl_patch/
+training_data/
+models/retrained/
+
+# Docs and dev-only (not needed in image)
+memory/
+.devcontainer/
+.streamlit/
+*.md
+docker-compose.yml
+camera-traps.service
+dev.sh
+run.sh
+install.bat
+
+# Env secrets
+.env
+.env.*

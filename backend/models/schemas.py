@@ -14,6 +14,7 @@ class ConfigResponse(BaseModel):
     enable_detection: bool
     enable_day_night: bool
     enable_scrubbing: bool
+    delete_original_after_scrub: bool
     enable_low_spec: bool
     cpu_threads: int
     detection_confidence: float
@@ -28,7 +29,6 @@ class ConfigResponse(BaseModel):
     speciesnet_lat: float
     speciesnet_lng: float
     speciesnet_country: str
-    speciesnet_bypass_threshold: float
 
 
 class ConfigUpdate(BaseModel):
@@ -36,6 +36,7 @@ class ConfigUpdate(BaseModel):
     enable_detection: Optional[bool] = None
     enable_day_night: Optional[bool] = None
     enable_scrubbing: Optional[bool] = None
+    delete_original_after_scrub: Optional[bool] = None
     enable_low_spec: Optional[bool] = None
     cpu_threads: Optional[int] = None
     detection_confidence: Optional[float] = None
@@ -50,7 +51,6 @@ class ConfigUpdate(BaseModel):
     speciesnet_lat: Optional[float] = None
     speciesnet_lng: Optional[float] = None
     speciesnet_country: Optional[str] = None
-    speciesnet_bypass_threshold: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +59,10 @@ class ConfigUpdate(BaseModel):
 
 class JobStatus(BaseModel):
     job_id: str
-    status: str          # queued | running | done | error
+    status: str          # queued | running | done | done_with_errors | error
     total: int
     completed: int
+    uploaded: Optional[int] = None
     error: Optional[str] = None
 
 
@@ -155,15 +156,15 @@ class CameraUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class ReviewAction(BaseModel):
-    reviewer_id: str
+    reviewer_id: Optional[str] = None
     corrected_label: Optional[str] = None
     notes: Optional[str] = None
     bbox: Optional[List[float]] = None
 
 
-class BulkFlagRequest(BaseModel):
-    filenames: List[str]
-    reviewer_id: str = "anonymous"
+class BulkFlagByImageIdsRequest(BaseModel):
+    image_ids: List[int]
+    reviewer_id: Optional[str] = None
     notes: str = ""
 
 
@@ -172,7 +173,7 @@ class BulkFlagRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RetrainTriggerRequest(BaseModel):
-    reviewer_id: str = "anonymous"
+    reviewer_id: Optional[str] = None
 
 
 class RetrainJobStatus(BaseModel):

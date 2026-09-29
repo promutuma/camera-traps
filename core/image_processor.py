@@ -6,6 +6,7 @@ Orchestrates OCR, animal detection, and day/night classification.
 import os
 import hashlib
 import threading
+from datetime import datetime
 import cv2
 from concurrent.futures import ThreadPoolExecutor
 from PIL import Image
@@ -14,9 +15,7 @@ from .ocr_processor import OCRProcessor
 from .animal_detector import EnsembleDetector
 from .day_night_classifier import DayNightClassifier
 
-# Executor for running OCR and day/night classification in parallel within a
-# single image. Sized to match the number of tasks we submit per image (2),
-# multiplied by the number of images that may be in flight simultaneously.
+# Executor for parallel work within the pipeline (e.g. future OCR batching).
 _pipeline_executor = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4)))
 
 # EasyOCR's Reader.readtext() shares internal numpy/model buffers and is not
@@ -58,10 +57,10 @@ class ImageProcessor:
 
     @staticmethod
     def get_image_hash(image_path: str) -> str:
-        """Generate a unique ID based on image content (MD5)."""
+        """Generate a unique ID based on image content (SHA-256)."""
         try:
             with open(image_path, "rb") as f:
-                file_hash = hashlib.md5()
+                file_hash = hashlib.sha256()
                 while chunk := f.read(8192):
                     file_hash.update(chunk)
             return file_hash.hexdigest()
@@ -75,17 +74,42 @@ class ImageProcessor:
                 image_path, strip_height_percent=self.ocr_strip_percent
             )
 
-    def process_single_image(self, image_path: str, progress_callback: Optional[Callable] = None) -> list:
+    def _mtime_fallback(self, image_path: str) -> tuple[Optional[str], Optional[str]]:
+        """File modification time as YYYY-MM-DD / HH:MM:SS when OCR has no timestamp."""
+        try:
+            fallback_dt = datetime.fromtimestamp(os.path.getmtime(image_path))
+            return fallback_dt.strftime("%Y-%m-%d"), fallback_dt.strftime("%H:%M:%S")
+        except OSError:
+            return None, None
+
+    def _do_day_night_pixels(self, image_path: str) -> tuple[str, float]:
+        """Pixel brightness + night-vision heuristics (runs in parallel with OCR)."""
+        image = cv2.imread(image_path)
+        if image is None:
+            return "Unknown", 0.0
+        brightness = self.day_night_classifier.calculate_brightness(image)
+        label = self.day_night_classifier.classify_from_pixels(image)
+        return label, brightness
+
+    def process_single_image(
+        self,
+        image_path: str,
+        progress_callback: Optional[Callable] = None,
+        station_latitude: Optional[float] = None,
+        station_longitude: Optional[float] = None,
+    ) -> list:
         """
         Process a single image through the complete pipeline.
 
-        OCR and day/night classification are submitted to _pipeline_executor in
-        parallel — they are independent reads of the same file. Detection waits
-        for the day/night result (needs is_night) but runs immediately after.
+        OCR and pixel-based day/night run in parallel (thread pool). After both
+        finish, day/night is refined with the OCR or file-mtime timestamp when
+        available. Detection runs last (needs the final day/night label).
 
         Args:
             image_path: Path to the image file
             progress_callback: Optional callback function for progress updates
+            station_latitude: Optional station latitude for solar day/night
+            station_longitude: Optional station longitude for solar day/night
 
         Returns:
             List of dictionaries containing all extracted information (one per detected entity)
@@ -109,23 +133,36 @@ class ImageProcessor:
             if progress_callback:
                 progress_callback(f"Processing {filename}...")
 
-            # Submit OCR and day/night in parallel — both are independent reads.
-            future_ocr = (
-                _pipeline_executor.submit(self._do_ocr, image_path)
-                if self.ocr_enabled and self.ocr_processor else None
-            )
-            future_dn = (
-                _pipeline_executor.submit(self.day_night_classifier.classify, image_path)
-                if self.day_night_enabled and self.day_night_classifier else None
-            )
+            ocr_future = None
+            dn_future = None
 
-            if future_ocr:
-                base_result.update(future_ocr.result())
+            if self.ocr_enabled and self.ocr_processor:
+                ocr_future = _pipeline_executor.submit(self._do_ocr, image_path)
+            if self.day_night_enabled and self.day_night_classifier:
+                dn_future = _pipeline_executor.submit(self._do_day_night_pixels, image_path)
 
-            if future_dn:
-                classification, brightness = future_dn.result()
-                base_result['day_night'] = classification
-                base_result['brightness'] = brightness
+            if ocr_future:
+                base_result.update(ocr_future.result())
+
+            mtime_date, mtime_time = self._mtime_fallback(image_path)
+            if not base_result.get("time") and mtime_time:
+                if not base_result.get("date"):
+                    base_result["date"] = mtime_date
+                base_result["time"] = mtime_time
+
+            pixel_label, brightness = "Unknown", 0.0
+            if dn_future:
+                pixel_label, brightness = dn_future.result()
+
+            if self.day_night_enabled and self.day_night_classifier:
+                ts_label = self.day_night_classifier.classify_from_timestamp(
+                    base_result.get("date"),
+                    base_result.get("time"),
+                    station_latitude,
+                    station_longitude,
+                )
+                base_result["day_night"] = ts_label if ts_label else pixel_label
+                base_result["brightness"] = brightness
 
             # 3. Animal Detection (Returns List)
             final_results = []

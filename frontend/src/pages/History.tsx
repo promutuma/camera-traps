@@ -1,12 +1,23 @@
-import { useEffect, useState } from "react";
-import { getHistory, clearHistory } from "../api/client";
-
-type Row = Record<string, unknown>;
+import { useEffect, useMemo, useState } from "react";
+import { getHistory, clearHistory, storedThumbUrl, storedThumbUrlById } from "../api/client";
+import {
+  buildImageGroupsFromRows,
+  confidenceOf,
+  imageKey,
+  primaryDetectionRow,
+  detectionSummaryOfGroup,
+  speciesSummaryOfGroup,
+  type Row,
+} from "../utils/imageIdentity";
+import { filterVisibleRows, isWildlifeRow } from "../utils/wildlifeFilter";
+import { useDisplayStore } from "../store/displayStore";
+import { HiddenNonWildlifeBanner, ShowNonWildlifeToggle } from "../components/HiddenNonWildlifeBanner";
 
 export default function History() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [confirmClear, setConfirmClear] = useState(false);
+  const hideNonWildlife = useDisplayStore((s) => s.hideNonWildlife);
 
   const load = () => getHistory().then(setRows).finally(() => setLoading(false));
   useEffect(() => { load(); }, []);
@@ -17,24 +28,36 @@ export default function History() {
     load();
   };
 
-  const uniqueImages = new Set(rows.map((r) => r.filename)).size;
+  const visibleRows = useMemo(
+    () => filterVisibleRows(rows, hideNonWildlife),
+    [rows, hideNonWildlife],
+  );
+
+  const imageGroups = useMemo(
+    () => buildImageGroupsFromRows(visibleRows),
+    [visibleRows],
+  );
+
+  const uniqueImages = new Set(visibleRows.map(imageKey)).size;
   const uniqueSpecies = new Set(
-    rows.filter((r) => String(r.detected_animal ?? "").toLowerCase() !== "empty").map((r) => r.detected_animal)
+    visibleRows.filter(isWildlifeRow).map((r) => r.detected_animal)
   ).size;
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-white">Analysis History</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Review past detection exports, audit classification lists, and clear records logs.
+            One row per image — multi-animal frames show all species together.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap items-center">
+          <ShowNonWildlifeToggle />
           <a
             href="/api/history/export/csv"
             className="px-4 py-2 bg-slate-700 hover:bg-slate-800 text-white text-sm font-semibold rounded-lg shadow-sm hover:shadow transition"
+            title="CSV export includes blank, person, and vehicle records"
           >
             Export CSV
           </a>
@@ -72,7 +95,7 @@ export default function History() {
         </div>
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
           <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Total Detections</p>
-          <p className="text-3xl font-extrabold text-slate-900 dark:text-white mt-1.5">{rows.length}</p>
+          <p className="text-3xl font-extrabold text-slate-900 dark:text-white mt-1.5">{visibleRows.length}</p>
         </div>
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-5 shadow-sm">
           <p className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Unique Species</p>
@@ -80,13 +103,17 @@ export default function History() {
         </div>
       </div>
 
+      {!loading && <HiddenNonWildlifeBanner rows={rows} />}
+
       {loading ? (
         <div className="text-center py-12 text-slate-400 dark:text-slate-550 animate-pulse">
           Loading history log list…
         </div>
-      ) : rows.length === 0 ? (
+      ) : imageGroups.length === 0 ? (
         <div className="text-center py-16 text-slate-400 dark:text-slate-550 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-850 rounded-xl">
-          No analysis history found. Process and save images to build your catalog.
+          {rows.length === 0
+            ? "No analysis history found. Process and save images to build your catalog."
+            : "No wildlife detections to show. Enable “Show blank / person / vehicle” to view non-wildlife records."}
         </div>
       ) : (
         <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 overflow-hidden shadow-sm">
@@ -94,7 +121,7 @@ export default function History() {
             <table className="w-full text-sm">
               <thead className="bg-slate-50 dark:bg-slate-950/40 border-b border-slate-200 dark:border-slate-800">
                 <tr>
-                  {["filename", "station_id", "detected_animal", "detection_confidence", "day_night", "processed_at", "user_notes"].map((c) => (
+                  {["Image", "filename", "station_id", "species", "detection summary", "detections", "confidence", "day_night", "processed_at", "user_notes"].map((c) => (
                     <th
                       key={c}
                       className="text-left px-4 py-3 font-semibold text-slate-600 dark:text-slate-450 uppercase tracking-wider text-[11px]"
@@ -105,25 +132,60 @@ export default function History() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                {rows.map((row, i) => (
-                  <tr key={i} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors">
-                    {["filename", "station_id", "detected_animal", "detection_confidence", "day_night", "processed_at", "user_notes"].map((col) => (
-                      <td key={col} className="px-4 py-3 text-slate-750 dark:text-slate-300">
-                        {col === "detection_confidence"
-                          ? typeof row[col] === "number"
-                            ? (row[col] as number).toFixed(2)
-                            : String(row[col] ?? "")
-                          : String(row[col] ?? "")}
+                {imageGroups.map((group) => {
+                  const row = primaryDetectionRow(group.rows);
+                  const multi = group.rows.length > 1;
+                  const speciesSummary = speciesSummaryOfGroup(group.rows);
+                  const detectionSummary = detectionSummaryOfGroup(group.rows);
+                  const confSummary = multi
+                    ? group.rows.map((r) => `${r.detected_animal}: ${Math.round(confidenceOf(r) * 100)}%`).join(", ")
+                    : `${Math.round(confidenceOf(row) * 100)}%`;
+
+                  return (
+                    <tr key={group.imageKey} className="hover:bg-slate-50/50 dark:hover:bg-slate-950/20 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="relative w-14 h-11 rounded overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800">
+                          <img
+                            src={group.imageId ? storedThumbUrlById(group.imageId, 160) : storedThumbUrl(group.filename, 160)}
+                            alt=""
+                            className="w-full h-full object-cover"
+                            onError={(e) => { (e.target as HTMLElement).style.display = "none"; }}
+                          />
+                          {multi && (
+                            <span className="absolute bottom-0.5 right-0.5 bg-black/70 text-white text-[9px] font-bold px-1 rounded">
+                              {group.rows.length}
+                            </span>
+                          )}
+                        </div>
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 max-w-[180px] truncate" title={group.filename}>
+                        {group.filename}
+                      </td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300">{String(row.station_id ?? "")}</td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 max-w-[260px] text-xs whitespace-pre-line leading-snug" title={speciesSummary}>
+                        {speciesSummary}
+                      </td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 max-w-[320px] text-xs whitespace-pre-line leading-snug" title={detectionSummary}>
+                        {detectionSummary}
+                      </td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300">{group.rows.length}</td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 text-xs font-mono" title={confSummary}>
+                        {confSummary}
+                      </td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300">{String(row.day_night ?? "")}</td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 whitespace-nowrap">{String(row.processed_at ?? "")}</td>
+                      <td className="px-4 py-3 text-slate-750 dark:text-slate-300 max-w-[200px] truncate">{String(row.user_notes ?? "")}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
+          </div>
+          <div className="px-4 py-2.5 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 font-medium">
+            {imageGroups.length} image(s) · {visibleRows.length} detection(s)
           </div>
         </div>
       )}
     </div>
   );
 }
-

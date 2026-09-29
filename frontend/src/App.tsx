@@ -1,6 +1,9 @@
+import { useEffect } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Sidebar from "./components/Layout/Sidebar";
 import ErrorBoundary from "./components/ErrorBoundary";
+import UsernameModal from "./components/UsernameModal";
+import { useSessionStore } from "./store/sessionStore";
 import Upload from "./pages/Upload";
 import Results from "./pages/Results";
 import Statistics from "./pages/Statistics";
@@ -23,8 +26,17 @@ function wrap(label: string, element: React.ReactElement) {
 }
 
 export default function App() {
+  const { username, loading, fetch, login } = useSessionStore();
+
+  useEffect(() => {
+    fetch();
+  }, [fetch]);
+
   return (
     <BrowserRouter>
+      {!loading && !username && (
+        <UsernameModal onSubmit={login} />
+      )}
       <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
         <Sidebar />
         <div className="flex flex-col flex-1 overflow-hidden">

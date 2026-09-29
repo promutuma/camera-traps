@@ -1,6 +1,6 @@
 import axios, { AxiosError } from "axios";
 
-const api = axios.create({ baseURL: "/api" });
+const api = axios.create({ baseURL: "/api", withCredentials: true });
 
 // Global error handler — surfaces network/server errors as a console warning
 // and re-throws so individual callers can still handle them if needed.
@@ -21,6 +21,13 @@ api.interceptors.response.use(
 
 export default api;
 
+// ── Session ─────────────────────────────────────────────────────────────────
+export const getSession = () =>
+  api.get("/session").then((r) => r.data as { username: string | null; created_at?: string });
+export const setSessionUsername = (username: string) =>
+  api.post("/session", { username }).then((r) => r.data as { username: string; created_at?: string });
+export const clearSession = () => api.delete("/session").then((r) => r.data);
+
 // ── Config ──────────────────────────────────────────────────────────────────
 export const getConfig = () => api.get("/config").then((r) => r.data);
 export const updateConfig = (patch: Record<string, unknown>) =>
@@ -34,6 +41,39 @@ export const uploadImages = (files: File[]) => {
   files.forEach((f) => form.append("files", f));
   return api.post("/images/upload", form).then((r) => r.data);
 };
+/** Start a pipelined job — analysis begins as soon as the first file arrives. */
+export const startPipeline = (
+  expectedTotal: number,
+  stationId?: string,
+  cameraId?: string,
+) => {
+  const params: Record<string, string | number> = { expected_total: expectedTotal };
+  if (stationId) params.station_id = stationId;
+  if (cameraId) params.camera_id = cameraId;
+  return api.post("/images/pipeline/start", null, { params }).then((r) => r.data as {
+    job_id: string;
+    status: string;
+    expected_total: number;
+  });
+};
+export const uploadPipelineFile = (jobId: string, file: File) => {
+  const form = new FormData();
+  form.append("file", file);
+  return api.post(`/images/pipeline/${jobId}/file`, form).then((r) => r.data as {
+    ok: boolean;
+    skipped: boolean;
+    reason?: string;
+    filename: string;
+    safe_name?: string;
+    index?: number;
+  });
+};
+export const finishPipeline = (jobId: string) =>
+  api.post(`/images/pipeline/${jobId}/finish`).then((r) => r.data as {
+    ok: boolean;
+    uploaded: number;
+    already_finished: boolean;
+  });
 export const startProcessing = (jobId: string, stationId?: string, cameraId?: string) => {
   const params: Record<string, string> = {};
   if (stationId) params.station_id = stationId;
@@ -49,21 +89,37 @@ export const imageFileUrl = (jobId: string, filename: string) =>
 /** Full original image — use for lightbox / review panels where fine detail matters. */
 export const storedImageUrl = (filename: string) =>
   `/api/images/stored/${encodeURIComponent(filename)}`;
+/** Full original image by database image PK — preferred over filename. */
+export const storedImageUrlById = (imageId: number) =>
+  `/api/images/stored-by-id/${imageId}`;
 /** Cached thumbnail — w is the max dimension in pixels (64–2560). */
 export const storedThumbUrl = (filename: string, w = 800) =>
   `/api/images/thumb/${encodeURIComponent(filename)}?w=${w}`;
+/** Cached thumbnail by database image PK. */
+export const storedThumbUrlById = (imageId: number, w = 800) =>
+  `/api/images/thumb-by-id/${imageId}?w=${w}`;
 
 // ── Results ──────────────────────────────────────────────────────────────────
 export const getResults = (params?: Record<string, string | number>) =>
   api.get("/results", { params }).then((r) => r.data as { total: number; limit: number; offset: number; items: Record<string, unknown>[] });
-export const updateResult = (imageId: number, patch: Record<string, unknown>) =>
-  api.patch(`/results/${imageId}`, patch).then((r) => r.data);
+export const updateResult = (detectionId: number, patch: Record<string, unknown>) =>
+  api.patch(`/results/${detectionId}`, patch).then((r) => r.data);
 export const deleteResult = (detectionId: number) =>
   api.delete(`/results/${detectionId}`).then((r) => r.data);
 export const deleteResults = (detectionIds: number[]) =>
   api.delete("/results", { params: { detection_ids: detectionIds.join(",") } }).then((r) => r.data);
-export const exportExcel = () => `/api/results/export/excel`;
-export const exportCsv = () => `/api/results/export/csv`;
+export const exportExcel = (params?: Record<string, string | number>) => {
+  const qs = params ? "?" + new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString() : "";
+  return `/api/results/export/excel${qs}`;
+};
+export const exportCsv = (params?: Record<string, string | number>) => {
+  const qs = params ? "?" + new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString() : "";
+  return `/api/results/export/csv${qs}`;
+};
+export const exportJson = (params?: Record<string, string | number>) => {
+  const qs = params ? "?" + new URLSearchParams(Object.entries(params).map(([k, v]) => [k, String(v)])).toString() : "";
+  return `/api/results/export/json${qs}`;
+};
 
 // ── Statistics ───────────────────────────────────────────────────────────────
 export const getStats = () => api.get("/stats/summary").then((r) => r.data);
@@ -93,6 +149,11 @@ export const getGroupSize = () =>
   api.get("/ecological/group-size").then((r) => r.data);
 export const getVisitation = (trap_nights: number) =>
   api.get("/ecological/visitation", { params: { trap_nights } }).then((r) => r.data);
+export const getActivity = () =>
+  api.get("/ecological/activity").then((r) => r.data as {
+    hourly: { hour: string; count: number }[];
+    by_species: { hour: number; species_label: string; count: number }[];
+  });
 
 // ── QC ───────────────────────────────────────────────────────────────────────
 export const getQCFlags = () => api.get("/qc/flags").then((r) => r.data);
@@ -133,32 +194,43 @@ export const reassignStation = (fromStation: string, toStation: string) =>
   api.post(`/stations/reassign?from_station=${encodeURIComponent(fromStation)}&to_station=${encodeURIComponent(toStation)}`).then((r) => r.data);
 
 // ── Review Queue ─────────────────────────────────────────────────────────────
-export const getReviewQueue = () =>
-  api.get("/review/queue").then((r) => r.data);
+export const getReviewQueue = (params?: { limit?: number; offset?: number }) =>
+  api.get("/review/queue", { params }).then((r) => r.data as {
+    items: Record<string, unknown>[];
+    total: number;
+    limit: number;
+    offset: number;
+  });
 export const confirmDetection = (id: number, body: Record<string, unknown>) =>
   api.post(`/review/confirm/${id}`, body).then((r) => r.data);
 export const correctDetection = (id: number, body: Record<string, unknown>) =>
   api.post(`/review/correct/${id}`, body).then((r) => r.data);
 export const flagDetection = (id: number, body: Record<string, unknown>) =>
   api.post(`/review/flag/${id}`, body).then((r) => r.data);
-export const flagByFilenames = (
-  filenames: string[],
+export const flagByImageIds = (
+  imageIds: number[],
   reviewer_id: string,
   notes = "Flagged during upload review",
 ) =>
   api
-    .post("/review/flag-by-filenames", { filenames, reviewer_id, notes })
+    .post("/review/flag-by-image-ids", { image_ids: imageIds, reviewer_id, notes })
     .then((r) => r.data);
 export const getReviewLog = () =>
   api.get("/review/log").then((r) => r.data);
 export const getPrivacyAudit = () =>
   api.get("/review/privacy-audit").then((r) => r.data);
+export const rescrubPrivacyImages = () =>
+  api.post("/review/rescrub").then((r) => r.data as {
+    scrubbed: number;
+    attempted: number;
+    audit: Record<string, unknown>[];
+  });
 
 // ── HITL Retraining ──────────────────────────────────────────────────────────
 export const getRetrainPreview = () =>
   api.get("/retrain/preview").then((r) => r.data as { available_corrections: number; distinct_species: number });
-export const runRetrain = (reviewer_id: string) =>
-  api.post("/retrain/run", { reviewer_id }).then((r) => r.data);
+export const runRetrain = () =>
+  api.post("/retrain/run", {}).then((r) => r.data);
 export const getRetrainStatus = () =>
   api.get("/retrain/status").then((r) => r.data);
 export const getRetrainHistory = () =>
@@ -228,8 +300,22 @@ export const getDeletionPreview = (tier: string, daysOld: number = 7) =>
   api.get("/storage/deletion-preview", { params: { tier, days_old: daysOld } }).then((r) => r.data);
 export const createBatchDownload = (tier: string, includeMetadata: boolean = true) =>
   api.post("/storage/downloads/batch", undefined, { params: { tier, include_metadata: includeMetadata } }).then((r) => r.data);
-export const cleanupImages = (action: string, daysOld: number = 7, dryRun: boolean = true) =>
-  api.post("/storage/cleanup", undefined, { params: { action, days_old: daysOld, dry_run: dryRun } }).then((r) => r.data);
+export const cleanupImages = (
+  action: string,
+  daysOld: number = 7,
+  dryRun: boolean = true,
+  tier?: string,
+  confirm?: boolean,
+) =>
+  api.post("/storage/cleanup", undefined, {
+    params: {
+      action,
+      days_old: daysOld,
+      dry_run: dryRun,
+      ...(tier ? { tier } : {}),
+      ...(confirm ? { confirm: true } : {}),
+    },
+  }).then((r) => r.data);
 export const markForDeletion = (imageId: number) =>
   api.post(`/storage/mark-for-deletion/${imageId}`).then((r) => r.data);
 
@@ -240,6 +326,11 @@ export const clearHashes = (strategy: string) =>
   api.post("/storage/clear-hashes", undefined, { params: { strategy } }).then((r) => r.data);
 
 // ── Database Reset ──────────────────────────────────────────────────────────
-export const resetDatabase = () =>
-  api.post("/storage/reset-db", null, { params: { confirm: true } }).then((r) => r.data);
+export const resetDatabase = (confirmUsername?: string) =>
+  api.post("/storage/reset-db", null, {
+    params: {
+      confirm: true,
+      ...(confirmUsername ? { confirm_username: confirmUsername } : {}),
+    },
+  }).then((r) => r.data);
 

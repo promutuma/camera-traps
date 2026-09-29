@@ -50,7 +50,9 @@ if sys.platform == "win32":
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 from pathlib import Path
+from typing import Optional
 
 from backend.models.state import AppState, AppConfig
 from backend.routers import (
@@ -74,6 +76,7 @@ from backend.routers import (
     storage as storage_router,
     retrain as retrain_router,
     cameras as cameras_router,
+    session as session_router,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,116 +87,52 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _load_all_models(state: AppState, project_root: Path) -> None:
-    import warnings
-    warnings.filterwarnings(
-        "ignore",
-        message=".*pin_memory.*no accelerator.*",
-        category=UserWarning,
-    )
+    from backend.services.model_loader import load_all_models
+    load_all_models(state, project_root)
 
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
 
-    from core.ocr_processor import OCRProcessor
-    from core.animal_detector import AnimalDetector, MegaDetectorWrapper
-    # BioClipClassifier removed — SpeciesNet is the sole classifier
-    from core.day_night_classifier import DayNightClassifier
-    from core.db_manager import DatabaseManager
-    from core.station_manager import StationManager
-    from core.review_engine import ReviewEngine
-    from core.privacy_scrubber import PrivacyScrubber
-    from core.community_observer import CommunityObserver
-    from core.species_library import SpeciesLibrary
-    from core.spatial_exporter import SpatialExporter
-    from core.corridor_analyzer import CorridorAnalyzer
-    from core.project_config import ProjectConfig
-    from core.arcgis_sync import ArcGISSync
-    from core.independence_engine import IndependenceEngine
-    from core.qc_engine import QCEngine
-    from core.retrain_engine import RetrainEngine
-    from backend.services.file_manager import FileManager
-
-    cfg = state.config
-
-    try:
-        import torch
-        _threads = 1 if cfg.enable_low_spec else cfg.cpu_threads
-        torch.set_num_threads(_threads)
-    except Exception:
-        pass
-
-    logger.info("Loading OCR...")
-    state.ocr_model = OCRProcessor(low_spec=cfg.enable_low_spec)
-
-    logger.info("Loading MegaDetector...")
-    state.md_model = MegaDetectorWrapper(
-        confidence_threshold=cfg.detection_confidence,
-        low_spec=cfg.enable_low_spec,
-    )
-
-    if not cfg.enable_low_spec:
-        logger.info("Loading SpeciesNet classifier...")
-        try:
-            from core.speciesnet_classifier import SpeciesNetWrapper
-            state.speciesnet_model = SpeciesNetWrapper(
-                low_spec=False,
-                lat=cfg.speciesnet_lat,
-                lng=cfg.speciesnet_lng,
-                country=cfg.speciesnet_country,
-            )
-        except Exception as exc:
-            logger.warning("SpeciesNet failed to load (non-fatal): %s", exc)
-
-    logger.info("Loading Day/Night classifier...")
-    state.dn_model = DayNightClassifier()
-
-    db_path = os.environ.get("DB_PATH", "wildlife_data.db")
-    state.db_manager = DatabaseManager(db_path)
-
-    uploads_dir = Path(db_path).parent / "uploads"
-    state.file_manager = FileManager(uploads_dir, state.db_manager)
-    state.file_manager.reconcile_missing_files()
-
-    state.station_manager = StationManager(db_path)
-    state.review_engine = ReviewEngine(db_path)
-    state.scrubber = PrivacyScrubber(blur_strength=cfg.blur_strength)
-    state.community_observer = CommunityObserver(db_path)
-    state.species_library = SpeciesLibrary(db_path)
-    state.spatial_exporter = SpatialExporter()
-    state.corridor_analyzer = CorridorAnalyzer()
-    state.project_config = ProjectConfig(db_path)
-    state.arcgis_sync = ArcGISSync(db_path=db_path)
-    state.independence_engine = IndependenceEngine(window_minutes=cfg.independence_window)
-    state.qc_engine = QCEngine()
-    state.retrain_engine = RetrainEngine(db_manager=state.db_manager, uploads_dir=uploads_dir)
-
-    state.models_loaded = True
-    logger.info("All models loaded successfully.")
+def _load_speciesnet(state: AppState) -> None:
+    from backend.services.model_loader import load_speciesnet
+    load_speciesnet(state)
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — load all models once at startup (off the event loop)
+# Lifespan — core models at startup; SpeciesNet loads in background
 # ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state: AppState = app.state.app_state
     project_root = Path(__file__).parent.parent
-    logger.info("Loading AI models and services...")
+    logger.info("Loading core AI models and services...")
     try:
         await asyncio.to_thread(_load_all_models, state, project_root)
     except Exception as exc:
         state.models_error = str(exc)
         logger.exception("Failed to load models: %s", exc)
 
-    # Sync the active project's SpeciesNet coordinates into AppConfig
     try:
         from backend.routers.project import _sync_speciesnet_coords
         _sync_speciesnet_coords(state)
     except Exception as exc:
         logger.warning("Could not sync SpeciesNet coords from active project: %s", exc)
 
+    sn_task: Optional[asyncio.Task] = None
+    if not state.config.enable_low_spec:
+        async def _bg_speciesnet():
+            await asyncio.to_thread(_load_speciesnet, state)
+
+        sn_task = asyncio.create_task(_bg_speciesnet())
+        logger.info("SpeciesNet download/load started in background.")
+
     yield
+
+    if sn_task and not sn_task.done():
+        sn_task.cancel()
+        try:
+            await sn_task
+        except asyncio.CancelledError:
+            pass
 
     logger.info("Shutting down.")
 
@@ -224,9 +163,14 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    _session_secret = os.environ.get(
+        "SESSION_SECRET", "dev-session-secret-change-in-production"
+    )
+    application.add_middleware(SessionMiddleware, secret_key=_session_secret)
 
     # API routes
     prefix = "/api"
+    application.include_router(session_router.router, prefix=prefix)
     application.include_router(config_router.router, prefix=prefix)
     application.include_router(images_router.router, prefix=prefix)
     application.include_router(results_router.router, prefix=prefix)

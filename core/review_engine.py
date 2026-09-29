@@ -20,12 +20,16 @@ ACTION_REJECT  = "reject"
 _VALID_ACTIONS = {ACTION_ACCEPT, ACTION_CORRECT, ACTION_REJECT}
 
 
+class ReviewConflictError(Exception):
+    """Raised when a detection has already been reviewed."""
+
+
 class ReviewEngine:
     """
     Persistent HITL review store backed by the shared SQLite database.
 
     Tables managed here:
-        review_actions  — one row per review decision
+        review_actions  — one row per review decision (keyed by detection_id)
     """
 
     def __init__(self, db_path: str = "wildlife_data.db"):
@@ -40,6 +44,7 @@ class ReviewEngine:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS review_actions (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                detection_id       INTEGER,
                 image_id           TEXT NOT NULL,
                 filename           TEXT,
                 action             TEXT NOT NULL,
@@ -53,6 +58,13 @@ class ReviewEngine:
                 reviewed_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(review_actions)")}
+        if "detection_id" not in cols:
+            conn.execute("ALTER TABLE review_actions ADD COLUMN detection_id INTEGER")
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_review_actions_detection_id
+            ON review_actions(detection_id) WHERE detection_id IS NOT NULL
+        """)
         conn.commit()
         conn.close()
 
@@ -64,38 +76,17 @@ class ReviewEngine:
         self,
         df: pd.DataFrame,
         confidence_threshold: float = 0.9,
-        reviewed_image_ids: Optional[set] = None,
+        reviewed_detection_ids: Optional[set] = None,
     ) -> pd.DataFrame:
         """
-        Return a sub-DataFrame of images that need review.
-
-        Rules
-        -----
-        - primary_label == 'Animal'
-        - detection_confidence < confidence_threshold
-        - image_id not already reviewed (checked against DB + optional set)
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Current session processed_data (one row per detection).
-        confidence_threshold : float
-            Images below this score enter the queue.
-        reviewed_image_ids : set | None
-            Extra set of image_ids to exclude (e.g. from the current session).
-
-        Returns
-        -------
-        pd.DataFrame
-            One row per unique image (highest-confidence detection kept),
-            sorted by classifier disagreement priority (low/medium first) and confidence.
+        Return a sub-DataFrame of detections that need review.
         """
         if df is None or df.empty:
             return pd.DataFrame()
 
-        already_reviewed = self._get_reviewed_ids()
-        if reviewed_image_ids:
-            already_reviewed |= reviewed_image_ids
+        already_reviewed = self._get_reviewed_detection_ids()
+        if reviewed_detection_ids:
+            already_reviewed |= reviewed_detection_ids
 
         animals = df[df.get("primary_label", pd.Series(dtype=str)) == "Animal"].copy() \
             if "primary_label" in df.columns else df.copy()
@@ -105,28 +96,21 @@ class ReviewEngine:
         else:
             queue = animals.copy()
 
-        if "image_id" in queue.columns:
-            queue = queue[~queue["image_id"].isin(already_reviewed)]
-
-        # One row per image: keep the row with the highest confidence for display
-        if "filepath" in queue.columns and "detection_confidence" in queue.columns:
-            queue = (
-                queue.sort_values("detection_confidence", ascending=False)
-                .groupby("filepath", as_index=False)
-                .first()
-            )
+        id_col = "detection_id" if "detection_id" in queue.columns else "id"
+        if id_col in queue.columns:
+            queue = queue[~queue[id_col].isin(already_reviewed)]
 
         if "agreement" in queue.columns:
             priority_map = {"Low": 0, "Medium": 1, "High": 2}
             queue["priority_score"] = queue["agreement"].map(lambda x: priority_map.get(x, 3))
-            
+
             sort_cols = ["priority_score"]
             sort_ascending = [True]
-            
+
             if "detection_confidence" in queue.columns:
                 sort_cols.append("detection_confidence")
                 sort_ascending.append(True)
-                
+
             queue = queue.sort_values(sort_cols, ascending=sort_ascending)
             queue = queue.drop(columns=["priority_score"])
         elif "detection_confidence" in queue.columns:
@@ -141,9 +125,27 @@ class ReviewEngine:
     # Review actions
     # ------------------------------------------------------------------
 
+    def _resolve_detection(self, detection_id: str) -> tuple:
+        conn = self._conn()
+        try:
+            row = conn.execute(
+                """
+                SELECT d.id, d.image_id, d.detected_animal, d.confidence, i.filename
+                FROM detections d
+                JOIN images i ON i.id = d.image_id
+                WHERE d.id = ?
+                """,
+                [detection_id],
+            ).fetchone()
+            if not row:
+                raise ValueError(f"Detection {detection_id} not found")
+            return row
+        finally:
+            conn.close()
+
     def accept(
         self,
-        image_id: str,
+        detection_id: str,
         filename: str = "",
         original_species: str = "",
         original_label: str = "Animal",
@@ -153,38 +155,35 @@ class ReviewEngine:
         bbox: Optional[list] = None,
     ) -> int:
         """Accept the AI prediction as correct. Returns the new action row id."""
-        if bbox is not None:
-            conn = self._conn()
-            try:
-                row = conn.execute(
-                    "SELECT id FROM detections WHERE image_id = ? ORDER BY confidence DESC LIMIT 1",
-                    [image_id]
-                ).fetchone()
-                if row:
-                    conn.execute(
-                        "UPDATE detections SET bbox = ? WHERE id = ?",
-                        [json.dumps(bbox), row[0]]
-                    )
-                    conn.commit()
-            finally:
-                conn.close()
+        det_id, image_id, species, conf, fname = self._resolve_detection(detection_id)
+        conn = self._conn()
+        try:
+            if bbox is not None:
+                conn.execute(
+                    "UPDATE detections SET bbox = ? WHERE id = ?",
+                    [json.dumps(bbox), det_id],
+                )
+                conn.commit()
+        finally:
+            conn.close()
 
         return self._record(
-            image_id=image_id,
-            filename=filename,
+            detection_id=int(det_id),
+            image_id=str(image_id),
+            filename=filename or fname or "",
             action=ACTION_ACCEPT,
-            original_species=original_species,
-            corrected_species=original_species,
+            original_species=original_species or species or "",
+            corrected_species=original_species or species or "",
             original_label=original_label,
             corrected_label=original_label,
-            confidence=confidence,
+            confidence=confidence or conf or 0.0,
             reviewer_id=reviewer_id,
             notes=notes,
         )
 
     def correct(
         self,
-        image_id: str,
+        detection_id: str,
         original_species: str,
         corrected_species: str,
         filename: str = "",
@@ -196,43 +195,40 @@ class ReviewEngine:
         bbox: Optional[list] = None,
     ) -> int:
         """Record a species correction. Returns the new action row id."""
+        det_id, image_id, species, conf, fname = self._resolve_detection(detection_id)
         conn = self._conn()
         try:
-            row = conn.execute(
-                "SELECT id FROM detections WHERE image_id = ? ORDER BY confidence DESC LIMIT 1",
-                [image_id]
-            ).fetchone()
-            if row:
-                if bbox is not None:
-                    conn.execute(
-                        "UPDATE detections SET detected_animal = ?, bbox = ? WHERE id = ?",
-                        [corrected_species, json.dumps(bbox), row[0]]
-                    )
-                else:
-                    conn.execute(
-                        "UPDATE detections SET detected_animal = ? WHERE id = ?",
-                        [corrected_species, row[0]]
-                    )
-                conn.commit()
+            if bbox is not None:
+                conn.execute(
+                    "UPDATE detections SET detected_animal = ?, bbox = ? WHERE id = ?",
+                    [corrected_species, json.dumps(bbox), det_id],
+                )
+            else:
+                conn.execute(
+                    "UPDATE detections SET detected_animal = ? WHERE id = ?",
+                    [corrected_species, det_id],
+                )
+            conn.commit()
         finally:
             conn.close()
 
         return self._record(
-            image_id=image_id,
-            filename=filename,
+            detection_id=int(det_id),
+            image_id=str(image_id),
+            filename=filename or fname or "",
             action=ACTION_CORRECT,
-            original_species=original_species,
+            original_species=original_species or species or "",
             corrected_species=corrected_species,
             original_label=original_label,
             corrected_label=corrected_label,
-            confidence=confidence,
+            confidence=confidence or conf or 0.0,
             reviewer_id=reviewer_id,
             notes=notes,
         )
 
     def reject(
         self,
-        image_id: str,
+        detection_id: str,
         filename: str = "",
         original_species: str = "",
         original_label: str = "Animal",
@@ -241,25 +237,27 @@ class ReviewEngine:
         notes: str = "",
     ) -> int:
         """Mark the detection as a false positive. Returns the new action row id."""
+        det_id, image_id, species, conf, fname = self._resolve_detection(detection_id)
         conn = self._conn()
         try:
             conn.execute(
-                "UPDATE detections SET detected_animal = 'Empty' WHERE image_id = ?",
-                [image_id]
+                "UPDATE detections SET detected_animal = 'Empty' WHERE id = ?",
+                [det_id],
             )
             conn.commit()
         finally:
             conn.close()
 
         return self._record(
-            image_id=image_id,
-            filename=filename,
+            detection_id=int(det_id),
+            image_id=str(image_id),
+            filename=filename or fname or "",
             action=ACTION_REJECT,
-            original_species=original_species,
+            original_species=original_species or species or "",
             corrected_species="",
             original_label=original_label,
             corrected_label="Empty",
-            confidence=confidence,
+            confidence=confidence or conf or 0.0,
             reviewer_id=reviewer_id,
             notes=notes,
         )
@@ -269,23 +267,14 @@ class ReviewEngine:
         rows: list,
         reviewer_id: str = "anonymous",
     ) -> int:
-        """
-        Accept multiple detections at once.
-
-        Parameters
-        ----------
-        rows : list[dict]
-            Each dict must contain at minimum: image_id, species_label,
-            primary_label, detection_confidence, filename.
-
-        Returns
-        -------
-        int : number of records saved
-        """
+        """Accept multiple detections at once."""
         count = 0
         for row in rows:
+            det_id = row.get("detection_id") or row.get("id")
+            if not det_id:
+                continue
             self.accept(
-                image_id=row.get("image_id", ""),
+                detection_id=str(det_id),
                 filename=row.get("filename", ""),
                 original_species=row.get("species_label", row.get("detected_animal", "")),
                 original_label=row.get("primary_label", "Animal"),
@@ -345,11 +334,11 @@ class ReviewEngine:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _get_reviewed_ids(self) -> set:
+    def _get_reviewed_detection_ids(self) -> set:
         conn = self._conn()
         try:
             rows = conn.execute(
-                "SELECT DISTINCT image_id FROM review_actions"
+                "SELECT DISTINCT detection_id FROM review_actions WHERE detection_id IS NOT NULL"
             ).fetchall()
             return {r[0] for r in rows}
         finally:
@@ -360,12 +349,13 @@ class ReviewEngine:
         try:
             cur = conn.execute("""
                 INSERT INTO review_actions (
-                    image_id, filename, action,
+                    detection_id, image_id, filename, action,
                     original_species, corrected_species,
                     original_label, corrected_label,
                     reviewer_id, confidence, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
+                kwargs.get("detection_id"),
                 kwargs["image_id"],
                 kwargs.get("filename", ""),
                 kwargs["action"],
@@ -379,5 +369,7 @@ class ReviewEngine:
             ))
             conn.commit()
             return cur.lastrowid
+        except sqlite3.IntegrityError as exc:
+            raise ReviewConflictError("Detection already reviewed") from exc
         finally:
             conn.close()

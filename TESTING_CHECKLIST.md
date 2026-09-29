@@ -118,16 +118,20 @@
   SELECT id, filename FROM images WHERE file_status = 'deleted' LIMIT 5;
   ```
 
-### 9️⃣ Background Cleanup Scheduler
+### 9️⃣ Manual Cleanup
 
 **Tests**:
-- [ ] Check backend logs for "Running scheduled file cleanup"
-- [ ] Verify cleanup runs hourly
+- [ ] Open Storage page and run cleanup preview (dry run)
+- [ ] Trigger cleanup via API:
+  ```bash
+  curl -X POST "http://localhost:8000/api/storage/cleanup?action=delete_empty&dry_run=true"
+  curl -X POST "http://localhost:8000/api/storage/cleanup?action=delete_marked&dry_run=false&days_old=7"
+  ```
 - [ ] Mark an old image for deletion:
   ```sql
   UPDATE images SET marked_for_deletion_at = datetime('now', '-8 days') WHERE id = [test_id];
   ```
-- [ ] Wait for cleanup to run or trigger manually
+- [ ] Run manual cleanup from Storage UI or API
 - [ ] Verify file is deleted
 
 ### 🔟 Person/Vehicle Tier Classification
@@ -250,7 +254,7 @@ curl http://localhost:8000/api/config
   - [ ] Export results
   - [ ] Download files
 - [ ] Check storage page loads
-- [ ] Verify cleanup scheduler is running
+- [ ] Run manual cleanup when storage needs trimming
 - [ ] Monitor disk usage
 
 ---
@@ -308,8 +312,8 @@ curl http://localhost:8000/api/config
 - Check file permissions on uploads directory
 
 **Cleanup doesn't run:**
-- Check backend logs for scheduler
-- Verify database has images to delete
+- Trigger cleanup manually from Storage UI or `POST /api/storage/cleanup`
+- Verify database has images eligible for deletion
 - Check `marked_for_deletion_at` timestamps
 
 **High memory usage:**

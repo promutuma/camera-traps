@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, storedThumbUrl, storedImageUrl, getRetrainPreview, runRetrain, getRetrainStatus, getRetrainHistory, activateRetrainRun, deactivateRetrain } from "../api/client";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getReviewQueue, confirmDetection, correctDetection, flagDetection, getReviewLog, getPrivacyAudit, rescrubPrivacyImages, storedThumbUrl, storedThumbUrlById, storedImageUrl, storedImageUrlById, getRetrainPreview, runRetrain, getRetrainStatus, getRetrainHistory, activateRetrainRun, deactivateRetrain } from "../api/client";
+import { imageIdOf, detIdOf, confidenceOf, buildImageGroupsFromRows, reviewFocusRow, speciesSummaryOfGroup, type Row } from "../utils/imageIdentity";
+import { isWildlifeLabel } from "../utils/wildlifeFilter";
 import { useConfigStore } from "../store/configStore";
+import { useSessionStore } from "../store/sessionStore";
 
-type Row = Record<string, unknown>;
 type Tab = "queue" | "log" | "privacy" | "retrain";
 
 function parseBbox(raw: unknown): [number, number, number, number] | null {
@@ -40,10 +42,8 @@ function getCandidates(row: Row): { label: string; conf: number; scientific?: st
 
 function ModelPill({ name, conf }: { name: string; conf?: number }) {
   const base =
-    name === "MDv5a"
+    name === "MDv5a" || name === "MegaDetector"
       ? "bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 border-blue-200 dark:border-blue-900/30"
-      : name === "BioClip"
-      ? "bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 border-violet-200 dark:border-violet-900/30"
       : name === "SpeciesNet"
       ? "bg-teal-100 dark:bg-teal-950/60 text-teal-700 dark:text-teal-400 border-teal-200 dark:border-teal-900/30"
       : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700";
@@ -74,8 +74,7 @@ function FullModelBreakdown({ row, detected }: { row: Row; detected: string }) {
 
   const method = String(row.detection_method ?? "");
   const speciesnetConf = typeof row.speciesnet_confidence === "number" ? row.speciesnet_confidence as number : undefined;
-  const isAnimal = !!detected && detected !== "Empty" && detected !== "Unidentified" &&
-    detected !== "Person" && detected !== "Vehicle" && detected !== "Error";
+  const isAnimal = isWildlifeLabel(String(detected ?? ""));
 
   const detectors = method.split(" + ").filter((m) => m.startsWith("MDv") || m === "MegaDetector");
   const mdv5a: { label: string; conf: number }[] = bd?.MDv5a ?? [];
@@ -202,7 +201,7 @@ const METHOD_LABEL: Record<string, string> = {
   correction_layer_embeddings: "Embedding-correction layer",
 };
 
-function RetrainPanel({ reviewerId }: { reviewerId: string }) {
+function RetrainPanel() {
   const [preview, setPreview] = useState<{ available_corrections: number; distinct_species: number } | null>(null);
   const [status, setStatus] = useState<Row | null>(null);
   const [history, setHistory] = useState<Row[]>([]);
@@ -240,7 +239,7 @@ function RetrainPanel({ reviewerId }: { reviewerId: string }) {
   const startRun = async () => {
     setBusy(true);
     try {
-      await runRetrain(reviewerId);
+      await runRetrain();
     } catch (err: any) {
       alert(err?.response?.data?.detail || "Could not start retraining.");
       setBusy(false);
@@ -432,6 +431,8 @@ function RetrainPanel({ reviewerId }: { reviewerId: string }) {
 
 function DetailViewport({
   row,
+  allRows,
+  activeDetectionId,
   isDrawing,
   editedBbox,
   setEditedBbox,
@@ -441,6 +442,8 @@ function DetailViewport({
   setImgNatural,
 }: {
   row: Row;
+  allRows?: Row[];
+  activeDetectionId?: number;
   isDrawing: boolean;
   editedBbox: [number, number, number, number] | null;
   setEditedBbox: (b: [number, number, number, number] | null) => void;
@@ -450,46 +453,63 @@ function DetailViewport({
   setImgNatural: (n: { w: number; h: number } | null) => void;
 }) {
   const filename = String(row.filename ?? "");
-  const species = String(row.detected_animal ?? "Unknown");
+  const imageId = imageIdOf(row);
+  const activeId = activeDetectionId ?? detIdOf(row);
+  const rowsToDraw = allRows?.length ? allRows : [row];
   const [imgError, setImgError] = useState(false);
   const imageContainerRef = useRef<HTMLDivElement>(null);
 
-  const bbox = parseBbox(row.bbox);
-  const activeBbox = editedBbox || bbox;
-
-  const renderBbox = () => {
-    if (!activeBbox || !imgNatural) return null;
-    const rx = activeBbox[0] * imgNatural.w;
-    const ry = activeBbox[1] * imgNatural.h;
-    const rw = activeBbox[2] * imgNatural.w;
-    const rh = activeBbox[3] * imgNatural.h;
-
+  const renderBboxes = () => {
+    if (!imgNatural) return null;
+    const strokeW = Math.max(4, imgNatural.w / 250);
     return (
       <svg
         className="absolute inset-0 w-full h-full pointer-events-none"
         viewBox={`0 0 ${imgNatural.w} ${imgNatural.h}`}
         preserveAspectRatio="none"
       >
-        <rect
-          x={rx}
-          y={ry}
-          width={rw}
-          height={rh}
-          fill="none"
-          stroke={editedBbox ? "#fb923c" : "#22c55e"}
-          strokeWidth={Math.max(4, imgNatural.w / 250)}
-          strokeDasharray={editedBbox ? "8 6" : undefined}
-        />
-        <text
-          x={rx + 8}
-          y={ry - 10}
-          fill={editedBbox ? "#fb923c" : "#22c55e"}
-          fontWeight="bold"
-          fontSize={Math.max(16, imgNatural.w / 45)}
-          style={{ filter: "drop-shadow(0 2px 4px #000)" }}
-        >
-          {editedBbox ? "New Box" : species}
-        </text>
+        {rowsToDraw.map((r, i) => {
+          const rid = detIdOf(r);
+          const isActive = rid === activeId;
+          const species = String(r.detected_animal ?? "Unknown");
+          const parsed = parseBbox(r.bbox);
+          const activeBbox = isActive && editedBbox ? editedBbox : parsed;
+          if (!activeBbox) return null;
+          const rx = activeBbox[0] * imgNatural.w;
+          const ry = activeBbox[1] * imgNatural.h;
+          const rw = activeBbox[2] * imgNatural.w;
+          const rh = activeBbox[3] * imgNatural.h;
+          const stroke = isActive
+            ? (editedBbox ? "#fb923c" : "#22c55e")
+            : "#60a5fa";
+          return (
+            <g key={rid || i}>
+              <rect
+                x={rx}
+                y={ry}
+                width={rw}
+                height={rh}
+                fill="none"
+                stroke={stroke}
+                strokeWidth={isActive ? strokeW : Math.max(2, strokeW * 0.75)}
+                strokeDasharray={isActive && editedBbox ? "8 6" : undefined}
+                opacity={isActive ? 1 : 0.85}
+              />
+              {(isActive || rowsToDraw.length === 1) && (
+                <text
+                  x={rx + 8}
+                  y={Math.max(16, ry - 10)}
+                  fill={stroke}
+                  fontWeight="bold"
+                  fontSize={Math.max(14, imgNatural.w / 50)}
+                  style={{ filter: "drop-shadow(0 2px 4px #000)" }}
+                >
+                  {isActive && editedBbox ? "New Box" : species}
+                </text>
+              )}
+            </g>
+          );
+        })}
       </svg>
     );
   };
@@ -524,7 +544,7 @@ function DetailViewport({
   useEffect(() => {
     setImgError(false);
     setImgNatural(null);
-  }, [filename, setImgNatural]);
+  }, [imageId, filename, setImgNatural]);
 
   return (
     <div className="relative w-full h-full flex items-center justify-center bg-slate-900 rounded-xl overflow-hidden shadow-2xl border border-slate-800">
@@ -546,7 +566,7 @@ function DetailViewport({
         ) : (
           <>
             <img
-              src={storedImageUrl(filename)}
+              src={imageId ? storedImageUrlById(imageId) : storedImageUrl(filename)}
               alt={filename}
               className="w-full h-full block select-none"
               onLoad={(e) => {
@@ -555,7 +575,7 @@ function DetailViewport({
               }}
               onError={() => setImgError(true)}
             />
-            {renderBbox()}
+            {renderBboxes()}
           </>
         )}
 
@@ -580,7 +600,9 @@ function DetailViewport({
 
 function DetailSidebar({
   row,
-  reviewerId,
+  groupRows,
+  activeDetectionId,
+  onSelectDetection,
   onAction,
   mode,
   setMode,
@@ -596,7 +618,9 @@ function DetailSidebar({
   setEditedBbox,
 }: {
   row: Row;
-  reviewerId: string;
+  groupRows?: Row[];
+  activeDetectionId?: number;
+  onSelectDetection?: (detectionId: number) => void;
   onAction: () => void;
   mode: "idle" | "correct" | "confirm-note" | "flag-note";
   setMode: (m: "idle" | "correct" | "confirm-note" | "flag-note") => void;
@@ -611,10 +635,12 @@ function DetailSidebar({
   editedBbox: [number, number, number, number] | null;
   setEditedBbox: (b: [number, number, number, number] | null) => void;
 }) {
-  const id = Number(row.id ?? row.image_id ?? 0);
+  const id = Number(row.detection_id ?? 0);
   const species = String(row.detected_animal ?? "Unknown");
   const filename = String(row.filename ?? "");
-  const conf = typeof row.detection_confidence === "number" ? row.detection_confidence : parseFloat(String(row.detection_confidence ?? "0"));
+  const conf = confidenceOf(row);
+  const multi = (groupRows?.length ?? 0) > 1;
+  const activeId = activeDetectionId ?? id;
 
   const run = async (fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -697,6 +723,34 @@ function DetailSidebar({
               <p className="font-medium text-slate-600 dark:text-slate-400 text-[11px]">{String(row.station_id)}</p>
             </div>
           )}
+          {multi && groupRows && (
+            <div className="space-y-1.5">
+              <p className="text-[10px] text-slate-400 dark:text-slate-500 uppercase tracking-wider font-bold">
+                Detections on this image ({groupRows.length})
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {groupRows.map((r) => {
+                  const rid = detIdOf(r);
+                  const selected = rid === activeId;
+                  const rc = confidenceOf(r);
+                  return (
+                    <button
+                      key={rid}
+                      type="button"
+                      onClick={() => onSelectDetection?.(rid)}
+                      className={`px-2 py-1 rounded-lg text-[10px] font-semibold border transition cursor-pointer ${
+                        selected
+                          ? "bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800"
+                          : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-950/40"
+                      }`}
+                    >
+                      {String(r.detected_animal ?? "?")} · {Math.round(rc * 100)}%
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
 
         <FullModelBreakdown row={row} detected={species} />
@@ -744,7 +798,7 @@ function DetailSidebar({
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }));
+                      if (e.key === "Enter") run(() => confirmDetection(id, { notes, bbox: editedBbox || undefined }));
                       if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
                     }}
                     className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
@@ -752,7 +806,7 @@ function DetailSidebar({
                   <div className="flex gap-2">
                     <button
                       disabled={busy}
-                      onClick={() => run(() => confirmDetection(id, { reviewer_id: reviewerId, notes, bbox: editedBbox || undefined }))}
+                      onClick={() => run(() => confirmDetection(id, { notes, bbox: editedBbox || undefined }))}
                       className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
                     >
                       {busy ? "Confirming…" : "Confirm"}
@@ -830,7 +884,7 @@ function DetailSidebar({
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
+                        if (e.key === "Enter") run(() => correctDetection(id, { corrected_label: correctLabel, notes, bbox: editedBbox || undefined }));
                         if (e.key === "Escape") { setMode("idle"); setIsDrawing(false); setEditedBbox(null); }
                       }}
                       className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
@@ -838,7 +892,7 @@ function DetailSidebar({
                     <div className="flex gap-2">
                       <button
                         disabled={busy || !correctLabel.trim()}
-                        onClick={() => run(() => correctDetection(id, { reviewer_id: reviewerId, corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
+                        onClick={() => run(() => correctDetection(id, { corrected_label: correctLabel, notes, bbox: editedBbox || undefined }))}
                         className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition cursor-pointer"
                       >
                         {busy ? "Saving…" : "Save Correction"}
@@ -872,14 +926,14 @@ function DetailSidebar({
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") run(() => flagDetection(id, { reviewer_id: reviewerId, notes }));
+                      if (e.key === "Enter") run(() => flagDetection(id, { notes }));
                       if (e.key === "Escape") setMode("idle");
                     }}
                     className="w-full border border-slate-200 dark:border-slate-800 rounded-lg px-2.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-red-500 bg-white dark:bg-slate-955 text-slate-850 dark:text-slate-100 placeholder-slate-450 transition"
                   />
                   <button
                     disabled={busy}
-                    onClick={() => run(() => flagDetection(id, { reviewer_id: reviewerId, notes }))}
+                    onClick={() => run(() => flagDetection(id, { notes }))}
                     className="w-full py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
                   >
                     {busy ? "Flagging…" : "Flag"}
@@ -908,19 +962,22 @@ function DetailSidebar({
 // ── Log / Audit tables ────────────────────────────────────────────────────────
 
 const LOG_COLS: { key: string; label: string }[] = [
-  { key: "image_id",        label: "Image ID" },
+  { key: "detection_id",    label: "Detection ID" },
+  { key: "filename",        label: "Filename" },
   { key: "action",          label: "Action" },
   { key: "corrected_label", label: "Corrected Label" },
   { key: "reviewer_id",     label: "Reviewer" },
-  { key: "timestamp",       label: "Timestamp" },
+  { key: "reviewed_at",     label: "Reviewed At" },
   { key: "notes",           label: "Notes" },
 ];
 
 const AUDIT_COLS: { key: string; label: string }[] = [
   { key: "filename", label: "Filename" },
   { key: "scrubbed", label: "Scrubbed" },
-  { key: "skipped",  label: "Skipped" },
-  { key: "reason",   label: "Reason" },
+  { key: "boxes_blurred", label: "Regions blurred" },
+  { key: "skipped", label: "Skipped" },
+  { key: "reason", label: "Reason" },
+  { key: "scrubbed_at", label: "Scrubbed at" },
 ];
 
 function DataTable({ rows, cols }: { rows: Row[]; cols: { key: string; label: string }[] }) {
@@ -971,15 +1028,20 @@ function DataTable({ rows, cols }: { rows: Row[]; cols: { key: string; label: st
 
 export default function ReviewQueue() {
   const config = useConfigStore((s) => s.config);
-  const reviewerId = config?.reviewer_id ?? "anonymous";
+  const username = useSessionStore((s) => s.username) ?? "anonymous";
   const threshold = config?.review_confidence_threshold ?? 0.9;
 
   const [queue, setQueue] = useState<Row[]>([]);
+  const [queueTotal, setQueueTotal] = useState(0);
+  const [queueOffset, setQueueOffset] = useState(0);
+  const QUEUE_PAGE = 500;
   const [log, setLog] = useState<Row[]>([]);
   const [audit, setAudit] = useState<Row[]>([]);
+  const [rescrubBusy, setRescrubBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("queue");
   const [focusedIdx, setFocusedIdx] = useState(0);
+  const [activeDetIdx, setActiveDetIdx] = useState(0);
   const [showHotkeys, setShowHotkeys] = useState(false);
   const [filterVeryLowConf, setFilterVeryLowConf] = useState(false);
   const [sortConf, setSortConf] = useState<"asc" | "desc">("asc"); // asc = worst first
@@ -1020,32 +1082,64 @@ export default function ReviewQueue() {
         return !isNaN(c) && c < 0.4;
       })
     : sortedQueue;
+  const displayedImageGroups = useMemo(
+    () => buildImageGroupsFromRows(displayedQueue),
+    [displayedQueue],
+  );
+
+  const currentGroup = displayedImageGroups[focusedIdx];
+  const currentItem = currentGroup
+    ? (currentGroup.rows[activeDetIdx] ?? reviewFocusRow(currentGroup.rows))
+    : undefined;
+
+  useEffect(() => {
+    const group = displayedImageGroups[focusedIdx];
+    if (!group) return;
+    const focusRow = reviewFocusRow(group.rows);
+    const idx = group.rows.findIndex((r) => detIdOf(r) === detIdOf(focusRow));
+    setActiveDetIdx(idx >= 0 ? idx : 0);
+  }, [focusedIdx, displayedImageGroups]);
+
+  const handleSelectDetection = useCallback((detectionId: number) => {
+    const group = displayedImageGroups[focusedIdx];
+    if (!group) return;
+    const idx = group.rows.findIndex((r) => detIdOf(r) === detectionId);
+    if (idx >= 0) {
+      setActiveDetIdx(idx);
+      resetItemActionState();
+    }
+  }, [displayedImageGroups, focusedIdx, resetItemActionState]);
 
   const load = async (isAction = false) => {
-    setLoading(true);
-    const [q, l, a] = await Promise.all([getReviewQueue(), getReviewLog(), getPrivacyAudit()]);
-    const newQueue = Array.isArray(q) ? q : [];
-    if (initialQueueSize.current === null) initialQueueSize.current = newQueue.length;
+    if (!isAction) setLoading(true);
+    const [q, l, a] = await Promise.all([
+      getReviewQueue({ limit: QUEUE_PAGE, offset: queueOffset }),
+      getReviewLog(),
+      getPrivacyAudit(),
+    ]);
+    const newQueue = Array.isArray(q) ? q : (q?.items ?? []);
+    const total = Array.isArray(q) ? q.length : (q?.total ?? newQueue.length);
+    if (initialQueueSize.current === null) initialQueueSize.current = total;
     if (isAction) {
       setSessionReviewed((n) => n + 1);
-      // Clamp so the last item confirming doesn't leave focusedIdx out of bounds
-      setFocusedIdx((i) => Math.min(i, Math.max(0, newQueue.length - 1)));
+      setFocusedIdx((i) => Math.min(i, Math.max(0, buildImageGroupsFromRows(newQueue).length - 1)));
     }
     setQueue(newQueue);
+    setQueueTotal(total);
     setLog(Array.isArray(l) ? l : []);
     setAudit(Array.isArray(a) ? a : []);
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [queueOffset]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (tab !== "queue" || displayedQueue.length === 0) return;
+    if (tab !== "queue" || displayedImageGroups.length === 0) return;
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
-        setFocusedIdx((i) => Math.min(i + 1, displayedQueue.length - 1));
+        setFocusedIdx((i) => Math.min(i + 1, displayedImageGroups.length - 1));
         resetItemActionState();
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -1055,10 +1149,10 @@ export default function ReviewQueue() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [tab, displayedQueue.length, resetItemActionState]);
+  }, [tab, displayedImageGroups.length, resetItemActionState]);
 
   const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: "queue",   label: "Review Queue",   count: queue.length },
+    { id: "queue",   label: "Review Queue",   count: queueTotal },
     { id: "log",     label: "Correction Log", count: log.length },
     { id: "privacy", label: "Privacy Audit",  count: audit.length },
     { id: "retrain", label: "Model Retraining" },
@@ -1072,7 +1166,7 @@ export default function ReviewQueue() {
             <h1 className="text-xl font-bold text-slate-905 dark:text-white">Review Queue</h1>
             <p className="text-slate-500 dark:text-slate-405 text-xs mt-0.5">
               Detections with confidence below <span className="font-mono font-semibold text-slate-700 dark:text-slate-300">{threshold}</span> need manual review.
-              Reviewer: <span className="font-semibold text-slate-700 dark:text-slate-300">{reviewerId}</span>.
+              Signed in as: <span className="font-semibold text-slate-700 dark:text-slate-300">{username}</span>.
             </p>
             {/* Session progress bar */}
             {tab === "queue" && (initialQueueSize.current ?? 0) > 0 && (
@@ -1148,6 +1242,22 @@ export default function ReviewQueue() {
               </label>
             </div>
           )}
+
+          {tab === "queue" && queueTotal > QUEUE_PAGE && (
+            <div className="flex items-center gap-2 text-xs text-slate-500 ml-auto">
+              <button
+                disabled={queueOffset === 0}
+                onClick={() => setQueueOffset((o) => Math.max(0, o - QUEUE_PAGE))}
+                className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 disabled:opacity-40 cursor-pointer"
+              >Prev</button>
+              <span>{queueOffset + 1}–{Math.min(queueOffset + QUEUE_PAGE, queueTotal)} of {queueTotal}</span>
+              <button
+                disabled={queueOffset + QUEUE_PAGE >= queueTotal}
+                onClick={() => setQueueOffset((o) => o + QUEUE_PAGE)}
+                className="px-2.5 py-1 rounded border border-slate-200 dark:border-slate-800 disabled:opacity-40 cursor-pointer"
+              >Next</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1178,23 +1288,23 @@ export default function ReviewQueue() {
                 );
               }
 
-              const currentItem = displayedQueue[focusedIdx];
               return (
                 <div className="flex-1 flex min-h-0">
                   <div className="w-80 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-col min-h-0 shadow-sm">
                     <div className="p-3 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/20 flex justify-between items-center shrink-0">
-                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Pending Detections</span>
+                      <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Pending Images</span>
                       <span className="text-[10px] font-semibold text-slate-600 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-800/80 px-1.5 py-0.5 rounded">
-                        {focusedIdx + 1} / {displayedQueue.length}
+                        {focusedIdx + 1} / {displayedImageGroups.length}
                       </span>
                     </div>
                     <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
-                      {displayedQueue.map((row, idx) => {
+                      {displayedImageGroups.map((group, idx) => {
                         const isSelected = idx === focusedIdx;
-                        const species = String(row.detected_animal ?? "Unknown");
-                        const filename = String(row.filename ?? "");
-                        const itemConf = typeof row.detection_confidence === "number" ? row.detection_confidence : parseFloat(String(row.detection_confidence ?? "0"));
-                        // Confidence-keyed left border: red=very low, amber=low, emerald=selected
+                        const species = speciesSummaryOfGroup(group.rows);
+                        const filename = group.filename;
+                        const rowImageId = group.imageId;
+                        const itemConf = Math.min(...group.rows.map((r) => confidenceOf(r)));
+                        const multi = group.rows.length > 1;
                         const borderCls = isSelected
                           ? "border-l-4 border-emerald-500"
                           : itemConf < 0.4
@@ -1204,7 +1314,7 @@ export default function ReviewQueue() {
                           : "border-l-4 border-slate-200 dark:border-slate-800";
                         return (
                           <button
-                            key={Number(row.id ?? row.image_id ?? idx)}
+                            key={group.imageKey}
                             onClick={() => {
                               setFocusedIdx(idx);
                               resetItemActionState();
@@ -1215,21 +1325,25 @@ export default function ReviewQueue() {
                           >
                             <div className="w-14 h-14 bg-slate-100 dark:bg-slate-950 rounded border border-slate-200 dark:border-slate-800 overflow-hidden shrink-0 relative">
                               <img
-                                src={storedThumbUrl(filename, 160)}
+                                src={rowImageId ? storedThumbUrlById(rowImageId, 160) : storedThumbUrl(filename, 160)}
                                 alt=""
                                 className="w-full h-full object-cover"
                                 onError={(e) => {
                                   (e.target as HTMLElement).style.display = "none";
                                 }}
                               />
-                              {/* Confidence dot on thumbnail */}
+                              {multi && (
+                                <span className="absolute top-0.5 right-0.5 bg-black/70 text-white text-[9px] font-bold px-1 rounded">
+                                  {group.rows.length}
+                                </span>
+                              )}
                               <span className={`absolute bottom-0.5 right-0.5 w-2 h-2 rounded-full border border-white dark:border-slate-900 ${
                                 itemConf >= 0.7 ? "bg-emerald-500" : itemConf >= 0.4 ? "bg-amber-400" : "bg-red-400"
                               }`} />
                             </div>
                             <div className="flex-1 min-w-0 flex flex-col justify-between py-0.5">
                               <div className="min-w-0">
-                                <p className={`font-bold truncate ${isSelected ? "text-emerald-700 dark:text-emerald-450" : "text-slate-800 dark:text-slate-200"} text-sm`}>
+                                <p className={`font-bold truncate ${isSelected ? "text-emerald-700 dark:text-emerald-450" : "text-slate-800 dark:text-slate-200"} text-sm`} title={species}>
                                   {species}
                                 </p>
                                 <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{filename}</p>
@@ -1237,13 +1351,13 @@ export default function ReviewQueue() {
                               <div className="flex items-center justify-between mt-1.5">
                                 <span className={`text-[10px] font-semibold ${
                                   itemConf < 0.4 ? "text-red-500" : itemConf < 0.7 ? "text-amber-500" : "text-emerald-600 dark:text-emerald-450"
-                                }`}>{Math.round(itemConf * 100)}%</span>
+                                }`}>{Math.round(itemConf * 100)}% min</span>
                                 <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${
                                   itemConf < 0.4
                                     ? "bg-red-100 dark:bg-red-950/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-800/40"
                                     : "bg-amber-100 dark:bg-amber-950/30 text-amber-700 dark:text-amber-400 border-amber-200 dark:border-amber-800/40"
                                 }`}>
-                                  {itemConf < 0.4 ? "Very Low" : "Low"}
+                                  {multi ? `${group.rows.length} animals` : itemConf < 0.4 ? "Very Low" : "Low"}
                                 </span>
                               </div>
                             </div>
@@ -1254,9 +1368,11 @@ export default function ReviewQueue() {
                   </div>
 
                   <div className="flex-1 bg-slate-950 flex flex-col relative justify-center items-center p-4 group select-none">
-                    {currentItem && (
+                    {currentItem && currentGroup && (
                       <DetailViewport
                         row={currentItem}
+                        allRows={currentGroup.rows}
+                        activeDetectionId={detIdOf(currentItem)}
                         isDrawing={isDrawing}
                         editedBbox={editedBbox}
                         setEditedBbox={setEditedBbox}
@@ -1266,7 +1382,6 @@ export default function ReviewQueue() {
                         setImgNatural={setImgNatural}
                       />
                     )}
-                    {/* Prev / Next navigation arrows */}
                     {focusedIdx > 0 && (
                       <button
                         onClick={() => { setFocusedIdx(i => i - 1); resetItemActionState(); }}
@@ -1274,23 +1389,24 @@ export default function ReviewQueue() {
                         title="Previous (K / ↑)"
                       >‹</button>
                     )}
-                    {focusedIdx < displayedQueue.length - 1 && (
+                    {focusedIdx < displayedImageGroups.length - 1 && (
                       <button
                         onClick={() => { setFocusedIdx(i => i + 1); resetItemActionState(); }}
                         className="absolute right-6 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-emerald-600/80 text-white rounded-full w-10 h-10 flex items-center justify-center text-xl transition opacity-0 group-hover:opacity-100 cursor-pointer shadow-lg border border-white/10 z-10"
                         title="Next (J / ↓)"
                       >›</button>
                     )}
-                    {/* Item counter */}
                     <div className="absolute bottom-6 right-6 text-xs text-white/40 font-mono select-none opacity-0 group-hover:opacity-100 transition">
-                      {focusedIdx + 1} / {displayedQueue.length}
+                      {focusedIdx + 1} / {displayedImageGroups.length} images
                     </div>
                   </div>
 
-                  {currentItem && (
+                  {currentItem && currentGroup && (
                     <DetailSidebar
                       row={currentItem}
-                      reviewerId={reviewerId}
+                      groupRows={currentGroup.rows}
+                      activeDetectionId={detIdOf(currentItem)}
+                      onSelectDetection={handleSelectDetection}
                       onAction={() => load(true)}
                       mode={mode}
                       setMode={setMode}
@@ -1319,14 +1435,42 @@ export default function ReviewQueue() {
             )}
 
             {tab === "privacy" && (
-              <div className="flex-1 overflow-auto p-6">
+              <div className="flex-1 overflow-auto p-6 space-y-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-sm text-slate-600 dark:text-slate-300">
+                      Person and vehicle regions are blurred in scrubbed copies under <code className="text-xs bg-slate-100 dark:bg-slate-800 px-1 rounded">uploads/scrubbed/</code>.
+                      Results and Review show scrubbed images when <strong>Auto-Scrub Person/Vehicle</strong> is enabled in Config.
+                    </p>
+                    {!config?.enable_scrubbing && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                        Scrubbing is currently disabled — originals are shown until you re-enable it.
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    disabled={rescrubBusy || !config?.enable_scrubbing}
+                    onClick={async () => {
+                      setRescrubBusy(true);
+                      try {
+                        await rescrubPrivacyImages();
+                        await load();
+                      } finally {
+                        setRescrubBusy(false);
+                      }
+                    }}
+                    className="shrink-0 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg transition cursor-pointer"
+                  >
+                    {rescrubBusy ? "Scrubbing…" : "Re-scrub existing images"}
+                  </button>
+                </div>
                 {audit.length === 0
-                  ? <EmptyState icon="lock" title="No privacy audit entries" sub="Privacy scrub events will be logged here." />
+                  ? <EmptyState icon="lock" title="No privacy audit entries" sub="Scrub events appear here after uploads with person/vehicle detections, or after re-scrub." />
                   : <DataTable rows={audit} cols={AUDIT_COLS} />}
               </div>
             )}
 
-            {tab === "retrain" && <RetrainPanel reviewerId={reviewerId} />}
+            {tab === "retrain" && <RetrainPanel />}
           </>
         )}
       </div>

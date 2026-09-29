@@ -46,14 +46,29 @@ class FileManager:
         self,
         image_id: int,
         file_path: str,
-        has_animal: bool,
+        confidence: float,
+        detected_animal: str = "",
         precomputed_hash: Optional[str] = None,
     ):
         """Store file metadata (hash, size, tier). Uses precomputed_hash when provided."""
         try:
             file_hash = precomputed_hash or self.calculate_hash(file_path)
             file_size = self.get_file_size(file_path)
-            file_tier = "empty" if not has_animal else "low_conf" if has_animal < 0.4 else "valid"
+            animal = (detected_animal or "").strip()
+            is_person_or_vehicle = animal and (
+                animal.lower() in ("person", "vehicle", "human")
+                or "person" in animal.lower()
+                or "vehicle" in animal.lower()
+            )
+            if is_person_or_vehicle or not animal or confidence == 0:
+                has_animal = False
+                file_tier = "empty"
+            elif confidence > 0.4:
+                has_animal = True
+                file_tier = "valid"
+            else:
+                has_animal = True
+                file_tier = "low_conf"
 
             self.db_manager.update_image_file_info(
                 image_id, file_hash, file_size, has_animal, file_tier
@@ -70,10 +85,14 @@ class FileManager:
         rebuilds or manual file removal.  Returns the count of newly-marked rows.
         """
         rows = self.db_manager.get_available_image_filenames()
-        missing_ids = [
-            row[0] for row in rows
-            if not (self.uploads_dir / row[1]).exists()
-        ]
+        scrubbed_dir = self.uploads_dir / "scrubbed"
+        missing_ids = []
+        for row in rows:
+            image_id, filename = row[0], row[1]
+            original = self.uploads_dir / filename
+            scrubbed = scrubbed_dir / Path(filename).name
+            if not original.exists() and not scrubbed.exists():
+                missing_ids.append(image_id)
         if missing_ids:
             marked = self.db_manager.mark_files_missing(missing_ids)
             logger.info("Reconciliation: marked %d image(s) as missing (file not on disk)", marked)
@@ -259,6 +278,122 @@ Contents:
             raise
 
     # ──────────────────────────────────────────────────────────────────
+    # File artifact deletion
+    # ──────────────────────────────────────────────────────────────────
+
+    def delete_image_files(self, filename: str, image_id: Optional[int] = None) -> int:
+        """Delete all on-disk artifacts for one image. Returns bytes freed."""
+        safe_name = Path(filename or "upload").name
+        paths: List[Path] = []
+
+        original = self.uploads_dir / safe_name
+        if original.is_file():
+            paths.append(original)
+
+        scrubbed = self.uploads_dir / "scrubbed" / safe_name
+        if scrubbed.is_file():
+            paths.append(scrubbed)
+
+        thumbs_dir = self.uploads_dir / "thumbs"
+        if thumbs_dir.is_dir():
+            thumb_names = {f"{safe_name}.jpg", f"scrub_{safe_name}.jpg"}
+            if image_id is not None:
+                thumb_names.add(f"{image_id}_{safe_name}.jpg")
+                thumb_names.add(f"{image_id}_scrub_{safe_name}.jpg")
+            for w_dir in thumbs_dir.iterdir():
+                if not w_dir.is_dir():
+                    continue
+                for name in thumb_names:
+                    candidate = w_dir / name
+                    if candidate.is_file():
+                        paths.append(candidate)
+
+        freed = 0
+        for path in paths:
+            try:
+                freed += path.stat().st_size
+                path.unlink()
+            except OSError as exc:
+                logger.warning("Could not delete %s: %s", path, exc)
+        return freed
+
+    @staticmethod
+    def _safe_file_size(path: Path) -> Optional[int]:
+        """Return file size in bytes, or None if the path is unreadable."""
+        try:
+            if path.is_file():
+                return path.stat().st_size
+        except OSError as exc:
+            logger.warning("Skipping unreadable path %s: %s", path, exc)
+        return None
+
+    @staticmethod
+    def _safe_iter_dir(directory: Path) -> List[Path]:
+        """List directory entries, skipping unreadable paths."""
+        try:
+            return list(directory.iterdir())
+        except OSError as exc:
+            logger.warning("Could not list directory %s: %s", directory, exc)
+            return []
+
+    def get_disk_breakdown(self) -> Dict:
+        """Filesystem breakdown for originals, scrubbed copies, and thumbnail cache."""
+        originals_bytes = 0
+        originals_count = 0
+        for path in self._safe_iter_dir(self.uploads_dir):
+            if path.name.startswith("."):
+                continue
+            size = self._safe_file_size(path)
+            if size is None:
+                continue
+            originals_bytes += size
+            originals_count += 1
+
+        scrubbed_bytes = 0
+        scrubbed_count = 0
+        scrubbed_dir = self.uploads_dir / "scrubbed"
+        if scrubbed_dir.is_dir():
+            for path in self._safe_iter_dir(scrubbed_dir):
+                if path.name == "privacy_audit.json":
+                    continue
+                size = self._safe_file_size(path)
+                if size is None:
+                    continue
+                scrubbed_bytes += size
+                scrubbed_count += 1
+
+        thumbs_bytes = 0
+        thumbs_count = 0
+        thumbs_dir = self.uploads_dir / "thumbs"
+        if thumbs_dir.is_dir():
+            try:
+                thumb_paths = thumbs_dir.rglob("*.jpg")
+            except OSError as exc:
+                logger.warning("Could not walk thumbnail cache %s: %s", thumbs_dir, exc)
+                thumb_paths = []
+            for path in thumb_paths:
+                size = self._safe_file_size(path)
+                if size is None:
+                    continue
+                thumbs_bytes += size
+                thumbs_count += 1
+
+        return {
+            "originals": {
+                "count": originals_count,
+                "size_mb": originals_bytes / (1024 * 1024),
+            },
+            "scrubbed": {
+                "count": scrubbed_count,
+                "size_mb": scrubbed_bytes / (1024 * 1024),
+            },
+            "thumbnails": {
+                "count": thumbs_count,
+                "size_mb": thumbs_bytes / (1024 * 1024),
+            },
+        }
+
+    # ──────────────────────────────────────────────────────────────────
     # Cleanup Operations
     # ──────────────────────────────────────────────────────────────────
 
@@ -282,11 +417,9 @@ Contents:
         errors = []
 
         for image_id, filename, file_size_bytes in deletable:
-            file_path = self.uploads_dir / filename
-
             try:
-                if file_path.exists() and not dry_run:
-                    os.remove(file_path)
+                if not dry_run:
+                    self.delete_image_files(filename, image_id=image_id)
                     self.db_manager.delete_image_file(image_id)
 
                 deleted_count += 1
@@ -324,11 +457,9 @@ Contents:
         errors = []
 
         for image_id, filename, file_size_bytes in deletable:
-            file_path = self.uploads_dir / filename
-
             try:
-                if file_path.exists() and not dry_run:
-                    os.remove(file_path)
+                if not dry_run:
+                    self.delete_image_files(filename, image_id=image_id)
                     self.db_manager.delete_image_file(image_id)
 
                 deleted_count += 1
@@ -383,6 +514,137 @@ Contents:
             "warning": f"These {count} files will be permanently deleted",
         }
 
+    def cleanup_by_tier(
+        self,
+        tier: str,
+        dry_run: bool = True,
+        days_grace: int = 0,
+    ) -> Dict:
+        """Delete upload files for a tier (empty, low_conf, valid, all)."""
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+        age_clause = ""
+        params: List = []
+        if days_grace > 0:
+            age_clause = "AND datetime(uploaded_at) < datetime('now', ?)"
+            params.append(f"-{days_grace} days")
+
+        tier_clause = ""
+        if tier != "all":
+            tier_clause = "AND file_tier = ?"
+            params.insert(0, tier)
+
+        cursor.execute(
+            f"""
+            SELECT id, filename, file_size_bytes
+            FROM images
+            WHERE file_status = 'available'
+            {tier_clause}
+            {age_clause}
+            LIMIT 10000
+            """,
+            params,
+        )
+        deletable = cursor.fetchall()
+        conn.close()
+
+        deleted_count = 0
+        freed_bytes = 0
+        errors: List[str] = []
+
+        for image_id, filename, file_size_bytes in deletable:
+            try:
+                if not dry_run:
+                    freed = self.delete_image_files(filename, image_id=image_id)
+                    self.db_manager.delete_image_file(image_id)
+                    freed_bytes += freed
+                else:
+                    freed_bytes += file_size_bytes or 0
+                deleted_count += 1
+            except Exception as exc:
+                logger.warning("Could not delete image %s: %s", image_id, exc)
+                errors.append(str(exc))
+
+        return {
+            "action": "delete_by_tier",
+            "tier": tier,
+            "dry_run": dry_run,
+            "deleted_count": deleted_count,
+            "freed_mb": freed_bytes / (1024 * 1024),
+            "days_grace": days_grace,
+            "errors": len(errors),
+        }
+
+    def purge_thumbnails(self, dry_run: bool = True) -> Dict:
+        """Delete the thumbnail cache tree (regenerates on next request)."""
+        thumbs_dir = self.uploads_dir / "thumbs"
+        freed_bytes = 0
+        file_count = 0
+        if thumbs_dir.is_dir():
+            for path in thumbs_dir.rglob("*.jpg"):
+                if path.is_file():
+                    file_count += 1
+                    freed_bytes += path.stat().st_size
+            if not dry_run:
+                shutil.rmtree(thumbs_dir, ignore_errors=True)
+                thumbs_dir.mkdir(exist_ok=True)
+
+        return {
+            "action": "purge_thumbnails",
+            "dry_run": dry_run,
+            "deleted_count": file_count,
+            "freed_mb": freed_bytes / (1024 * 1024),
+            "errors": 0,
+        }
+
+    def purge_scrubbed_orphans(self, dry_run: bool = True) -> Dict:
+        """Delete scrubbed files with no available DB record."""
+        scrubbed_dir = self.uploads_dir / "scrubbed"
+        if not scrubbed_dir.is_dir():
+            return {
+                "action": "purge_scrubbed_orphans",
+                "dry_run": dry_run,
+                "deleted_count": 0,
+                "freed_mb": 0.0,
+                "errors": 0,
+            }
+
+        conn = self.db_manager.get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT filename FROM images
+            WHERE file_status = 'available'
+            """
+        )
+        available = {row[0] for row in cursor.fetchall()}
+        conn.close()
+
+        deleted_count = 0
+        freed_bytes = 0
+        errors = 0
+        for path in scrubbed_dir.iterdir():
+            if not path.is_file() or path.name == "privacy_audit.json":
+                continue
+            if path.name in available:
+                continue
+            try:
+                freed_bytes += path.stat().st_size
+                deleted_count += 1
+                if not dry_run:
+                    path.unlink()
+            except OSError as exc:
+                logger.warning("Could not delete scrubbed orphan %s: %s", path, exc)
+                errors += 1
+
+        return {
+            "action": "purge_scrubbed_orphans",
+            "dry_run": dry_run,
+            "deleted_count": deleted_count,
+            "freed_mb": freed_bytes / (1024 * 1024),
+            "errors": errors,
+        }
+
     def get_storage_status(self) -> Dict:
         """Get detailed storage breakdown."""
         stats = self.db_manager.get_storage_stats()
@@ -402,6 +664,7 @@ Contents:
         return {
             "total_mb": total_size,
             "breakdown": breakdown,
+            "disk": self.get_disk_breakdown(),
             "timestamp": datetime.utcnow().isoformat(),
         }
 
