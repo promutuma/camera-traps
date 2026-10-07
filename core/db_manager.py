@@ -23,8 +23,9 @@ class DatabaseManager:
             conn.close()
 
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30)
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def _init_db(self):
@@ -373,37 +374,35 @@ class DatabaseManager:
         if ide_summary is None or ide_summary.empty:
             return 0
 
+        rows = []
+        for _, row in ide_summary.iterrows():
+            first_dt = row.get("first_detection")
+            last_dt = row.get("last_detection")
+            rows.append((
+                row.get("ide_id"),
+                int(row.get("ide_group", 0)),
+                row.get("station_id"),
+                row.get("species"),
+                str(first_dt) if pd.notna(first_dt) else None,
+                str(last_dt) if pd.notna(last_dt) else None,
+                float(row.get("duration_minutes", 0)) if pd.notna(row.get("duration_minutes")) else None,
+                int(row.get("image_count", 1)),
+                float(row.get("max_confidence", 0)) if pd.notna(row.get("max_confidence")) else None,
+            ))
+
         conn = self.get_connection()
         cursor = conn.cursor()
-        count = 0
-
         try:
-            for _, row in ide_summary.iterrows():
-                first_dt = row.get("first_detection")
-                last_dt = row.get("last_detection")
-
-                cursor.execute('''
-                    INSERT OR IGNORE INTO independence_events (
-                        ide_id, ide_group, station_id, species,
-                        first_detection, last_detection, duration_minutes,
-                        image_count, max_confidence
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    row.get("ide_id"),
-                    int(row.get("ide_group", 0)),
-                    row.get("station_id"),
-                    row.get("species"),
-                    str(first_dt) if pd.notna(first_dt) else None,
-                    str(last_dt) if pd.notna(last_dt) else None,
-                    float(row.get("duration_minutes", 0)) if pd.notna(row.get("duration_minutes")) else None,
-                    int(row.get("image_count", 1)),
-                    float(row.get("max_confidence", 0)) if pd.notna(row.get("max_confidence")) else None,
-                ))
-                count += cursor.rowcount
-
+            before = conn.total_changes
+            cursor.executemany('''
+                INSERT OR IGNORE INTO independence_events (
+                    ide_id, ide_group, station_id, species,
+                    first_detection, last_detection, duration_minutes,
+                    image_count, max_confidence
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', rows)
             conn.commit()
-            return count
-
+            return max(0, conn.total_changes - before)
         except Exception as e:
             conn.rollback()
             print(f"Error saving independence events: {e}")

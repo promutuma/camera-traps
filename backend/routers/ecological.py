@@ -19,6 +19,60 @@ from core.standard_exports import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ecological", tags=["ecological"])
 
+# Align with frontend wildlifeFilter NON_WILDLIFE_LABELS
+_NON_WILDLIFE_LABELS = {
+    "empty",
+    "blank",
+    "person",
+    "vehicle",
+    "human",
+    "error",
+    "unidentified",
+    "n/a",
+    "none",
+    "unknown",
+}
+
+
+def _is_wildlife_label(label: object) -> bool:
+    lower = str(label or "").strip().lower()
+    if not lower:
+        return False
+    if lower in _NON_WILDLIFE_LABELS:
+        return False
+    if "person" in lower or "vehicle" in lower or "human" in lower:
+        return False
+    return True
+
+
+def _filter_ecological_df(df: pd.DataFrame, min_conf: float) -> pd.DataFrame:
+    """Keep wildlife detections at or above min confidence for Ecological metrics."""
+    if df is None or df.empty:
+        return df
+
+    before = len(df)
+    species_col = (
+        "species_label" if "species_label" in df.columns
+        else "detected_animal" if "detected_animal" in df.columns
+        else None
+    )
+    out = df
+    if species_col:
+        out = out[out[species_col].map(_is_wildlife_label)]
+
+    conf_col = "detection_confidence" if "detection_confidence" in out.columns else None
+    if conf_col:
+        conf = pd.to_numeric(out[conf_col], errors="coerce")
+        out = out[conf.notna() & (conf >= float(min_conf))]
+
+    logger.info(
+        "Ecological filter: kept %s / %s detections (wildlife, confidence >= %.2f)",
+        len(out),
+        before,
+        float(min_conf),
+    )
+    return out.reset_index(drop=True)
+
 
 def _get_data(state: AppState):
     if not state.db_manager:
@@ -37,6 +91,17 @@ def _get_data(state: AppState):
         df["date"] = df["capture_date"]
     if "time" not in df.columns and "capture_time" in df.columns:
         df["time"] = df["capture_time"]
+
+    min_conf = float(getattr(state.config, "detection_confidence", 0.35) or 0.0)
+    df = _filter_ecological_df(df, min_conf)
+    if df.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No wildlife detections above confidence threshold — "
+                "lower Detection Confidence in Config or process more images"
+            ),
+        )
     return df
 
 
@@ -49,115 +114,54 @@ def _get_engine(state: AppState):
     return state.independence_engine
 
 
-def _compute_ides(state: AppState) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    df = _get_data(state)
+def _compute_ides(
+    state: AppState,
+    persist: bool = False,
+    df: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Compute IDE summary. Returns (enriched, summary, source_df)."""
+    if df is None:
+        df = _get_data(state)
     engine = _get_engine(state)
     enriched = engine.compute_ides(df, default_station=state.config.default_station_id)
     summary = engine.get_ide_summary(enriched)
-    if state.db_manager and not summary.empty:
+    if persist and state.db_manager and not summary.empty:
         try:
             inserted = state.db_manager.save_independence_events(summary)
             if inserted:
                 logger.info("Persisted %s independence event(s).", inserted)
         except Exception as exc:
             logger.warning("Could not persist independence events: %s", exc)
-    return enriched, summary
+    return enriched, summary, df
 
 
-@router.get("/ide")
-def get_ide(state: AppState = Depends(get_state)):
-    enriched, summary = _compute_ides(state)
-    return {
-        "summary": summary.fillna("").to_dict(orient="records"),
-        "enriched": enriched.fillna("").to_dict(orient="records"),
-    }
-
-
-@router.get("/rai")
-def get_rai(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
-    _, summary = _compute_ides(state)
+def _trap_map(state: AppState, summary: pd.DataFrame, trap_nights: int) -> dict:
     stations = summary["station_id"].unique().tolist() if not summary.empty else []
-    
     real_trap_nights = {}
     if state.station_manager:
         real_trap_nights = state.station_manager.compute_trap_nights()
-        
-    trap_map = {}
-    for s in stations:
-        tn = real_trap_nights.get(s, 0)
-        trap_map[s] = tn if tn > 0 else trap_nights
-        
-    rai_df = engine.compute_rai(summary, trap_map)
-    return rai_df.fillna("").to_dict(orient="records")
+    return {
+        s: (real_trap_nights.get(s, 0) or trap_nights)
+        for s in stations
+    }
 
 
-@router.get("/timeline")
-def get_timeline(state: AppState = Depends(get_state)):
-    _, summary = _compute_ides(state)
+def _timeline_records(summary: pd.DataFrame) -> list:
     if summary.empty or "first_detection" not in summary.columns:
         return []
-    import pandas as pd
     tl = summary.dropna(subset=["first_detection"]).copy()
     tl["first_detection"] = pd.to_datetime(tl["first_detection"], errors="coerce")
     tl = tl.dropna(subset=["first_detection"])
     tl["date"] = tl["first_detection"].dt.date.astype(str)
-    pivot = (
+    return (
         tl.groupby(["date", "species"]).size()
         .reset_index(name="count")
+        .to_dict(orient="records")
     )
-    return pivot.to_dict(orient="records")
 
 
-@router.get("/richness")
-def get_richness(state: AppState = Depends(get_state)):
-    _, summary = _compute_ides(state)
-    engine = _get_engine(state)
-    richness = engine.compute_species_richness(summary)
-    return richness.fillna("").to_dict(orient="records")
-
-
-@router.get("/accumulation")
-def get_accumulation(state: AppState = Depends(get_state)):
-    _, summary = _compute_ides(state)
-    engine = _get_engine(state)
-    accum = engine.compute_species_accumulation(summary)
-    return accum.fillna("").to_dict(orient="records")
-
-
-@router.get("/group-size")
-def get_group_size(state: AppState = Depends(get_state)):
-    enriched, _ = _compute_ides(state)
-    engine = _get_engine(state)
-    group_df = engine.compute_mean_group_size(enriched)
-    return group_df.fillna("").to_dict(orient="records")
-
-
-@router.get("/visitation")
-def get_visitation(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
-    _, summary = _compute_ides(state)
-    engine = _get_engine(state)
-    stations = summary["station_id"].unique().tolist() if not summary.empty else []
-    
-    real_trap_nights = {}
-    if state.station_manager:
-        real_trap_nights = state.station_manager.compute_trap_nights()
-        
-    trap_map = {}
-    for s in stations:
-        tn = real_trap_nights.get(s, 0)
-        trap_map[s] = tn if tn > 0 else trap_nights
-        
-    visit_df, heatmap_df = engine.compute_visitation_rate(summary, trap_map)
-    return {
-        "visitation": visit_df.fillna("").to_dict(orient="records"),
-        "heatmap": heatmap_df.fillna("").to_dict(orient="records"),
-    }
-
-
-@router.get("/activity")
-def get_activity(state: AppState = Depends(get_state)):
+def _activity_from_df(df: pd.DataFrame) -> dict:
     """Hourly detection activity (unique images per hour)."""
-    df = _get_data(state)
     hourly_counts = [0] * 24
     id_col = "id" if "id" in df.columns else "image_id"
     if "capture_time" in df.columns and id_col in df.columns:
@@ -176,8 +180,15 @@ def get_activity(state: AppState = Depends(get_state)):
     hourly = [{"hour": f"{h:02d}:00", "count": count} for h, count in enumerate(hourly_counts)]
 
     by_species: list = []
-    if "capture_time" in df.columns and "species_label" in df.columns:
-        tmp = df.dropna(subset=["capture_time", "species_label"]).copy()
+    species_col = (
+        "species_label" if "species_label" in df.columns
+        else "detected_animal" if "detected_animal" in df.columns
+        else None
+    )
+    if "capture_time" in df.columns and species_col:
+        tmp = df.dropna(subset=["capture_time", species_col]).copy()
+        if species_col != "species_label":
+            tmp["species_label"] = tmp[species_col]
         tmp["hour"] = tmp["capture_time"].astype(str).str.split(":").str[0]
         tmp = tmp[tmp["hour"].str.match(r"^\d{1,2}$")]
         tmp["hour"] = tmp["hour"].astype(int)
@@ -193,6 +204,113 @@ def get_activity(state: AppState = Depends(get_state)):
     return {"hourly": hourly, "by_species": by_species}
 
 
+def _bundle_metrics(
+    state: AppState,
+    enriched: pd.DataFrame,
+    summary: pd.DataFrame,
+    source_df: pd.DataFrame,
+    trap_nights: int,
+) -> dict:
+    """Build all Ecological UI payloads from one IDE compute."""
+    engine = _get_engine(state)
+    trap_map = _trap_map(state, summary, trap_nights)
+    rai_df = engine.compute_rai(summary, trap_map)
+    richness = engine.compute_species_richness(summary)
+    accum = engine.compute_species_accumulation(summary)
+    group_df = engine.compute_mean_group_size(enriched)
+    visit_df, heatmap_df = engine.compute_visitation_rate(summary, trap_map)
+    # Omit full enriched detection rows — Ecological UI only needs IDE summary
+    # plus derived metrics. Shipping enriched can be tens of MB on USB datasets
+    # and causes browser "Network Error" / timeouts.
+    _ = enriched  # used above for group-size
+    return {
+        "summary": summary.fillna("").to_dict(orient="records"),
+        "rai": rai_df.fillna("").to_dict(orient="records"),
+        "timeline": _timeline_records(summary),
+        "richness": richness.fillna("").to_dict(orient="records"),
+        "accumulation": accum.fillna("").to_dict(orient="records"),
+        "group_size": group_df.fillna("").to_dict(orient="records"),
+        "visitation": {
+            "visitation": visit_df.fillna("").to_dict(orient="records"),
+            "heatmap": heatmap_df.fillna("").to_dict(orient="records"),
+        },
+        "activity": _activity_from_df(source_df),
+    }
+
+
+@router.get("/compute")
+def compute_all(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
+    """Compute IDEs once and return all Ecological metrics for the UI."""
+    enriched, summary, source_df = _compute_ides(state, persist=True)
+    return _bundle_metrics(state, enriched, summary, source_df, trap_nights)
+
+
+@router.get("/ide")
+def get_ide(state: AppState = Depends(get_state)):
+    enriched, summary, _ = _compute_ides(state, persist=True)
+    return {
+        "summary": summary.fillna("").to_dict(orient="records"),
+        "enriched": enriched.fillna("").to_dict(orient="records"),
+    }
+
+
+@router.get("/rai")
+def get_rai(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
+    _, summary, _ = _compute_ides(state)
+    engine = _get_engine(state)
+    trap_map = _trap_map(state, summary, trap_nights)
+    rai_df = engine.compute_rai(summary, trap_map)
+    return rai_df.fillna("").to_dict(orient="records")
+
+
+@router.get("/timeline")
+def get_timeline(state: AppState = Depends(get_state)):
+    _, summary, _ = _compute_ides(state)
+    return _timeline_records(summary)
+
+
+@router.get("/richness")
+def get_richness(state: AppState = Depends(get_state)):
+    _, summary, _ = _compute_ides(state)
+    engine = _get_engine(state)
+    richness = engine.compute_species_richness(summary)
+    return richness.fillna("").to_dict(orient="records")
+
+
+@router.get("/accumulation")
+def get_accumulation(state: AppState = Depends(get_state)):
+    _, summary, _ = _compute_ides(state)
+    engine = _get_engine(state)
+    accum = engine.compute_species_accumulation(summary)
+    return accum.fillna("").to_dict(orient="records")
+
+
+@router.get("/group-size")
+def get_group_size(state: AppState = Depends(get_state)):
+    enriched, _, _ = _compute_ides(state)
+    engine = _get_engine(state)
+    group_df = engine.compute_mean_group_size(enriched)
+    return group_df.fillna("").to_dict(orient="records")
+
+
+@router.get("/visitation")
+def get_visitation(state: AppState = Depends(get_state), trap_nights: int = Query(30)):
+    _, summary, _ = _compute_ides(state)
+    engine = _get_engine(state)
+    trap_map = _trap_map(state, summary, trap_nights)
+    visit_df, heatmap_df = engine.compute_visitation_rate(summary, trap_map)
+    return {
+        "visitation": visit_df.fillna("").to_dict(orient="records"),
+        "heatmap": heatmap_df.fillna("").to_dict(orient="records"),
+    }
+
+
+@router.get("/activity")
+def get_activity(state: AppState = Depends(get_state)):
+    """Hourly detection activity (unique images per hour)."""
+    return _activity_from_df(_get_data(state))
+
+
 @router.get("/export")
 def export_ecological(
     state: AppState = Depends(get_state),
@@ -206,7 +324,7 @@ def export_ecological(
     metric = metric.lower().strip()
 
     # 1. Fetch history data
-    enriched, summary = _compute_ides(state)
+    enriched, summary, _ = _compute_ides(state)
     engine = _get_engine(state)
 
     # Determine which DataFrame to export
@@ -216,20 +334,12 @@ def export_ecological(
     if metric == "ide":
         export_df = summary
     elif metric == "rai":
-        stations = summary["station_id"].unique().tolist() if not summary.empty else []
-        real_trap_nights = {}
-        if state.station_manager:
-            real_trap_nights = state.station_manager.compute_trap_nights()
-        trap_map = {s: real_trap_nights.get(s, 0) or trap_nights for s in stations}
+        trap_map = _trap_map(state, summary, trap_nights)
         export_df = engine.compute_rai(summary, trap_map)
     elif metric in ("group-size", "group_size"):
         export_df = engine.compute_mean_group_size(enriched)
     elif metric == "visitation":
-        stations = summary["station_id"].unique().tolist() if not summary.empty else []
-        real_trap_nights = {}
-        if state.station_manager:
-            real_trap_nights = state.station_manager.compute_trap_nights()
-        trap_map = {s: real_trap_nights.get(s, 0) or trap_nights for s in stations}
+        trap_map = _trap_map(state, summary, trap_nights)
         visit_df, _ = engine.compute_visitation_rate(summary, trap_map)
         export_df = visit_df
     elif metric == "richness":

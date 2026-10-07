@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { getIDE, getRAI, getTimeline, getRichness, getAccumulation, getGroupSize, getVisitation, getActivity } from "../api/client";
+import { AxiosError } from "axios";
+import { computeEcological } from "../api/client";
 import { useConfigStore } from "../store/configStore";
 import { isNonWildlifeLabel } from "../utils/wildlifeFilter";
 import {
@@ -51,27 +52,24 @@ export default function Ecological() {
     setLoading(true);
     setError("");
     try {
-      const [ide, raiData, tl, rich, accum, gs, vis, act] = await Promise.all([
-        getIDE(),
-        getRAI(trapNights),
-        getTimeline(),
-        getRichness(),
-        getAccumulation(),
-        getGroupSize(),
-        getVisitation(trapNights),
-        getActivity(),
-      ]);
-      setIdeSummary(ide.summary ?? []);
-      setRai(raiData);
-      setTimeline(tl);
-      setRichness(rich);
-      setAccumulation(accum);
-      setGroupSize(gs);
-      setVisitation(vis);
-      setActivity(act);
+      const data = await computeEcological(trapNights);
+      setIdeSummary(data.summary ?? []);
+      setRai(data.rai ?? []);
+      setTimeline(data.timeline ?? []);
+      setRichness(data.richness ?? []);
+      setAccumulation(data.accumulation ?? []);
+      setGroupSize(data.group_size ?? []);
+      setVisitation(data.visitation ?? null);
+      setActivity(data.activity ?? null);
       setComputed(true);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Failed to compute");
+      if (e instanceof AxiosError && (!e.response || e.code === "ECONNABORTED")) {
+        setError(
+          "Compute timed out or connection dropped. The server may still be working — wait and try again.",
+        );
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to compute");
+      }
     } finally {
       setLoading(false);
     }
@@ -91,7 +89,10 @@ export default function Ecological() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 dark:text-white">Ecological Analytics</h1>
-          <p className="text-slate-500 dark:text-slate-450 text-sm mt-1">All indicators derived from Independent Detection Events (IDEs)</p>
+          <p className="text-slate-500 dark:text-slate-450 text-sm mt-1">
+            All indicators derived from Independent Detection Events (IDEs).
+            Metrics use wildlife detections at or above the Detection Confidence setting (Config sidebar).
+          </p>
         </div>
         <button
           onClick={compute}
@@ -104,7 +105,14 @@ export default function Ecological() {
 
       {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-4 text-sm">{error}</div>}
 
-      {loading && <EcoSkeleton />}
+      {loading && (
+        <div className="space-y-3">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            This can take several minutes on large datasets…
+          </p>
+          <EcoSkeleton />
+        </div>
+      )}
 
       {!computed && !loading && (
         <div className="text-center py-16 text-slate-400 bg-white/75 dark:bg-slate-900/60 border border-slate-200/50 dark:border-slate-800/50 rounded-2xl p-8 backdrop-blur-md">

@@ -154,6 +154,12 @@ export const getActivity = () =>
     hourly: { hour: string; count: number }[];
     by_species: { hour: number; species_label: string; count: number }[];
   });
+/** Single-call Ecological compute — IDEs once, all metrics returned together. */
+export const computeEcological = (trap_nights = 30) =>
+  api.get("/ecological/compute", {
+    params: { trap_nights },
+    timeout: 600_000,
+  }).then((r) => r.data);
 
 // ── QC ───────────────────────────────────────────────────────────────────────
 export const getQCFlags = () => api.get("/qc/flags").then((r) => r.data);
